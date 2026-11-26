@@ -33,11 +33,12 @@ is merged. Only `main` is pushed to; every later job checks out the tag
    the label, updates the version pins on the `crates/*` path dependencies in
    the root `Cargo.toml`, runs `cargo update --workspace`, commits
    `release: v<version>` to `main`, pushes, and creates an annotated `v*` tag.
-2. **publish** — publishes `jisuno-logic`, `jisuno-audio`, `jisuno-asr`, then
-   `jisuno` to crates.io in dependency order. A version already on the index is
-   skipped, so a partial run can be retried. Needs `CRATES_IO_TOKEN`.
-   `jisuno-platform`, `jisuno-ui` and `jisuno-bench` are never published. They
-   need `publish = false` in their `Cargo.toml` (not yet present; see below).
+2. **publish** — publishes `jisuno-logic`, `jisuno-audio`, `jisuno-asr`,
+   `jisuno-platform`, `jisuno-ui`, then `jisuno` to crates.io in dependency
+   order (`jisuno`'s optional `app` feature depends on platform and ui, and
+   cargo requires optional deps to be on the registry). A version already on
+   the index is skipped, so a partial run can be retried. Needs
+   `CRATES_IO_TOKEN`. `jisuno-bench` has `publish = false`.
 3. **create-release** — creates the GitHub release `v<version>` with
    auto-generated notes (idempotent). Runs in parallel with `publish`.
 4. **macos-app** — macos-14. Builds the universal `Jisuno.app` with
@@ -105,13 +106,4 @@ into one workflow eliminates that.
 
 ## Follow-ups (not done here)
 
-- `publish = false` is needed in `crates/jisuno-platform/Cargo.toml`,
-  `crates/jisuno-ui/Cargo.toml`, and `crates/jisuno-bench/Cargo.toml`. The
-  publish job never lists them, but `cargo publish` of `jisuno` fails if its
-  `app` feature (once added) depends on an unpublished crate, even optionally.
-  Keep the `app` deps out of `jisuno`'s published manifest, or make them
-  publishable.
-- `crates/jisuno-bench/Cargo.toml` pins `jisuno-asr` and `jisuno-audio` with
-  `version = "0.1.0"`. A minor or major bump breaks that path dependency. Switch
-  to `{ workspace = true }`.
 - Homebrew tap push (`brew audit --cask --strict` and install check) is manual.
