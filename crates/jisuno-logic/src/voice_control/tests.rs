@@ -501,3 +501,27 @@ fn non_ascii_keys_map_to_the_right_line() {
         "unknown key \"zoom\" in workspace \"caf\u{e9}\" window \"t\""
     );
 }
+
+#[test]
+fn hyphen_and_punctuation_normalize_before_phrase_checks() {
+    assert_eq!(normalize("right-half"), vec!["right", "half"]);
+    assert_eq!(normalize("open note {name}."), vec!["open", "note", "{name}"]);
+
+    let text = format!(
+        "{{\"version\": 1, \"commands\": [\n{}\n,\n{}\n]}}",
+        menu_command("settings", "open-settings"),
+        menu_command("setup", "open settings")
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "duplicate phrase \"open settings\" (commands \"settings\" and \"setup\")"
+    );
+
+    let text = doc(
+        r#"{"id": "note", "say": ["open note {name}."], "steps": [{"do": "app.open", "app": "Inkuno", "arg": "{name}.md"}]}"#,
+    );
+    let (_, warnings) = ok(&text);
+    assert!(warnings.is_empty());
+}

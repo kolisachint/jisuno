@@ -656,16 +656,14 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
             }
 
             // Check 14.
-            for (raw, _) in &phrases {
-                let tokens: Vec<&str> = raw.split_whitespace().collect();
+            for (raw, words) in &phrases {
                 let mut free_at: Vec<usize> = Vec::new();
-                for (t, token) in tokens.iter().enumerate() {
-                    let lower = token.to_lowercase();
-                    if is_slot_token(&lower) && free_slot(&lower[1..lower.len() - 1]) {
+                for (t, word) in words.iter().enumerate() {
+                    if is_slot_token(word) && free_slot(&word[1..word.len() - 1]) {
                         free_at.push(t);
                     }
                 }
-                if free_at.len() > 1 || free_at.first().is_some_and(|&t| t + 1 != tokens.len()) {
+                if free_at.len() > 1 || free_at.first().is_some_and(|&t| t + 1 != words.len()) {
                     errors.push(error(
                         line,
                         format!(
