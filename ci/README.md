@@ -10,8 +10,9 @@ The GitHub Actions workflows live in `.github/workflows/` (`ci.yml` and
 Runs on pushes to `main` and on PRs (installs `libasound2-dev` for the `cpal`
 ALSA backend first):
 - `cargo fmt --all --check` — formatting
-- `cargo clippy --all-targets -- -D warnings` — lints
-- `cargo test` — all tests
+- `cargo build --workspace` — build every crate
+- `cargo clippy --workspace --all-targets -- -D warnings` — lints
+- `cargo test --workspace` — all tests
 
 ### `release.yml`
 
@@ -21,12 +22,12 @@ A single workflow triggered when a PR with a `cargo:patch`, `cargo:minor`, or
 1. **bump-and-tag** — reads the current version, bumps it based on the label,
    updates `Cargo.toml` + `Cargo.lock`, commits to `main`, pushes, and creates
    an annotated `v*` tag
-2. **publish** — publishes `voicetools` to crates.io, skipping a version already
+2. **publish** — publishes `jisuno` to crates.io, skipping a version already
    on the index so a partial run can be retried (needs the `CRATES_IO_TOKEN`
    secret; installs ALSA headers first)
 3. **create-release** — creates the GitHub release with auto-generated notes
    (runs in parallel with publish)
-4. **build** — builds `voicetools` for four targets (Linux gnu x86_64, macOS
+4. **build** — builds `jisuno` for four targets (Linux gnu x86_64, macOS
    x86_64 + aarch64, Windows x86_64) and attaches each archive plus a per-asset
    `.sha256`
 5. **checksums** — aggregates a combined `SHA256SUMS` manifest for downloaders

@@ -1,5 +1,5 @@
-//! `voicetools serve`: load models once, then answer START/CANCEL/SHUTDOWN
-//! commands on stdin with the stdout line protocol. See `src/protocol.rs`.
+//! `jisuno serve`: load models once, then answer START/CANCEL/SHUTDOWN
+//! commands on stdin with the stdout line protocol. See `jisuno_logic::protocol`.
 //!
 //! Unlike the batch `transcribe` subcommand — which records the whole
 //! utterance and only decodes after you stop — `serve` transcribes **while
@@ -17,10 +17,11 @@ use std::io::BufRead;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
-use crate::setup::Model;
-use crate::transcribe::Transcriber;
-use crate::vad::{self, Vad, VadEvent};
-use crate::{audio, mic, protocol};
+use jisuno_asr::setup::Model;
+use jisuno_asr::transcribe::Transcriber;
+use jisuno_audio::{audio, mic};
+use jisuno_logic::protocol;
+use jisuno_logic::vad::{self, Vad, VadEvent};
 
 /// How often to poll the audio channel while listening, so CANCEL/SHUTDOWN
 /// are noticed promptly even during silence.
@@ -40,14 +41,14 @@ pub fn run(model_name: &str, silence_ms: u64, partial_ms: u64) -> anyhow::Result
     let model = Model::parse(model_name)?;
     if !model.is_ready() {
         protocol::error(&format!(
-            "no model found for '{}' — run: voicetools setup --model {}",
+            "no model found for '{}' — run: jisuno setup --model {}",
             model.id(),
             model.id()
         ));
         std::process::exit(1);
     }
 
-    let mut transcriber = crate::transcribe::load(model)?;
+    let mut transcriber = jisuno_asr::transcribe::load(model)?;
     protocol::ready();
 
     let cmds = spawn_stdin_reader();

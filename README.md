@@ -1,4 +1,4 @@
-# voicetools
+# jisuno
 
 Local, offline **voice-to-text for the terminal**. A small Rust binary that
 captures your microphone, stops automatically when you go quiet, and streams
@@ -7,12 +7,11 @@ a TUI (e.g. hoocode) as a push-to-talk input. **No audio ever leaves the
 machine.**
 
 ```bash
-voicetools setup --model parakeet-v3   # once — ~650 MB, 25 languages
-voicetools transcribe                  # speak; stops after ~600ms of silence
+jisuno setup --model parakeet-v3   # once — ~650 MB, 25 languages
+jisuno transcribe                  # speak; stops after ~600ms of silence
 ```
 
 - **Parakeet-TDT** (NVIDIA) via ONNX Runtime — fast, multilingual, int8.
-- **Whisper** (whisper.cpp) as an optional fallback backend.
 - Models are pre-exported and downloaded on first run — no Python/NeMo needed.
 - ~Single static binary; models live in your user data dir.
 
@@ -27,19 +26,18 @@ Grab a binary from [Releases](../../releases), or build from source:
 # Linux needs ALSA headers for mic capture
 sudo apt-get install -y libasound2-dev   # Debian/Ubuntu
 
-cargo build --release
-# binary at target/release/voicetools
+cargo build --release -p jisuno
+# binary at target/release/jisuno
 ```
 
 ## First run: download a model
 
 ```bash
-voicetools setup --model parakeet-v3     # recommended, ~650MB, 25 languages
+jisuno setup --model parakeet-v3     # recommended, ~650MB, 25 languages
 # or
-voicetools setup --model parakeet-v2     # English-only, ~631MB
-voicetools setup --model whisper-small   # fallback (needs --features whisper)
+jisuno setup --model parakeet-v2     # English-only, ~631MB
 
-voicetools models                        # list what's installed
+jisuno models                        # list what's installed
 ```
 
 Models are stored under your platform data directory, e.g.
@@ -49,13 +47,13 @@ Models are stored under your platform data directory, e.g.
 
 ```bash
 # From the mic — records until ~600ms of silence, then transcribes:
-voicetools transcribe
+jisuno transcribe
 
 # Tune the trailing-silence auto-stop:
-voicetools transcribe --silence-ms 800
+jisuno transcribe --silence-ms 800
 
 # From a WAV file (any rate/channels; great for validating a model):
-voicetools transcribe --wav recording.wav
+jisuno transcribe --wav recording.wav
 ```
 
 Environment variables: `VOICETOOLS_MODEL`, `VOICE_SILENCE_MS`.
@@ -69,7 +67,7 @@ commands on stdin, so repeated captures are instant — and it transcribes
 the end:
 
 ```bash
-voicetools serve
+jisuno serve
 # stdin:  START            begin mic capture + VAD
 #         CANCEL           stop the current capture without transcribing
 #         SHUTDOWN         exit gracefully
@@ -112,18 +110,27 @@ one (overwrite, don't append); `FINAL` is the text to insert. `serve` uses
 ## Architecture
 
 ```
-src/
-├── main.rs            CLI + subcommands, mic→VAD→transcribe pipeline
-├── mic.rs             cpal capture (native-rate mono chunks over a channel)
-├── audio.rs           mono downmix, anti-aliased resample → 16 kHz, WAV loading
-├── vad.rs             energy VAD with auto-stop on trailing silence
-├── setup.rs           model registry + HuggingFace download wizard
-├── protocol.rs        the stdout line protocol
-├── serve.rs           persistent daemon: streaming START/CANCEL/SHUTDOWN over stdin
-└── transcribe/
-    ├── mod.rs         Transcriber trait + backend selection
-    ├── parakeet.rs    ONNX Runtime: nemo128 → encoder → decoder_joint (TDT)
-    └── whisper.rs     whisper.cpp fallback (feature = "whisper")
+crates/
+├── jisuno/            the binary
+│   └── src/
+│       ├── main.rs        module declarations, entry point
+│       ├── cli.rs         CLI + subcommands, mic→VAD→transcribe pipeline
+│       └── serve.rs       persistent daemon: streaming START/CANCEL/SHUTDOWN over stdin
+├── jisuno-logic/      pure, no audio/ONNX/network deps
+│   └── src/
+│       ├── vad.rs         energy VAD with auto-stop on trailing silence
+│       └── protocol.rs    the stdout line protocol
+├── jisuno-audio/      audio helpers and mic capture
+│   └── src/
+│       ├── audio.rs       mono downmix, anti-aliased resample → 16 kHz, WAV loading
+│       └── mic.rs         cpal capture (native-rate mono chunks); feature `mic`
+└── jisuno-asr/        speech recognition and model files
+    └── src/
+        ├── setup.rs       model registry + HuggingFace download wizard
+        ├── tls.rs         TLS trust for model downloads
+        └── transcribe/
+            ├── mod.rs         Transcriber trait + model loading
+            └── parakeet.rs    ONNX Runtime: nemo128 → encoder → decoder_joint (TDT)
 ```
 
 Audio is captured at the device's native rate, VAD runs on those chunks (RMS
@@ -143,7 +150,7 @@ joint output width at runtime (`width − NUM_DURATIONS`), so the same code work
 for v2 and v3 without hardcoded vocab sizes.
 
 The ONNX input/output tensor names are `const`s at the top of
-`src/transcribe/parakeet.rs`. They match the istupakov/PalatineVision export;
+`crates/jisuno-asr/src/transcribe/parakeet.rs`. They match the istupakov/PalatineVision export;
 if you use a differently-named export, inspect it with
 [Netron](https://netron.app) and adjust those constants — the decode logic
 itself is export-agnostic. Decode flow is adapted from
@@ -159,18 +166,19 @@ it, because the models are large and gated, so validate locally with `--wav`.
 
 ONNX sessions run **single-threaded on purpose**: multi-threaded int8 inference
 is non-deterministic and makes the greedy decode drop or garble words (see
-`build_session` in `src/transcribe/parakeet.rs`).
+`build_session` in `crates/jisuno-asr/src/transcribe/parakeet.rs`).
 
 ## Cargo features
 
-| Feature    | Default | Pulls in            | Backend           |
-|------------|:-------:|---------------------|-------------------|
-| `parakeet` |   ✓     | `ort`, `ndarray`    | Parakeet via ONNX |
-| `whisper`  |         | `whisper-rs`        | whisper.cpp       |
+| Crate          | Feature | Default | Effect                                  |
+|----------------|---------|:-------:|-----------------------------------------|
+| `jisuno-audio` | `mic`   |   ✓     | `cpal` mic capture; off = no ALSA build |
+
+Parakeet (ONNX) is always built; the whisper backend was dropped.
 
 ```bash
-cargo build --release                      # parakeet (default)
-cargo build --release --features whisper   # add whisper fallback
+cargo build --release -p jisuno                              # with mic
+cargo build -p jisuno-audio --no-default-features            # no mic, no ALSA
 ```
 
 ## Releases
@@ -184,7 +192,7 @@ binaries. Requires the `CRATES_IO_TOKEN` secret.
 
 ## Editor / TUI integration
 
-Reference files for wiring `voicetools` into the hoocode TUI as a `ctrl+r`
+Reference files for wiring `jisuno` into the hoocode TUI as a `ctrl+r`
 push-to-talk input live in [`docs/hoocode-integration/`](docs/hoocode-integration/).
 
 ## Related

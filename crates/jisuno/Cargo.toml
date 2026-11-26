@@ -1,0 +1,14 @@
+[package]
+name = "jisuno"
+description = "Local, offline voice-to-text for the terminal — Parakeet (ONNX)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+jisuno-asr = { workspace = true }
+jisuno-audio = { workspace = true }
+jisuno-logic = { workspace = true }

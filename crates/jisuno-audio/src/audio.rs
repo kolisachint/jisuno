@@ -1,7 +1,7 @@
 //! Audio helpers: the target sample rate, mono downmixing, resampling to
 //! 16 kHz, and loading WAV files (for `--wav` and tests).
 //!
-//! The Parakeet and Whisper models both expect **16 kHz mono f32** in
+//! The Parakeet model expects **16 kHz mono f32** in
 //! `-1.0..=1.0`. Microphones rarely run at 16 kHz, so we resample whatever
 //! the device gives us.
 //!

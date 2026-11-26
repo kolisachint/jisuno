@@ -1,33 +1,26 @@
-//! voicetools — local, offline voice-to-text for the terminal.
+//! jisuno — local, offline voice-to-text for the terminal.
 //!
 //! Subcommands:
 //!   * `setup`      — download a model (first-run wizard)
 //!   * `models`     — list installed models
 //!   * `transcribe` — capture from the mic (or `--wav`) and stream text
 //!   * `serve`      — load models once, then serve START/CANCEL/SHUTDOWN
-//!     commands over stdin (see `src/serve.rs`)
+//!     commands over stdin (see `serve.rs`)
 //!
 //! With no subcommand, `transcribe` runs. All output the consumer cares about
 //! goes to **stdout** as the line protocol in [`protocol`]; logs go to stderr.
 
-mod audio;
-mod mic;
-mod protocol;
-mod serve;
-mod setup;
-mod tls;
-mod transcribe;
-mod vad;
-
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-
-use setup::Model;
-use vad::{Vad, VadEvent};
+use jisuno_asr::setup::{self, Model};
+use jisuno_asr::{tls, transcribe};
+use jisuno_audio::{audio, mic};
+use jisuno_logic::protocol;
+use jisuno_logic::vad::{Vad, VadEvent};
 
 #[derive(Parser)]
-#[command(name = "voicetools", version, about = "Local offline voice-to-text")]
+#[command(name = "jisuno", version, about = "Local offline voice-to-text")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -59,7 +52,7 @@ enum Command {
 
 #[derive(Args, Clone)]
 struct ServeArgs {
-    /// Model to use (parakeet-v3, parakeet-v2, whisper-small).
+    /// Model to use (parakeet-v3, parakeet-v2).
     #[arg(long, env = "VOICETOOLS_MODEL", default_value = "parakeet-v3")]
     model: String,
     /// Trailing-silence timeout, in milliseconds, before auto-stop.
@@ -73,7 +66,7 @@ struct ServeArgs {
 
 #[derive(Args, Clone)]
 struct TranscribeArgs {
-    /// Model to use (parakeet-v3, parakeet-v2, whisper-small).
+    /// Model to use (parakeet-v3, parakeet-v2).
     #[arg(long, env = "VOICETOOLS_MODEL", default_value = "parakeet-v3")]
     model: String,
     /// Trailing-silence timeout, in milliseconds, before auto-stop.
@@ -101,7 +94,8 @@ impl TranscribeArgs {
     }
 }
 
-fn main() {
+/// Parse the command line and run the selected subcommand.
+pub fn run() {
     let cli = Cli::parse();
     let result = match cli.command {
         Some(Command::Setup {
@@ -117,7 +111,9 @@ fn main() {
         ),
         Some(Command::Models) => setup::list(),
         Some(Command::Transcribe(args)) => run_transcribe(args),
-        Some(Command::Serve(args)) => serve::run(&args.model, args.silence_ms, args.partial_ms),
+        Some(Command::Serve(args)) => {
+            crate::serve::run(&args.model, args.silence_ms, args.partial_ms)
+        }
         None => run_transcribe(TranscribeArgs::from_env()),
     };
 
@@ -131,7 +127,7 @@ fn run_transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     let model = Model::parse(&args.model)?;
     if !model.is_ready() {
         protocol::error(&format!(
-            "no model found for '{}' — run: voicetools setup --model {}",
+            "no model found for '{}' — run: jisuno setup --model {}",
             model.id(),
             model.id()
         ));
