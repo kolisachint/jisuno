@@ -151,6 +151,11 @@ fn levenshtein(a: &[String], b: &[String]) -> usize {
     prev[b.len()]
 }
 
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn malloc_zone_pressure_relief(zone: *mut core::ffi::c_void, bytes: usize);
+}
+
 /// Current process resident set size, in bytes. `None` where unmeasurable.
 pub fn rss_bytes() -> Option<u64> {
     #[cfg(target_os = "macos")]
@@ -532,6 +537,13 @@ pub fn run(config: &BenchConfig) -> anyhow::Result<BenchReport> {
     let (wer_cases, wer_mean, wer_note) = measure_wer(config, &mut *transcriber)?;
 
     drop(transcriber);
+    // Experiment 5: give freed allocator pages back to the OS before
+    // measuring "unloaded", so the number reflects what *can* be returned.
+    // The product needs the same call on its unload path (see PERF.md).
+    #[cfg(target_os = "macos")]
+    unsafe {
+        malloc_zone_pressure_relief(core::ptr::null_mut(), 0);
+    }
     let rss_unloaded = rss_bytes();
 
     let pass_5s = decode_5s_ms

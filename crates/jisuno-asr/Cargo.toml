@@ -10,10 +10,15 @@ repository.workspace = true
 anyhow = { workspace = true }
 dirs = { workspace = true }
 jisuno-logic = { workspace = true }
+libc = { workspace = true }
 ndarray = { workspace = true }
 ort = { workspace = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
 rustls-pemfile = { workspace = true }
+sha2 = { workspace = true }
 ureq = { workspace = true }
 webpki-roots = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

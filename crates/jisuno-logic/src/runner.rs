@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::matcher::{self, Candidate, SlotValues};
+use crate::matcher::{self, Candidate, SlotSource, SlotValues};
 use crate::voice_control::{Config, Place, PlaceOrSlot, SlotDecl, Step, WindowDef};
 
 /// Host-supplied values for the built-in fixed slots that the config cannot
@@ -123,9 +123,10 @@ impl Commands {
     /// apply inside the matcher) and build the plan for an accepted match.
     ///
     /// A match on a command with `confirm: true` yields [`Resolution::Confirm`]
-    /// instead of [`Resolution::Run`]. A fill failure (missing slot value or a
-    /// non-place value for `place`) is treated as [`Resolution::NoMatch`]:
-    /// with a validated config it cannot happen.
+    /// instead of [`Resolution::Run`]. A fill failure after a match (missing
+    /// slot value, or a slot value that is not a valid place) yields
+    /// [`Resolution::Failed`]; with a validated config it cannot happen.
+    /// An overlong utterance yields [`Resolution::NoMatch`].
     pub fn resolve(&self, utterance: &str, frontmost_app: Option<&str>) -> Resolution {
         let candidates: Vec<Candidate<'_>> = self
             .entries
@@ -141,24 +142,49 @@ impl Commands {
         match matcher::match_utterance(utterance, frontmost_app, &candidates, self) {
             matcher::Outcome::Run(matched) => {
                 let Some(entry) = self.entries.iter().find(|e| e.id == matched.command_id) else {
-                    return Resolution::NoMatch;
+                    return Resolution::NoMatch {
+                        hud: NO_MATCH_HUD.to_string(),
+                    };
                 };
-                match fill_plan(&entry.id, &matched.phrase, &entry.steps, &matched.slots) {
+                let is_free =
+                    |name: &str| matches!(self.values(&entry.id, name), Some(SlotValues::Free));
+                match fill_plan(
+                    &entry.id,
+                    &matched.phrase,
+                    &entry.steps,
+                    &matched.slots,
+                    &is_free,
+                ) {
                     Ok(plan) if entry.confirm => Resolution::Confirm(plan),
                     Ok(plan) => Resolution::Run(plan),
-                    Err(_) => Resolution::NoMatch,
+                    Err(reason) => Resolution::Failed {
+                        hud: format!("Could not run \"{}\": {reason}", matched.phrase),
+                    },
                 }
             }
             matcher::Outcome::DidYouMean { phrase, .. } => {
                 Resolution::DidYouMean(format!("Did you mean \"{phrase}\"?"))
             }
-            matcher::Outcome::NoMatch => Resolution::NoMatch,
+            matcher::Outcome::NoMatch | matcher::Outcome::TooLong => Resolution::NoMatch {
+                hud: NO_MATCH_HUD.to_string(),
+            },
         }
     }
 }
 
 impl matcher::SlotSource for Commands {
+    /// Declared slots are looked up before built-ins of the same name, and
+    /// declared names are matched exactly.
     fn values(&self, command_id: &str, slot: &str) -> Option<SlotValues<'_>> {
+        if let Some(decl) = self
+            .declared
+            .get(&(command_id.to_string(), slot.to_string()))
+        {
+            return match decl {
+                SlotDecl::List(values) => Some(SlotValues::List(values)),
+                SlotDecl::Free => Some(SlotValues::Free),
+            };
+        }
         match slot {
             "window" => Some(SlotValues::List(&self.window_values)),
             "place" => Some(SlotValues::List(&self.place_values)),
@@ -166,19 +192,16 @@ impl matcher::SlotSource for Commands {
             "theme" => Some(SlotValues::List(&self.themes)),
             "app" => Some(SlotValues::List(&self.apps)),
             "name" => Some(SlotValues::Free),
-            _ => match self
-                .declared
-                .get(&(command_id.to_string(), slot.to_string()))
-            {
-                Some(SlotDecl::List(values)) => Some(SlotValues::List(values)),
-                Some(SlotDecl::Free) => Some(SlotValues::Free),
-                None => None,
-            },
+            _ => None,
         }
     }
 }
 
-/// What to do with an utterance: run now, confirm first, suggest, or nothing.
+/// HUD copy for [`Resolution::NoMatch`]: the host shows it as is.
+const NO_MATCH_HUD: &str = "No command matched";
+
+/// What to do with an utterance: run now, confirm first, suggest, or report a
+/// failure. `NoMatch` and `Failed` carry the exact HUD copy to show.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Resolution {
     /// Run the plan's steps in order.
@@ -187,8 +210,12 @@ pub enum Resolution {
     Confirm(Plan),
     /// HUD copy, exactly `Did you mean "<phrase>"?`.
     DidYouMean(String),
-    /// No eligible command; nothing runs.
-    NoMatch,
+    /// No eligible command; nothing runs. HUD copy: `No command matched`.
+    NoMatch { hud: String },
+    /// A command matched but its plan could not be built (a missing slot
+    /// value, or a slot value that is not a valid place). HUD copy:
+    /// `Could not run "<label>": <reason>`.
+    Failed { hud: String },
 }
 
 /// A matched command with every step's `{slot}` refs filled.
@@ -208,7 +235,10 @@ impl Plan {
     /// step, otherwise the step summaries joined with `", "`.
     pub fn confirm_prompt(&self) -> String {
         let summary = match self.steps.as_slice() {
-            [ResolvedStep::ShellRun { cmd, .. }] => cmd.clone(),
+            [ResolvedStep::ShellRun { cmd, cwd }] => match cwd {
+                Some(cwd) => format!("{cmd} (in {cwd})"),
+                None => cmd.clone(),
+            },
             _ => self
                 .steps
                 .iter()
@@ -384,10 +414,11 @@ fn fill_plan(
     label: &str,
     steps: &[Step],
     slots: &BTreeMap<String, String>,
+    is_free: &dyn Fn(&str) -> bool,
 ) -> Result<Plan, String> {
     let mut resolved = Vec::with_capacity(steps.len());
     for step in steps {
-        resolved.push(fill_step(step, slots)?);
+        resolved.push(fill_step(step, slots, is_free)?);
     }
     Ok(Plan {
         command_id: command_id.to_string(),
@@ -398,7 +429,11 @@ fn fill_plan(
 
 /// Fill one step's string arguments; `place` slot refs resolve to a concrete
 /// [`Place`].
-fn fill_step(step: &Step, slots: &BTreeMap<String, String>) -> Result<ResolvedStep, String> {
+fn fill_step(
+    step: &Step,
+    slots: &BTreeMap<String, String>,
+    is_free: &dyn Fn(&str) -> bool,
+) -> Result<ResolvedStep, String> {
     match step {
         Step::JisunoMenu => Ok(ResolvedStep::JisunoMenu),
         Step::JisunoSettings => Ok(ResolvedStep::JisunoSettings),
@@ -416,13 +451,10 @@ fn fill_step(step: &Step, slots: &BTreeMap<String, String>) -> Result<ResolvedSt
             let window = fill_string(window, slots)?;
             let place = match place {
                 PlaceOrSlot::Place(place) => *place,
-                PlaceOrSlot::Slot(reference) => parse_place(&fill_string(reference, slots)?)
-                    .ok_or_else(|| {
-                        format!(
-                            "slot value is not a valid place: {}",
-                            fill_string(reference, slots).unwrap_or_else(|_| reference.clone())
-                        )
-                    })?,
+                PlaceOrSlot::Slot(reference) => {
+                    let filled = fill_string(reference, slots)?;
+                    parse_place(&filled).ok_or_else(|| format!("\"{filled}\" is not a place"))?
+                }
             };
             Ok(ResolvedStep::WindowTile { window, place })
         }
@@ -452,7 +484,7 @@ fn fill_step(step: &Step, slots: &BTreeMap<String, String>) -> Result<ResolvedSt
             keys: fill_string(keys, slots)?,
         }),
         Step::ShellRun { cmd, cwd } => Ok(ResolvedStep::ShellRun {
-            cmd: fill_string(cmd, slots)?,
+            cmd: fill_shell_cmd(cmd, slots, is_free)?,
             cwd: cwd
                 .as_ref()
                 .map(|value| fill_string(value, slots))
@@ -474,20 +506,59 @@ fn fill_step(step: &Step, slots: &BTreeMap<String, String>) -> Result<ResolvedSt
 }
 
 /// Substitute every `{slot}` ref in `template` with the matched value.
-/// Text in braces that is not a slot name (e.g. shell `{a,b}`) is left alone;
-/// a well-formed ref with no matched value is an error.
+/// Only `{[a-z_][a-z0-9_]*}` refs are slots; `${...}` is never a slot and
+/// is left verbatim, as is any other brace text. A well-formed ref with no
+/// matched value is an error.
 fn fill_string(template: &str, slots: &BTreeMap<String, String>) -> Result<String, String> {
+    substitute(template, slots, |_, value| value.to_string())
+}
+
+/// Substitute refs in a `shell.run` `cmd`: free-text slot values are
+/// single-quoted POSIX-style so they cannot break out of the command;
+/// fixed-list values are inserted verbatim.
+fn fill_shell_cmd(
+    template: &str,
+    slots: &BTreeMap<String, String>,
+    is_free: &dyn Fn(&str) -> bool,
+) -> Result<String, String> {
+    substitute(template, slots, |name, value| {
+        if is_free(name) {
+            shell_quote(value)
+        } else {
+            value.to_string()
+        }
+    })
+}
+
+/// Single-quote POSIX-style: wrap in `'...`, escaping each `'` as `'\''`.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Shared `{slot}` substitution behind [`fill_string`] and [`fill_shell_cmd`].
+fn substitute(
+    template: &str,
+    slots: &BTreeMap<String, String>,
+    render: impl Fn(&str, &str) -> String,
+) -> Result<String, String> {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         let (before, from_brace) = rest.split_at(open);
+        // `${...}` is never a slot; leave it verbatim.
+        if before.ends_with('$') {
+            out.push_str(before);
+            out.push('{');
+            rest = &from_brace[1..];
+            continue;
+        }
         out.push_str(before);
         match from_brace.find('}') {
             Some(close) => {
                 let name = &from_brace[1..close];
                 if is_slot_name(name) {
                     match slots.get(name) {
-                        Some(value) => out.push_str(value),
+                        Some(value) => out.push_str(&render(name, value)),
                         None => return Err(format!("no matched value for slot \"{name}\"")),
                     }
                     rest = &from_brace[close + 1..];
@@ -512,7 +583,7 @@ fn is_slot_name(name: &str) -> bool {
         Some(first) if first == '_' || first.is_ascii_lowercase() => (),
         _ => return false,
     }
-    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+    chars.all(|c| c == '_' || c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 /// Parse a filled `place` value into its [`Place`]. Accepts the wire spelling
@@ -715,7 +786,255 @@ mod tests {
             commands.resolve("reply", None),
             Resolution::DidYouMean(_)
         ));
-        assert_eq!(commands.resolve("", None), Resolution::NoMatch);
+        assert_eq!(
+            commands.resolve("", None),
+            Resolution::NoMatch {
+                hud: "No command matched".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn no_match_carries_hud_copy() {
+        let (commands, _) = fixture();
+        assert_eq!(
+            commands.resolve("", None),
+            Resolution::NoMatch {
+                hud: "No command matched".to_string()
+            }
+        );
+        // An overlong utterance maps to the same copy.
+        let utterance = vec!["word"; 300].join(" ");
+        assert_eq!(
+            commands.resolve(&utterance, None),
+            Resolution::NoMatch {
+                hud: "No command matched".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn night_mode_suggests_light_mode() {
+        // Reviewer reproducer: "night" must not substitute for "light"
+        // (first letters differ), so this suggests instead of running.
+        // Focused config: `light` is the only mode command, so it is the
+        // unambiguous winner. (The full fixture's free-text `open note`
+        // phrase ties at the same distance and wins that tie instead.)
+        let json = r#"{
+            "version": 1,
+            "commands": [
+                {"id": "menu", "say": ["open jisuno"],
+                 "steps": [{"do": "jisuno.menu"}]},
+                {"id": "light", "say": ["light mode"],
+                 "steps": [{"do": "theme.set", "theme": "quiet-light"}]}
+            ]
+        }"#;
+        let (config, _) = crate::voice_control::parse(json).expect("test config parses");
+        let commands = Commands::new(
+            &config,
+            &Runtime {
+                windows: vec![],
+                themes: vec!["quiet-light".to_string()],
+                apps: vec![],
+            },
+        );
+        assert_eq!(
+            commands.resolve("night mode", None),
+            Resolution::DidYouMean("Did you mean \"light mode\"?".to_string())
+        );
+        // And in the full fixture it must not run either.
+        let (full, _) = fixture();
+        match full.resolve("night mode", None) {
+            Resolution::Run(plan) => panic!("must not run, got {plan:?}"),
+            Resolution::DidYouMean(_) => {}
+            other => panic!("expected DidYouMean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extra_words_around_slots_do_not_run() {
+        // Reviewer reproducer: padding around a slot phrase must not run it.
+        let (commands, _) = fixture();
+        match commands.resolve("please move terminal to now", None) {
+            Resolution::Run(plan) => panic!("must not run, got {plan:?}"),
+            Resolution::DidYouMean(_) => {}
+            other => panic!("expected DidYouMean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn declared_list_wins_over_builtin_free_slot() {
+        // `open note {name}` with a declared list for `name` uses the list,
+        // not the built-in free-text `{name}`.
+        let json = r#"{
+            "version": 1,
+            "commands": [
+                {"id": "note", "say": ["open note {name}"],
+                 "slots": {"name": ["standup", "retro"]},
+                 "steps": [{"do": "app.open", "app": "Inkuno", "arg": "{name}.md"}]}
+            ]
+        }"#;
+        let (config, _) = crate::voice_control::parse(json).expect("test config parses");
+        let commands = Commands::new(
+            &config,
+            &Runtime {
+                windows: vec![],
+                themes: vec![],
+                apps: vec!["Inkuno".to_string()],
+            },
+        );
+        match commands.resolve("open note standup", None) {
+            Resolution::Run(plan) => assert_eq!(
+                plan.steps,
+                vec![ResolvedStep::AppOpen {
+                    app: "Inkuno".to_string(),
+                    arg: Some("standup.md".to_string()),
+                }]
+            ),
+            other => panic!("expected Run, got {other:?}"),
+        }
+        // Free text outside the declared list does not match the phrase.
+        match commands.resolve("open note my diary", None) {
+            Resolution::Run(plan) => panic!("must not run, got {plan:?}"),
+            Resolution::DidYouMean(_) => {}
+            other => panic!("expected DidYouMean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fill_failure_returns_failed_with_hud() {
+        // `{name}` is in the steps via the first phrase, but the matched
+        // second phrase fills no value for it.
+        let json = r#"{
+            "version": 1,
+            "commands": [
+                {"id": "note", "say": ["open note {name}", "open settings"],
+                 "steps": [{"do": "app.open", "app": "Inkuno", "arg": "{name}.md"}]}
+            ]
+        }"#;
+        let (config, _) = crate::voice_control::parse(json).expect("test config parses");
+        let commands = Commands::new(
+            &config,
+            &Runtime {
+                windows: vec![],
+                themes: vec![],
+                apps: vec!["Inkuno".to_string()],
+            },
+        );
+        // "open settings" matches, but `{name}` has no matched value to fill.
+        assert_eq!(
+            commands.resolve("open settings", None),
+            Resolution::Failed {
+                hud: "Could not run \"open settings\": no matched value for slot \"name\""
+                    .to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn non_place_slot_value_returns_failed_with_hud() {
+        // `{window}` matched "terminal" is not a valid place.
+        let json = r#"{
+            "version": 1,
+            "commands": [
+                {"id": "tile", "say": ["tile {window} somewhere"],
+                 "steps": [{"do": "window.tile", "window": "terminal", "place": "{window}"}]}
+            ]
+        }"#;
+        let (config, _) = crate::voice_control::parse(json).expect("test config parses");
+        let commands = Commands::new(
+            &config,
+            &Runtime {
+                windows: vec!["terminal".to_string()],
+                themes: vec![],
+                apps: vec![],
+            },
+        );
+        assert_eq!(
+            commands.resolve("tile terminal somewhere", None),
+            Resolution::Failed {
+                hud: "Could not run \"tile terminal somewhere\": \"terminal\" is not a place"
+                    .to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn shell_cmd_quotes_free_text_and_keeps_fixed_verbatim() {
+        let json = r#"{
+            "version": 1,
+            "commands": [
+                {"id": "echo", "say": ["echo {msg}"], "confirm": true,
+                 "slots": {"msg": "free"},
+                 "steps": [{"do": "shell.run", "cmd": "echo {msg}"}]},
+                {"id": "tile", "say": ["tile {place} please"], "confirm": true,
+                 "steps": [{"do": "shell.run", "cmd": "tile {place}"}]}
+            ]
+        }"#;
+        let (config, _) = crate::voice_control::parse(json).expect("test config parses");
+        let commands = Commands::new(
+            &config,
+            &Runtime {
+                windows: vec![],
+                themes: vec![],
+                apps: vec![],
+            },
+        );
+        match commands.resolve("echo hello'; rm -rf /", None) {
+            Resolution::Confirm(plan) => assert_eq!(
+                plan.steps,
+                vec![ResolvedStep::ShellRun {
+                    cmd: "echo 'hello'\\''; rm -rf'".to_string(),
+                    cwd: None,
+                }]
+            ),
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+        // Fixed-list values go in verbatim (no quoting).
+        match commands.resolve("tile full please", None) {
+            Resolution::Confirm(plan) => assert_eq!(
+                plan.steps,
+                vec![ResolvedStep::ShellRun {
+                    cmd: "tile full".to_string(),
+                    cwd: None,
+                }]
+            ),
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirm_prompt_shows_shell_cwd() {
+        let plan = Plan {
+            command_id: "clean".to_string(),
+            label: "clean build".to_string(),
+            steps: vec![ResolvedStep::ShellRun {
+                cmd: "cargo clean".to_string(),
+                cwd: Some("~/github/jisuno".to_string()),
+            }],
+        };
+        assert_eq!(
+            plan.confirm_prompt(),
+            "Run \"clean build\"? cargo clean (in ~/github/jisuno) · Return to run · Esc to cancel"
+        );
+    }
+
+    #[test]
+    fn dollar_brace_is_never_a_slot() {
+        let slots = BTreeMap::from([("x".to_string(), "y".to_string())]);
+        assert_eq!(fill_string("${x}", &slots).unwrap(), "${x}");
+        assert_eq!(
+            fill_string("cost is ${price}", &slots).unwrap(),
+            "cost is ${price}"
+        );
+    }
+
+    #[test]
+    fn slot_refs_match_exact_lowercase_names() {
+        // `{Name}` is not a slot ref: only `{[a-z_][a-z0-9_]*}` refs fill.
+        let slots = BTreeMap::from([("name".to_string(), "x".to_string())]);
+        assert_eq!(fill_string("{Name}", &slots).unwrap(), "{Name}");
+        assert_eq!(fill_string("{name}", &slots).unwrap(), "x");
     }
 
     #[test]

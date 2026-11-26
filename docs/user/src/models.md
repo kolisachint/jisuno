@@ -19,7 +19,29 @@ On the command line:
 jisuno setup                          # download the default model (v3)
 jisuno setup --model parakeet-tdt-0.6b-v2-int8      # download the English model
 jisuno models                         # list the models and whether they are installed
+jisuno models download <id>           # (re)download one model, e.g. after deleting it
+jisuno models verify <id>             # check installed files against their pinned hashes
+jisuno models remove <id>             # delete an installed model
 ```
+
+`<id>` is the registry id: `parakeet-tdt-0.6b-v3-int8` or
+`parakeet-tdt-0.6b-v2-int8`.
+
+## Robust downloads
+
+Every model file carries a pinned sha256 and byte size. `jisuno setup` and
+`jisuno models download` fetch each file from HuggingFace (falling back to the
+`kolisachint/jisuno` `models-v1` release mirror), verify size and hash, and
+install atomically: files land in a staging directory first and are renamed
+into place only once everything verifies, so an interrupted download never
+leaves a half model behind. Stopping mid-download keeps `.part` files that the
+next run resumes with an HTTP Range request when the server honors it. A
+cross-process lock file keeps the app and the CLI from downloading the same
+model at the same time; `remove` refuses while a download holds it.
+
+Model storage lives in the platform data directory
+(`~/Library/Application Support/jisuno/models/` on macOS). Set the
+`JISUNO_MODELS_DIR` environment variable to relocate it.
 
 ## When the model is in memory
 

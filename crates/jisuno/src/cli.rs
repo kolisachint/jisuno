@@ -13,6 +13,7 @@
 //! goes to **stdout** as the line protocol in [`protocol`]; logs go to stderr.
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 use clap::{Args, Parser, Subcommand};
 use jisuno_asr::setup::{self, Model};
@@ -45,8 +46,8 @@ enum Command {
         #[arg(long)]
         insecure: bool,
     },
-    /// List known models and whether they're installed.
-    Models,
+    /// List, download, verify, or remove models.
+    Models(ModelsArgs),
     /// Transcribe from the microphone (default) or a WAV file.
     Transcribe(TranscribeArgs),
     /// Run as a persistent daemon: load models once, then serve
@@ -56,6 +57,38 @@ enum Command {
     Control {
         #[command(subcommand)]
         command: control::ControlCommand,
+    },
+}
+
+#[derive(Args, Debug)]
+struct ModelsArgs {
+    /// Omit for the model list.
+    #[command(subcommand)]
+    command: Option<ModelsCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelsCommand {
+    /// Download a model (resumable, hash-verified, atomic install).
+    Download {
+        /// Registry id, e.g. parakeet-tdt-0.6b-v3-int8.
+        model: String,
+        /// Extra trusted CA certificate (PEM). Repeatable.
+        #[arg(long = "ca-cert")]
+        ca_cert: Vec<PathBuf>,
+        /// Disable TLS certificate verification (last resort, insecure).
+        #[arg(long)]
+        insecure: bool,
+    },
+    /// Remove an installed model (refuses while it is downloading).
+    Remove {
+        /// Registry id, e.g. parakeet-tdt-0.6b-v3-int8.
+        model: String,
+    },
+    /// Verify installed files against their pinned sha256 hashes.
+    Verify {
+        /// Registry id, e.g. parakeet-tdt-0.6b-v3-int8.
+        model: String,
     },
 }
 
@@ -113,6 +146,40 @@ impl TranscribeArgs {
 }
 
 /// Parse the command line and run the selected subcommand.
+/// `jisuno models` and its `download`/`remove`/`verify` subcommands.
+/// Exit codes: 0 ok, 1 error (mapped by [`run`]).
+fn run_models(args: ModelsArgs) -> anyhow::Result<()> {
+    match args.command {
+        None => setup::list(),
+        Some(ModelsCommand::Download {
+            model,
+            ca_cert,
+            insecure,
+        }) => {
+            let name = Model::parse(&model)?;
+            let tls_opts = tls::TlsOptions {
+                extra_ca_certs: ca_cert,
+                insecure,
+            };
+            setup::download_with_progress(&name, &tls_opts, &AtomicBool::new(false))?;
+            jisuno_logic::protocol::status("ready");
+            Ok(())
+        }
+        Some(ModelsCommand::Remove { model }) => {
+            let name = Model::parse(&model)?;
+            setup::remove(&name)?;
+            println!("{} removed", name.id());
+            Ok(())
+        }
+        Some(ModelsCommand::Verify { model }) => {
+            let name = Model::parse(&model)?;
+            name.verify()?;
+            println!("{} verified", name.id());
+            Ok(())
+        }
+    }
+}
+
 pub fn run() {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -127,7 +194,7 @@ pub fn run() {
                 insecure,
             },
         ),
-        Some(Command::Models) => setup::list(),
+        Some(Command::Models(args)) => run_models(args),
         Some(Command::Transcribe(args)) => run_transcribe(args),
         Some(Command::Serve(args)) => {
             crate::serve::run(&args.model, args.silence_ms, args.partial_ms)

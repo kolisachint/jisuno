@@ -37,11 +37,18 @@ jisuno setup --model parakeet-tdt-0.6b-v3-int8     # recommended, ~650MB, 25 lan
 # or
 jisuno setup --model parakeet-tdt-0.6b-v2-int8     # English-only, ~631MB
 
-jisuno models                        # list what's installed
+jisuno models                        # list models and what's installed
+jisuno models download <id>          # (re)download a model
+jisuno models verify <id>            # full sha256 check of installed files
+jisuno models remove <id>            # delete an installed model
 ```
 
 Models are stored under your platform data directory, e.g.
-`~/.local/share/jisuno/models/` on Linux.
+`~/.local/share/jisuno/models/` on Linux
+(`~/Library/Application Support/jisuno/models/` on macOS). Set
+`JISUNO_MODELS_DIR` to relocate them. Downloads are resumable, every file is
+verified against a pinned sha256, and installs are atomic — an interrupted
+download never leaves a half model behind.
 
 ## Transcribe
 
