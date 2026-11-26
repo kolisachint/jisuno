@@ -1,6 +1,6 @@
 // packages/tui/src/voice-transcribe.ts
 //
-// Keeps a `voicetools serve` daemon alive for the life of the TUI process,
+// Keeps a `jisuno serve` daemon alive for the life of the TUI process,
 // so push-to-talk has no per-press model load. Writes START/CANCEL to its
 // stdin and parses the streaming stdout line protocol:
 //
@@ -18,7 +18,7 @@
 // are shown live in the panel but never committed, since they change. stderr
 // is ignored (the binary's own debug logs).
 //
-// Binaries older than `serve` fall back to spawning `voicetools transcribe`
+// Binaries older than `serve` fall back to spawning `jisuno transcribe`
 // per press (the previous behavior).
 
 import { spawn, type ChildProcessByStdio } from "node:child_process";
@@ -50,7 +50,7 @@ const RESPAWN_DELAY_MS = 500;
 const SHUTDOWN_GRACE_MS = 500;
 
 /**
- * Long-lived client for `voicetools serve`. Create one instance for the
+ * Long-lived client for `jisuno serve`. Create one instance for the
  * process lifetime; call `startCapture()` per push-to-talk press and
  * `dispose()` on TUI exit.
  */
@@ -140,7 +140,7 @@ export class VoiceDaemon {
   }
 }
 
-/** `voicetools serve --help` exits 0 iff the subcommand exists (independent of model-load time). */
+/** `jisuno serve --help` exits 0 iff the subcommand exists (independent of model-load time). */
 function probeServeSupport(bin: string): Promise<boolean> {
   return new Promise((resolve) => {
     const proc = spawn(bin, ["serve", "--help"], { stdio: "ignore" });
@@ -156,7 +156,7 @@ function legacyStatusToEvent(status: string): VoiceEvent {
   return { type: "ready" };
 }
 
-/** Pre-`serve` fallback: spawns `voicetools transcribe` for a single press. */
+/** Pre-`serve` fallback: spawns `jisuno transcribe` for a single press. */
 export function transcribeToInput(
   bin: string,
   stdinBuffer: StdinBuffer,
