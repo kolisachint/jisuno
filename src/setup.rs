@@ -19,21 +19,12 @@ use crate::tls::TlsOptions;
 /// `.github/workflows/mirror-models.yml`.
 const MIRROR_BASE: &str = "https://github.com/kolisachint/voicetools/releases/download/models-v1";
 
-/// Which backend a model drives. Lets `main` pick the right loader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    Parakeet,
-    Whisper,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Model {
     /// Recommended — 25 European languages. PalatineVision/parakeet-tdt-0.6b-v3-onnx
     ParakeetV3Int8,
     /// English-only. istupakov/parakeet-tdt-0.6b-v2-onnx
     ParakeetV2Int8,
-    /// Fallback — whisper.cpp ggml small.en
-    WhisperSmallEn,
 }
 
 impl Model {
@@ -42,9 +33,8 @@ impl Model {
         match name.trim().to_lowercase().as_str() {
             "parakeet" | "parakeet-v3" | "v3" => Ok(Model::ParakeetV3Int8),
             "parakeet-v2" | "v2" => Ok(Model::ParakeetV2Int8),
-            "whisper" | "whisper-small" | "whisper-small-en" => Ok(Model::WhisperSmallEn),
             other => Err(anyhow!(
-                "unknown model '{other}' (try: parakeet-v3, parakeet-v2, whisper-small)"
+                "unknown model '{other}' (try: parakeet-v3, parakeet-v2)"
             )),
         }
     }
@@ -54,14 +44,6 @@ impl Model {
         match self {
             Model::ParakeetV3Int8 => "parakeet-v3",
             Model::ParakeetV2Int8 => "parakeet-v2",
-            Model::WhisperSmallEn => "whisper-small",
-        }
-    }
-
-    pub fn backend(&self) -> Backend {
-        match self {
-            Model::ParakeetV3Int8 | Model::ParakeetV2Int8 => Backend::Parakeet,
-            Model::WhisperSmallEn => Backend::Whisper,
         }
     }
 
@@ -69,7 +51,6 @@ impl Model {
         match self {
             Model::ParakeetV3Int8 => "~650MB",
             Model::ParakeetV2Int8 => "~631MB",
-            Model::WhisperSmallEn => "244MB",
         }
     }
 
@@ -92,11 +73,6 @@ impl Model {
                 ("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/nemo128.onnx", "parakeet-v2-nemo128.onnx", "nemo128.onnx"),
                 ("https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/vocab.txt", "parakeet-v2-vocab.txt", "vocab.txt"),
             ],
-            Model::WhisperSmallEn => vec![(
-                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
-                "whisper-small-en-ggml-small.en.bin",
-                "ggml-small.en.bin",
-            )],
         }
     }
 
@@ -181,11 +157,7 @@ pub fn run(name: &str, tls_opts: &TlsOptions) -> anyhow::Result<()> {
 pub fn list() -> anyhow::Result<()> {
     let root = models_root()?;
     eprintln!("Models directory: {}", root.display());
-    for model in [
-        Model::ParakeetV3Int8,
-        Model::ParakeetV2Int8,
-        Model::WhisperSmallEn,
-    ] {
+    for model in [Model::ParakeetV3Int8, Model::ParakeetV2Int8] {
         let mark = if model.is_ready() {
             "installed"
         } else {
@@ -273,14 +245,8 @@ mod tests {
         assert_eq!(Model::parse("parakeet").unwrap(), Model::ParakeetV3Int8);
         assert_eq!(Model::parse("V3").unwrap(), Model::ParakeetV3Int8);
         assert_eq!(Model::parse("parakeet-v2").unwrap(), Model::ParakeetV2Int8);
-        assert_eq!(Model::parse("whisper").unwrap(), Model::WhisperSmallEn);
         assert!(Model::parse("nope").is_err());
-    }
-
-    #[test]
-    fn backends_match_models() {
-        assert_eq!(Model::ParakeetV3Int8.backend(), Backend::Parakeet);
-        assert_eq!(Model::WhisperSmallEn.backend(), Backend::Whisper);
+        assert!(Model::parse("whisper-small").is_err());
     }
 
     #[test]

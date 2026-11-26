@@ -2,7 +2,7 @@
 name = "voicetools"
 version = "0.1.4"
 edition = "2021"
-description = "Local, offline voice-to-text for the terminal — Parakeet (ONNX) with a Whisper fallback"
+description = "Local, offline voice-to-text for the terminal — Parakeet (ONNX)"
 license = "MIT"
 repository = "https://github.com/kolisachint/voicetools"
 
@@ -10,22 +10,12 @@ repository = "https://github.com/kolisachint/voicetools"
 name = "voicetools"
 path = "src/main.rs"
 
-[features]
-default = ["parakeet"]
-# Parakeet TDT via ONNX Runtime (recommended backend)
-parakeet = ["dep:ort", "dep:ndarray"]
-# whisper.cpp fallback backend
-whisper = ["dep:whisper-rs"]
-
 [dependencies]
-# --- Parakeet backend (optional) ---
-ort     = { version = "=2.0.0-rc.10", optional = true, features = ["download-binaries"] }
-ndarray = { version = "0.16", optional = true }
+# --- Parakeet backend ---
+ort     = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
+ndarray = "0.16"
 
-# --- Whisper backend (optional) ---
-whisper-rs = { version = "0.12", optional = true }
-
-# --- Always-on: mic, audio, CLI, downloads ---
+# --- Mic, audio, CLI, downloads ---
 cpal   = "0.15"
 hound  = "3.5"           # WAV decode for `--wav` and tests
 ureq   = { version = "2", features = ["tls", "native-certs", "proxy-from-env"] }

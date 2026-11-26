@@ -1,12 +1,9 @@
-//! Transcription backends behind a single trait, so the mic/VAD pipeline
-//! doesn't care whether Parakeet or Whisper is doing the work.
+//! Transcription behind a single trait, so the mic/VAD pipeline doesn't
+//! depend on the ONNX details.
 
-use crate::setup::{Backend, Model};
+use crate::setup::Model;
 
-#[cfg(feature = "parakeet")]
 pub mod parakeet;
-#[cfg(feature = "whisper")]
-pub mod whisper;
 
 /// A speech-to-text backend.
 pub trait Transcriber {
@@ -16,33 +13,8 @@ pub trait Transcriber {
     fn transcribe(&mut self, pcm: &[f32], on_segment: &mut dyn FnMut(&str)) -> anyhow::Result<()>;
 }
 
-/// Load the transcriber for `model`, picking the backend by feature flags.
-///
-/// Returns a clear error if the required backend wasn't compiled in, so a
-/// `--no-default-features` build fails loudly rather than silently.
+/// Load the Parakeet transcriber for `model` from its install directory.
 pub fn load(model: Model) -> anyhow::Result<Box<dyn Transcriber>> {
     let dir = model.dir()?;
-    let _ = &dir; // consumed by the feature-gated arms below
-    match model.backend() {
-        Backend::Parakeet => {
-            #[cfg(feature = "parakeet")]
-            {
-                Ok(Box::new(parakeet::ParakeetTranscriber::load(&dir)?))
-            }
-            #[cfg(not(feature = "parakeet"))]
-            {
-                anyhow::bail!("this build was compiled without the `parakeet` feature")
-            }
-        }
-        Backend::Whisper => {
-            #[cfg(feature = "whisper")]
-            {
-                Ok(Box::new(whisper::WhisperTranscriber::load(&dir)?))
-            }
-            #[cfg(not(feature = "whisper"))]
-            {
-                anyhow::bail!("this build was compiled without the `whisper` feature")
-            }
-        }
-    }
+    Ok(Box::new(parakeet::ParakeetTranscriber::load(&dir)?))
 }

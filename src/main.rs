@@ -59,7 +59,7 @@ enum Command {
 
 #[derive(Args, Clone)]
 struct ServeArgs {
-    /// Model to use (parakeet-v3, parakeet-v2, whisper-small).
+    /// Model to use (parakeet-v3, parakeet-v2).
     #[arg(long, env = "VOICETOOLS_MODEL", default_value = "parakeet-v3")]
     model: String,
     /// Trailing-silence timeout, in milliseconds, before auto-stop.
@@ -73,7 +73,7 @@ struct ServeArgs {
 
 #[derive(Args, Clone)]
 struct TranscribeArgs {
-    /// Model to use (parakeet-v3, parakeet-v2, whisper-small).
+    /// Model to use (parakeet-v3, parakeet-v2).
     #[arg(long, env = "VOICETOOLS_MODEL", default_value = "parakeet-v3")]
     model: String,
     /// Trailing-silence timeout, in milliseconds, before auto-stop.
