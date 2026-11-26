@@ -17,6 +17,7 @@ use crate::tls::TlsOptions;
 /// can't reach huggingface.co (e.g. behind a corporate proxy). Uploaded
 /// manually/once — not kept in sync with upstream. See
 /// `.github/workflows/mirror-models.yml`.
+// Models are mirrored at the existing kolisachint/voicetools release assets for now.
 const MIRROR_BASE: &str = "https://github.com/kolisachint/voicetools/releases/download/models-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,13 +29,13 @@ pub enum Model {
 }
 
 impl Model {
-    /// Parse a CLI model name. Accepts a few friendly aliases.
+    /// Parse a CLI model name. Only the full registry ids are accepted.
     pub fn parse(name: &str) -> anyhow::Result<Model> {
         match name.trim().to_lowercase().as_str() {
-            "parakeet" | "parakeet-v3" | "v3" => Ok(Model::ParakeetV3Int8),
-            "parakeet-v2" | "v2" => Ok(Model::ParakeetV2Int8),
+            "parakeet-tdt-0.6b-v3-int8" => Ok(Model::ParakeetV3Int8),
+            "parakeet-tdt-0.6b-v2-int8" => Ok(Model::ParakeetV2Int8),
             other => Err(anyhow!(
-                "unknown model '{other}' (try: parakeet-v3, parakeet-v2)"
+                "unknown model '{other}' (try: parakeet-tdt-0.6b-v3-int8, parakeet-tdt-0.6b-v2-int8)"
             )),
         }
     }
@@ -42,8 +43,8 @@ impl Model {
     /// Stable identifier used as the on-disk directory name.
     pub fn id(&self) -> &'static str {
         match self {
-            Model::ParakeetV3Int8 => "parakeet-v3",
-            Model::ParakeetV2Int8 => "parakeet-v2",
+            Model::ParakeetV3Int8 => "parakeet-tdt-0.6b-v3-int8",
+            Model::ParakeetV2Int8 => "parakeet-tdt-0.6b-v2-int8",
         }
     }
 
@@ -97,7 +98,7 @@ impl Model {
 pub fn models_root() -> anyhow::Result<PathBuf> {
     let base =
         dirs::data_dir().context("could not determine a data directory for this platform")?;
-    Ok(base.join("voicetools").join("models"))
+    Ok(base.join("jisuno").join("models"))
 }
 
 /// `jisuno setup --model <name>`: download a model if it isn't present.
@@ -241,12 +242,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_aliases() {
-        assert_eq!(Model::parse("parakeet").unwrap(), Model::ParakeetV3Int8);
-        assert_eq!(Model::parse("V3").unwrap(), Model::ParakeetV3Int8);
-        assert_eq!(Model::parse("parakeet-v2").unwrap(), Model::ParakeetV2Int8);
+    fn parses_exact_ids() {
+        assert_eq!(
+            Model::parse("parakeet-tdt-0.6b-v3-int8").unwrap(),
+            Model::ParakeetV3Int8
+        );
+        assert_eq!(
+            Model::parse("Parakeet-TDT-0.6B-V2-Int8").unwrap(),
+            Model::ParakeetV2Int8
+        );
+        assert!(Model::parse("parakeet-v3").is_err());
+        assert!(Model::parse("v3").is_err());
         assert!(Model::parse("nope").is_err());
-        assert!(Model::parse("whisper-small").is_err());
     }
 
     #[test]
