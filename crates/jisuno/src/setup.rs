@@ -149,7 +149,7 @@ pub fn run(name: &str, tls_opts: &TlsOptions) -> anyhow::Result<()> {
     }
 
     eprintln!("Done. {} is ready.", model.id());
-    crate::protocol::status("ready");
+    jisuno_logic::protocol::status("ready");
     Ok(())
 }
 

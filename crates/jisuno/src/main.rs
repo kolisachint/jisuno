@@ -12,19 +12,18 @@
 
 mod audio;
 mod mic;
-mod protocol;
 mod serve;
 mod setup;
 mod tls;
 mod transcribe;
-mod vad;
 
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
+use jisuno_logic::protocol;
+use jisuno_logic::vad::{Vad, VadEvent};
 
 use setup::Model;
-use vad::{Vad, VadEvent};
 
 #[derive(Parser)]
 #[command(name = "voicetools", version, about = "Local offline voice-to-text")]

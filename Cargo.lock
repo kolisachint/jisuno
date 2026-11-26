@@ -754,6 +754,7 @@ dependencies = [
  "cpal",
  "dirs",
  "hound",
+ "jisuno-logic",
  "ndarray",
  "ort",
  "rustls",
@@ -762,6 +763,10 @@ dependencies = [
  "ureq 2.12.1",
  "webpki-roots 0.26.11",
 ]
+
+[[package]]
+name = "jisuno-logic"
+version = "0.1.0"
 
 [[package]]
 name = "jni"
