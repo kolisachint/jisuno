@@ -506,7 +506,8 @@ removed "mail"
 12. Runner: fill failure HUD `Could not run "<label>": <reason>`; free-slot text in
     `shell.run` is shell-quoted; the confirm prompt shows `(in <cwd>)` when `cwd` is set.
 
-**2026-11-26, round 8**
+### Round 8 (owner decisions, 2026-11-26)
+
 1. `ax.*`: direct attributes first, then a bounded search (depth <= 4, <= 300 elements) in the
    focused window. Never unbounded.
 2. `window.tile` `center` = 60% of the visible frame, centered.
