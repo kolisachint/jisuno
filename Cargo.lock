@@ -754,6 +754,8 @@ dependencies = [
  "jisuno-asr",
  "jisuno-audio",
  "jisuno-logic",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
