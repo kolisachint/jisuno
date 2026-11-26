@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn defaults_match_section_3_table() {
         let bindings = defaults();
-        assert_eq!(bindings.bindings.len(), 7);
+        assert_eq!(bindings.bindings.len(), 8);
         let rows = [
             (
                 Key::Hold(HoldSide::RightOption),
@@ -812,6 +812,15 @@ mod tests {
                 },
                 false,
                 Some(When::Listening),
+                Command::Cancel,
+            ),
+            (
+                Key::Chord {
+                    modifiers: vec![],
+                    key: "escape".into(),
+                },
+                false,
+                Some(When::Confirming),
                 Command::Cancel,
             ),
             (
@@ -1147,8 +1156,10 @@ mod tests {
             bindings.lookup(&esc, Some(When::Listening)),
             Some(Command::Cancel)
         );
-        // The defaults scope Esc to listening only (mirrors the §3 table).
-        assert_eq!(bindings.lookup(&esc, Some(When::Confirming)), None);
+        assert_eq!(
+            bindings.lookup(&esc, Some(When::Confirming)),
+            Some(Command::Cancel)
+        );
 
         let missing = Key::Chord {
             modifiers: vec![Modifier::Cmd],
@@ -1169,6 +1180,9 @@ mod tests {
             .expect("must clash");
         assert_eq!(clash.command, Command::Cancel);
         assert!(bindings.conflict(&esc, None).is_none());
-        assert!(bindings.conflict(&esc, Some(When::Confirming)).is_none());
+        let clash = bindings
+            .conflict(&esc, Some(When::Confirming))
+            .expect("must clash");
+        assert_eq!(clash.command, Command::Cancel);
     }
 }
