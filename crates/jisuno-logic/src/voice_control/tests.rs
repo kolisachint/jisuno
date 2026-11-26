@@ -547,3 +547,60 @@ fn row_07_later_phrase_holder_is_checked_against_all_earlier() {
     );
     assert!(diags.iter().all(|d| d.line == 4));
 }
+
+#[test]
+fn row_22_declared_slot_cannot_use_a_built_in_name() {
+    let text = doc(
+        r#"{"id": "x", "say": ["x"], "slots": {"app": ["a"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"x\": slot \"app\" is built in and cannot be declared"
+    );
+}
+
+#[test]
+fn row_23_slot_names_follow_the_rule() {
+    let text = doc(
+        r#"{"id": "x", "say": ["x"], "slots": {"Project": ["a"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].message, "command \"x\": bad slot name \"Project\"");
+
+    let text = doc(
+        r#"{"id": "x", "say": ["x"], "steps": [{"do": "app.open", "app": "Zed", "arg": "{Project}"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].message, "command \"x\": bad slot name \"Project\"");
+
+    let text = doc(
+        r#"{"id": "x", "say": ["open {Project}"], "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&text);
+    assert!(diags
+        .iter()
+        .any(|d| d.message == "command \"x\": bad slot name \"Project\""));
+}
+
+#[test]
+fn row_25_malformed_declarations_are_errors_even_when_unused() {
+    let cases = [
+        (r#"{"project": []}"#, "bad declaration for slot \"project\""),
+        (r#"{"project": ["a", ""]}"#, "bad declaration for slot \"project\""),
+        (r#"{"project": 3}"#, "bad declaration for slot \"project\""),
+        (r#"{"project": "fixed"}"#, "bad declaration for slot \"project\""),
+        (r#"{"project": ["  "]}"#, "slot \"project\" has an empty value"),
+    ];
+    for (slots, expected) in cases {
+        let text = doc(&format!(
+            "{{\"id\": \"x\", \"say\": [\"x\"], \"slots\": {slots}, \"steps\": [{{\"do\": \"jisuno.menu\"}}]}}"
+        ));
+        let diags = errors(&text);
+        assert_eq!(diags.len(), 1, "{slots}: {diags:?}");
+        assert_eq!(diags[0].message, format!("command \"x\": {expected}"));
+    }
+}

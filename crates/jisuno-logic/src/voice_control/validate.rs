@@ -604,6 +604,19 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                 None => {}
                 Some(Value::Object(slots)) => {
                     for (name, value) in slots {
+                        // Check 22: built-in names cannot be declared.
+                        if is_builtin_slot(name) {
+                            errors.push(error(
+                                line,
+                                format!("command {tag}: slot \"{name}\" is built in and cannot be declared"),
+                            ));
+                        }
+                        // Check 23: declared names follow the slot-name rule.
+                        if !is_slot_name(name) {
+                            errors.push(error(line, format!("command {tag}: bad slot name \"{name}\"")));
+                        }
+                        // Check 25: the declaration must be "free" or a non-empty
+                        // list of non-empty strings.
                         let decl = match value {
                             Value::String(marker) if marker == "free" => Decl::Free,
                             Value::Array(items)
@@ -612,25 +625,37 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                                         .iter()
                                         .all(|v| v.as_str().is_some_and(|s| !s.is_empty())) =>
                             {
-                                Decl::List(
-                                    items
-                                        .iter()
-                                        .filter_map(Value::as_str)
-                                        .map(str::to_string)
-                                        .collect(),
-                                )
+                                let values: Vec<String> = items
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_string)
+                                    .collect();
+                                if values.iter().any(|v| normalize(v).is_empty()) {
+                                    errors.push(error(
+                                        line,
+                                        format!("command {tag}: slot \"{name}\" has an empty value"),
+                                    ));
+                                }
+                                Decl::List(values)
                             }
-                            _ => Decl::Bad,
+                            _ => {
+                                errors.push(error(
+                                    line,
+                                    format!("command {tag}: bad declaration for slot \"{name}\""),
+                                ));
+                                Decl::Bad
+                            }
                         };
-                        decls.insert(name.to_lowercase(), decl);
+                        decls.insert(name.clone(), decl);
                     }
                 }
                 Some(_) => errors.push(error(line, format!("command {tag}: bad \"slots\""))),
             }
+            // A malformed declaration was already reported (check 25); it still
+            // counts as declared here so phrases do not repeat the error.
             let known_slot = |name: &str| match decls.get(name) {
-                Some(Decl::List(_)) | Some(Decl::Free) => true,
-                Some(Decl::Bad) => false,
-                None => BUILTIN_LIST_SLOTS.contains(&name) || name == BUILTIN_FREE_SLOT,
+                Some(_) => true,
+                None => is_builtin_slot(name),
             };
             let free_slot = |name: &str| match decls.get(name) {
                 Some(Decl::Free) => true,
