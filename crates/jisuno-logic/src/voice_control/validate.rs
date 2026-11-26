@@ -653,6 +653,28 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
             }
             // A malformed declaration was already reported (check 25); it still
             // counts as declared here so phrases do not repeat the error.
+            // Check 24: a slot used as `place` is `{place}` or a declared list
+            // whose values are all places. A malformed declaration is already
+            // reported by check 25.
+            for (name, sline) in &place_refs {
+                if name == "place" {
+                    continue;
+                }
+                let ok = match decls.get(name) {
+                    Some(Decl::List(values)) => values.iter().all(|v| place_value(v).is_some()),
+                    Some(Decl::Bad) => true,
+                    _ => false,
+                };
+                if !ok {
+                    errors.push(error(
+                        *sline,
+                        format!(
+                            "command {tag}: slot \"{{{name}}}\" used as place must be {{place}} or a list of places"
+                        ),
+                    ));
+                }
+            }
+
             let known_slot = |name: &str| match decls.get(name) {
                 Some(_) => true,
                 None => is_builtin_slot(name),

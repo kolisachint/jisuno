@@ -615,3 +615,54 @@ fn row_25_malformed_declarations_are_errors_even_when_unused() {
         assert_eq!(diags[0].message, format!("command \"x\": {expected}"));
     }
 }
+
+#[test]
+fn row_24_slot_used_as_place_must_be_a_place_list() {
+    let good = doc(
+        r#"{"id": "tile", "say": ["tile {window} to {spot}"], "slots": {"spot": ["left half", "right-top"]}, "steps": [{"do": "window.tile", "window": "{window}", "place": "{spot}"}]}"#,
+    );
+    ok(&good);
+
+    let bad = doc(
+        r#"{"id": "tile", "say": ["tile {window} to {spot}"], "slots": {"spot": ["left half", "nowhere"]}, "steps": [{"do": "window.tile", "window": "{window}", "place": "{spot}"}]}"#,
+    );
+    let diags = errors(&bad);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"tile\": slot \"{spot}\" used as place must be {place} or a list of places"
+    );
+
+    let free = doc(
+        r#"{"id": "tile", "say": ["tile {window} to {note}"], "slots": {"note": "free"}, "steps": [{"do": "window.tile", "window": "{window}", "place": "{note}"}]}"#,
+    );
+    let diags = errors(&free);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"tile\": slot \"{note}\" used as place must be {place} or a list of places"
+    );
+}
+
+#[test]
+fn row_slot_refs_ignore_shell_braces_and_dollar_vars() {
+    let text = doc(
+        r#"{"id": "mk", "say": ["make dirs"], "confirm": true, "steps": [{"do": "shell.run", "cmd": "mkdir -p x/{src,test} && echo ${home}"}]}"#,
+    );
+    ok(&text);
+}
+
+#[test]
+fn bundle_ids_match_the_schema_pattern() {
+    let ok_text = doc(
+        r#"{"id": "pw", "say": ["fill"], "when": {"app": ["com.1password.mac", "com.apple.mail"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    ok(&ok_text);
+
+    let bad_text = doc(
+        r#"{"id": "pw", "say": ["fill"], "when": {"app": ["1password.mac"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&bad_text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].message, "command \"pw\": bad bundle id \"1password.mac\"");
+}
