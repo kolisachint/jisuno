@@ -1,5 +1,5 @@
-//! `voicetools serve`: load models once, then answer START/CANCEL/SHUTDOWN
-//! commands on stdin with the stdout line protocol. See `src/protocol.rs`.
+//! `jisuno serve`: load models once, then answer START/CANCEL/SHUTDOWN
+//! commands on stdin with the stdout line protocol. See `jisuno_logic::protocol`.
 //!
 //! Unlike the batch `transcribe` subcommand — which records the whole
 //! utterance and only decodes after you stop — `serve` transcribes **while
@@ -41,7 +41,7 @@ pub fn run(model_name: &str, silence_ms: u64, partial_ms: u64) -> anyhow::Result
     let model = Model::parse(model_name)?;
     if !model.is_ready() {
         protocol::error(&format!(
-            "no model found for '{}' — run: voicetools setup --model {}",
+            "no model found for '{}' — run: jisuno setup --model {}",
             model.id(),
             model.id()
         ));

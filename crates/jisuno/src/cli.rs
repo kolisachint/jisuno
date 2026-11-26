@@ -1,11 +1,11 @@
-//! voicetools — local, offline voice-to-text for the terminal.
+//! jisuno — local, offline voice-to-text for the terminal.
 //!
 //! Subcommands:
 //!   * `setup`      — download a model (first-run wizard)
 //!   * `models`     — list installed models
 //!   * `transcribe` — capture from the mic (or `--wav`) and stream text
 //!   * `serve`      — load models once, then serve START/CANCEL/SHUTDOWN
-//!     commands over stdin (see `src/serve.rs`)
+//!     commands over stdin (see `serve.rs`)
 //!
 //! With no subcommand, `transcribe` runs. All output the consumer cares about
 //! goes to **stdout** as the line protocol in [`protocol`]; logs go to stderr.
@@ -20,7 +20,7 @@ use jisuno_logic::protocol;
 use jisuno_logic::vad::{Vad, VadEvent};
 
 #[derive(Parser)]
-#[command(name = "voicetools", version, about = "Local offline voice-to-text")]
+#[command(name = "jisuno", version, about = "Local offline voice-to-text")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -127,7 +127,7 @@ fn run_transcribe(args: TranscribeArgs) -> anyhow::Result<()> {
     let model = Model::parse(&args.model)?;
     if !model.is_ready() {
         protocol::error(&format!(
-            "no model found for '{}' — run: voicetools setup --model {}",
+            "no model found for '{}' — run: jisuno setup --model {}",
             model.id(),
             model.id()
         ));

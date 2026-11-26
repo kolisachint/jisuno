@@ -2,7 +2,7 @@
 //! download pre-exported model files from HuggingFace.
 //!
 //! Pre-exported int8 ONNX files are published on HuggingFace, so no NeMo /
-//! Python toolchain is needed — `voicetools setup` just fetches them into the
+//! Python toolchain is needed — `jisuno setup` just fetches them into the
 //! per-user data directory.
 
 use std::fs;
@@ -100,7 +100,7 @@ pub fn models_root() -> anyhow::Result<PathBuf> {
     Ok(base.join("voicetools").join("models"))
 }
 
-/// `voicetools setup --model <name>`: download a model if it isn't present.
+/// `jisuno setup --model <name>`: download a model if it isn't present.
 pub fn run(name: &str, tls_opts: &TlsOptions) -> anyhow::Result<()> {
     let model = Model::parse(name)?;
     let dir = model.dir()?;
@@ -153,7 +153,7 @@ pub fn run(name: &str, tls_opts: &TlsOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `voicetools models`: list every known model and whether it's installed.
+/// `jisuno models`: list every known model and whether it's installed.
 pub fn list() -> anyhow::Result<()> {
     let root = models_root()?;
     eprintln!("Models directory: {}", root.display());

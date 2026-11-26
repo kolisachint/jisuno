@@ -1,4 +1,4 @@
-//! The stdout line protocol spoken to whatever drives `voicetools`
+//! The stdout line protocol spoken to whatever drives `jisuno`
 //! (e.g. the hoocode TUI). Exactly one event per line on **stdout**.
 //! **stderr** is free for human-readable debug logs and download progress,
 //! so a consumer can parse stdout without seeing noise.
@@ -10,7 +10,7 @@
 //! ERROR no model found     # fatal error; process will exit non-zero
 //! ```
 //!
-//! `voicetools serve` (see `src/serve.rs`) speaks the same protocol plus
+//! `jisuno serve` (see `crates/jisuno/src/serve.rs`) speaks the same protocol plus
 //! these daemon-only lines:
 //!
 //! ```text
