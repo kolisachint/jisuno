@@ -93,6 +93,5 @@
       "description": "Launch Jisuno at login.",
       "default": false
     }
-  },
-  "required": ["model", "language", "model_load", "unload_after_idle_min", "input_device", "dictation_limit_s", "hands_free_silence_ms", "partials", "insert", "insert_type_apps", "restore_clipboard", "sounds", "hud", "login_item"]
+  }
 }
