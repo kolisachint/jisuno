@@ -698,21 +698,20 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                 }
             }
 
-            // Check 12.
-            let phrase_slot_set: HashSet<String> = phrases
-                .iter()
-                .flat_map(|(_, words)| phrase_slots(words))
-                .collect();
+            // Check 12: every step slot appears in every phrase. Without
+            // phrases, check 4/8 already reports the command.
             let mut refs: Vec<String> = step_refs.into_iter().collect();
             refs.sort();
             for slot in refs {
-                if !phrase_slot_set.contains(&slot) {
-                    errors.push(error(
-                        line,
-                        format!(
-                            "command {tag}: slot \"{{{slot}}}\" used in steps but not in any phrase"
-                        ),
-                    ));
+                for (raw, words) in &phrases {
+                    if !phrase_slots(words).contains(&slot) {
+                        errors.push(error(
+                            line,
+                            format!(
+                                "command {tag}: slot \"{{{slot}}}\" used in steps but not in phrase \"{raw}\""
+                            ),
+                        ));
+                    }
                 }
             }
 

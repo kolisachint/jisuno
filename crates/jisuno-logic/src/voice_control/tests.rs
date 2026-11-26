@@ -238,7 +238,18 @@ fn row_12_slot_in_steps_missing_from_phrases() {
     assert_eq!(diags.len(), 1);
     assert_eq!(
         diags[0].message,
-        "command \"move\": slot \"{window}\" used in steps but not in any phrase"
+        "command \"move\": slot \"{window}\" used in steps but not in phrase \"move it\""
+    );
+
+    // Per phrase: a slot missing from one of two phrases is still an error.
+    let text = doc(
+        r#"{"id": "focus", "say": ["focus {window}", "focus it"], "steps": [{"do": "window.focus", "window": "{window}"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"focus\": slot \"{window}\" used in steps but not in phrase \"focus it\""
     );
 }
 
