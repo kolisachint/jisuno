@@ -64,7 +64,7 @@ fn button(
             .text_color(rgb(theme.palette.text));
     }
     if !enabled {
-        return b;
+        return b.child(label.to_string());
     }
     if let Some(on_tap) = on_tap {
         b = b.cursor_pointer().on_mouse_down(
@@ -95,7 +95,7 @@ fn warn_color(theme: &Theme) -> u32 {
 
 fn step_header(n: &str, title: &str, theme: &Theme) -> Div {
     div()
-        .pt(px(10.0))
+        .pt(px(4.0))
         .text_size(px(TITLE.size))
         .font_weight(FontWeight::SEMIBOLD)
         .font_family("SF Pro")
@@ -111,10 +111,9 @@ pub fn welcome_view(model: &WelcomeModel, theme: &Theme, on_intent: WelcomeEmit)
         .bg(rgb(theme.palette.bg))
         .rounded(px(RADIUS_WINDOW))
         .px(px(22.0))
-        .py(px(18.0))
+        .py(px(12.0))
         .flex()
         .flex_col()
-        .gap(px(2.0))
         .child(
             div()
                 .text_size(px(DISPLAY.size))
@@ -146,7 +145,7 @@ pub fn welcome_view(model: &WelcomeModel, theme: &Theme, on_intent: WelcomeEmit)
             div()
                 .rounded(px(RADIUS_CONTROL))
                 .px(px(10.0))
-                .py(px(8.0))
+                .py(px(4.0))
                 .bg(rgb(theme.palette.ground))
                 .child(
                     div()
@@ -190,14 +189,9 @@ pub fn welcome_view(model: &WelcomeModel, theme: &Theme, on_intent: WelcomeEmit)
             "Dictation works once the download finishes.".into(),
             theme,
         ));
-    } else if !model.model_present {
-        root = root.child(caption(
-            "Dictation works once the download finishes.".into(),
-            theme,
-        ));
     }
     let on_intent_dl = on_intent.clone();
-    root = root.child(div().flex().items_center().gap(px(8.0)).py(px(8.0)).child({
+    root = root.child(div().flex().items_center().gap(px(8.0)).child({
         let enabled = model.download.is_none() && !model.model_present;
         let tap: Option<WelcomeTap> = enabled.then(|| {
             let tap: WelcomeTap = Rc::new(move |window: &mut gpui::Window, cx: &mut gpui::App| {
@@ -220,7 +214,7 @@ pub fn welcome_view(model: &WelcomeModel, theme: &Theme, on_intent: WelcomeEmit)
             .items_center()
             .justify_end()
             .gap(px(10.0))
-            .pt(px(18.0))
+            .pt(px(6.0))
             .children(
                 model
                     .start_hint()
@@ -246,12 +240,11 @@ fn permission_row(
         .flex()
         .justify_between()
         .gap(px(16.0))
-        .py(px(8.0))
+        .py(px(3.0))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
                 .flex_1()
                 .child(body_text(kind.name().to_string(), theme))
                 .child(caption(kind.reason().to_string(), theme)),

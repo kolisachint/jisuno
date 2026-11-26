@@ -86,7 +86,7 @@ fn button(
             .text_color(rgb(theme.palette.text));
     }
     if !enabled {
-        return b;
+        return b.child(label.to_string());
     }
     if let Some(on_tap) = on_tap {
         b = b.cursor_pointer().on_mouse_down(
@@ -127,12 +127,11 @@ fn field_row(label: &str, hint: Option<&str>, theme: &Theme, control: Div) -> Di
         .flex()
         .justify_between()
         .gap(px(16.0))
-        .py(px(8.0))
+        .py(px(3.0))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
                 .flex_1()
                 .child(label_text(label.to_string(), theme))
                 .children(hint.map(|hint| caption(hint.to_string(), theme))),

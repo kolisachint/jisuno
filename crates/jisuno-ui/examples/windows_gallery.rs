@@ -76,14 +76,11 @@ mod gallery {
         }
 
         fn apply(&mut self, intent: PopoverIntent, cx: &mut Context<Self>) {
-            match intent {
-                PopoverIntent::CopyRecent(index) => {
-                    if let Some(item) = self.models[self.index].recent_rows().get(index) {
-                        eprintln!("copy: {}", item.display_text());
-                    }
-                    self.models[self.index].toast = Some("Copied".into());
+            if let PopoverIntent::CopyRecent(index) = intent {
+                if let Some(item) = self.models[self.index].recent_rows().get(index) {
+                    eprintln!("copy: {}", item.display_text());
                 }
-                _ => {}
+                self.models[self.index].toast = Some("Copied".into());
             }
             cx.notify();
         }
@@ -308,18 +305,15 @@ mod gallery {
                                         .update(cx, |this: &mut WelcomeWindow, cx| {
                                             let at = this.index;
                                             let model = &mut this.models[at];
-                                            match &mut model.download {
-                                                Some(download) => {
-                                                    download.percent = percent;
-                                                    download.downloaded_mb =
-                                                        percent * download.total_mb / 100;
-                                                    if percent >= 100 {
-                                                        model.download = None;
-                                                        model.model_present = true;
-                                                    }
-                                                    cx.notify();
+                                            if let Some(download) = &mut model.download {
+                                                download.percent = percent;
+                                                download.downloaded_mb =
+                                                    percent * download.total_mb / 100;
+                                                if percent >= 100 {
+                                                    model.download = None;
+                                                    model.model_present = true;
                                                 }
-                                                None => {}
+                                                cx.notify();
                                             }
                                         })
                                         .is_ok();
@@ -391,6 +385,7 @@ mod gallery {
         let show_popover = only.is_empty() || only == "popover";
         let show_settings = only.is_empty() || only == "settings";
         let show_welcome = only.is_empty() || only == "welcome";
+        let dark = std::env::var("JISUNO_GALLERY_DARK").is_ok();
         let initial_pane = std::env::var("JISUNO_GALLERY_PANE")
             .ok()
             .and_then(|name| Pane::all().into_iter().find(|p| p.title() == name));
@@ -413,7 +408,7 @@ mod gallery {
                         cx.new(|_| PopoverWindow {
                             models: vec![PopoverModel::sample(), PopoverModel::sample_attention()],
                             index: 0,
-                            dark: false,
+                            dark,
                         })
                     },
                 )
@@ -436,7 +431,7 @@ mod gallery {
                             if let Some(pane) = initial_pane {
                                 model.pane = pane;
                             }
-                            SettingsWindow { model, dark: false }
+                            SettingsWindow { model, dark }
                         })
                     },
                 )
@@ -461,7 +456,7 @@ mod gallery {
                                 WelcomeModel::sample_downloading(),
                             ],
                             index: 0,
-                            dark: false,
+                            dark,
                         })
                     },
                 )
