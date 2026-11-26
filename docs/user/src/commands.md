@@ -35,8 +35,13 @@ A phrase can contain `{slot}` values. Jisuno fills each slot from the words you 
   your workspace windows, running apps, the 10 window places, workspace names, themes and
   installed apps.
 - **Declared lists.** A command can declare its own list, as `project` does in the example above.
-- **Free text** (`{name}`, or a declared slot set to `"free"`). Any words are accepted. A phrase
-  can have at most one free slot, and it must be the last word.
+- **Free text** (`{name}`, or a declared slot set to `"free"`). Up to 10 words are accepted. A
+  phrase can have at most one free slot, and it must be the last word.
+
+Slot names are lowercase letters, digits and `_` (for example `project`). `window`, `place`,
+`workspace`, `theme`, `app` and `name` are built in and cannot be declared. A `{slot}` used as a
+window `place` must be `{place}` or a declared list of places. A declared list cannot be empty
+or hold an empty value. Text such as `${HOME}` in a shell command is not a slot.
 
 Window places: `left-half`, `right-half`, `top-half`, `bottom-half`, `left-top`, `left-bottom`,
 `right-top`, `right-bottom`, `full`, `center`. Spoken, they read as "left half", "right top" and so
@@ -47,10 +52,13 @@ on.
 1. Commands that have a `when` list are checked against the frontmost app. Commands that do not
    match it are dropped.
 2. Jisuno compares the words you said with each phrase. Small differences are allowed, such as a
-   misheard word.
-3. The best phrase runs if it is close enough. If two phrases are almost equally close, nothing
+   misheard word, but the word must start with the same letter. Hyphens count as spaces, so
+   "open-settings" and "open settings" are the same phrase.
+3. Very long utterances (more than four times the longest phrase, plus 8 words) are rejected,
+   and the HUD says `No command matched`.
+4. The best phrase runs if it is close enough. If two phrases are almost equally close, nothing
    runs.
-4. If nothing matches, the HUD says `Did you mean "start working"?` (with the closest phrase) and
+5. If nothing matches, the HUD says `Did you mean "start working"?` (with the closest phrase) and
    nothing runs.
 
 ## Confirmation
@@ -60,6 +68,8 @@ A command with `"confirm": true` does not run at once. The HUD shows the command
 ```
 Run "clean build"? cargo clean · Return to run · Esc to cancel
 ```
+
+When the step has a `cwd`, the prompt shows it: `Run "clean build"? cargo clean (in ~/github/jisuno) · Return to run · Esc to cancel`.
 
 Press **Return** to run it. Press **Esc**, or wait 6 seconds, to cancel. Any command with a
 `shell.run` step must have `"confirm": true`. Jisuno rejects the file otherwise.
@@ -95,6 +105,7 @@ Recent shows the failed command. Common reasons:
 | `no focused app` | There is no frontmost app for `keys.send`. |
 | `shell exited 1` | The command ran and exited with a non-zero status. |
 | `unknown theme "quiet-blue"` | No installed theme has that name. |
+| `Could not run "open project": no matched value for slot "project"` | The command's slots could not be filled from what you said. Nothing ran. |
 | `model not installed` | `model.warm` ran before a model was downloaded. |
 | `timed out after 5 s` | A `wait` on a window did not see the window in time. |
 
