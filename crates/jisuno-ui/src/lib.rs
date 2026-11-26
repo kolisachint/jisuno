@@ -12,3 +12,6 @@ pub mod tokens;
 
 #[cfg(target_os = "macos")]
 pub mod hud_view;
+
+#[cfg(target_os = "macos")]
+pub mod hud_window;
