@@ -8,8 +8,8 @@
 //! collisions are warnings (via [`parse_with_warnings`]) and do not fail the parse.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
-use anyhow::Context;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 const DEFAULTS_TEXT: &str = include_str!("../defaults/keybindings.json");
@@ -142,7 +142,12 @@ impl HoldSide {
 }
 
 /// A parsed key: either a hold modifier or a modifier chord plus one key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Chord equality is order-independent: modifiers compare as a set, so a key
+/// built from a recording compares equal no matter the press order.
+/// [`Key::parse`] only accepts canonical `ctrl+option+shift+cmd` order, so
+/// parsed keys already store modifiers sorted.
+#[derive(Debug, Clone)]
 pub enum Key {
     Hold(HoldSide),
     Chord {
@@ -152,6 +157,18 @@ pub enum Key {
 }
 
 impl Key {
+    /// Parse the canonical file spelling (`ctrl+option+w`, `right_option`).
+    /// This is the constructor for the Settings recorder: it accepts only
+    /// canonical `ctrl+option+shift+cmd` order and lowercase (§6, §8).
+    pub fn parse(raw: &str) -> Result<Key, String> {
+        parse_key(raw)
+    }
+
+    /// Canonical file spelling (`ctrl+option+w`, `right_option`).
+    pub fn to_file_string(&self) -> String {
+        self.file()
+    }
+
     /// Display form per the §6 table (`⌃⌥W`, `Right ⌥`, `Space`, `Esc`, `⌃⌥,`).
     pub fn display(&self) -> String {
         match self {
@@ -193,6 +210,51 @@ impl<'de> Deserialize<'de> for Key {
     }
 }
 
+/// Modifiers sorted into canonical `ctrl+option+shift+cmd` order.
+fn sorted_modifiers(modifiers: &[Modifier]) -> Vec<Modifier> {
+    let mut out = modifiers.to_vec();
+    out.sort_by_key(|m| m.rank());
+    out.dedup();
+    out
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Key::Hold(a), Key::Hold(b)) => a == b,
+            (
+                Key::Chord {
+                    modifiers: a,
+                    key: ka,
+                },
+                Key::Chord {
+                    modifiers: b,
+                    key: kb,
+                },
+            ) => ka == kb && sorted_modifiers(a) == sorted_modifiers(b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Key {}
+
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Key::Hold(side) => {
+                0u8.hash(state);
+                side.hash(state);
+            }
+            Key::Chord { modifiers, key } => {
+                1u8.hash(state);
+                sorted_modifiers(modifiers).hash(state);
+                key.hash(state);
+            }
+        }
+    }
+}
+
 fn key_token_display(token: &str) -> String {
     match token {
         "space" => "Space".to_string(),
@@ -213,7 +275,7 @@ pub enum When {
 }
 
 impl When {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Listening => "listening",
             Self::Confirming => "confirming",
@@ -254,6 +316,11 @@ pub enum Command {
 
 impl Command {
     /// Dotted command id used in the file.
+    /// Machine id from the §10 command list (`voice.dictate`).
+    pub fn as_str(self) -> &'static str {
+        self.id()
+    }
+
     pub fn id(self) -> &'static str {
         match self {
             Self::Dictate => "voice.dictate",
@@ -339,55 +406,157 @@ pub fn parse(text: &str) -> Result<Keybindings, Vec<Diagnostic>> {
     parse_with_warnings(text).map(|(bindings, _)| bindings)
 }
 
+/// Validate a single already-parsed [`Binding`] (for the Settings recorder).
+/// All diagnostics use line 0; duplicates cannot be checked here.
+pub fn validate_binding(binding: &Binding) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let raw = binding.key.to_file_string();
+    if binding.hold {
+        match &binding.key {
+            Key::Hold(_) => {}
+            Key::Chord { .. } if raw.contains('+') => diagnostics.push(Diagnostic::error(
+                0,
+                "A hold binding is one key alone · remove the chord or drop \"hold\"",
+            )),
+            Key::Chord { .. } => diagnostics.push(Diagnostic::error(
+                0,
+                "Only a single right-side modifier can be a hold key",
+            )),
+        }
+    } else if matches!(binding.key, Key::Hold(_)) {
+        diagnostics.push(Diagnostic::error(
+            0,
+            format!("\"{raw}\" is a hold key · set \"hold\": true"),
+        ));
+    }
+    if diagnostics.is_empty() {
+        if let Some(message) = reserved_check(&binding.key, &raw, binding.hold, binding.when) {
+            diagnostics.push(Diagnostic::error(0, message));
+        }
+    }
+    diagnostics
+}
+
 /// Validate `text`. Warnings (common app-shortcut collisions, §8) do not fail
 /// the parse: they are returned alongside the bindings. Any error rejects the
 /// whole file.
+///
+/// Each binding is validated from its own JSON value, so a type error in one
+/// binding (say `"hold": "true"`) is reported at that binding's line and
+/// the other bindings are still validated.
 pub fn parse_with_warnings(text: &str) -> Result<(Keybindings, Vec<Diagnostic>), Vec<Diagnostic>> {
-    let raw = raw_file(text).map_err(|e| {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| {
         vec![Diagnostic::error(
             1,
             format!("Invalid keybindings file: {e:#}"),
         )]
     })?;
-    let lines = binding_lines(text);
+    let Some(root) = value.as_object() else {
+        return Err(vec![Diagnostic::error(
+            1,
+            "Invalid keybindings file: expected an object with a bindings array",
+        )]);
+    };
 
     let mut errors: Vec<Diagnostic> = Vec::new();
+    for name in root.keys() {
+        if name != "$schema" && name != "bindings" {
+            errors.push(Diagnostic::error(1, format!("Unknown field \"{name}\"")));
+        }
+    }
+    let Some(bindings_value) = root.get("bindings") else {
+        errors.push(Diagnostic::error(1, "Missing \"bindings\""));
+        return Err(errors);
+    };
+    let Some(items) = bindings_value.as_array() else {
+        errors.push(Diagnostic::error(1, "\"bindings\" must be an array"));
+        return Err(errors);
+    };
+
+    let lines = binding_lines(text);
+
     let mut warnings: Vec<Diagnostic> = Vec::new();
     let mut bindings: Vec<Binding> = Vec::new();
     let mut seen: HashMap<(Key, Option<When>), Command> = HashMap::new();
 
-    for (index, item) in raw.bindings.iter().enumerate() {
+    for (index, item) in items.iter().enumerate() {
         let line = lines.get(index).copied().unwrap_or(1);
         let before = errors.len();
 
-        let key_raw = match item.key.as_deref() {
-            Some(k) => k,
+        let Some(object) = item.as_object() else {
+            errors.push(Diagnostic::error(line, "Binding must be an object"));
+            continue;
+        };
+        for name in object.keys() {
+            if !matches!(name.as_str(), "key" | "hold" | "when" | "command") {
+                errors.push(Diagnostic::error(
+                    line,
+                    format!("Unknown field \"{name}\" in binding"),
+                ));
+            }
+        }
+
+        let key_raw: Option<&str> = match object.get("key") {
             None => {
                 errors.push(Diagnostic::error(line, "Binding is missing \"key\""));
-                continue;
+                None
             }
-        };
-        let command_raw = match item.command.as_deref() {
-            Some(c) => c,
-            None => {
-                errors.push(Diagnostic::error(line, "Binding is missing \"command\""));
-                continue;
-            }
-        };
-        let hold = item.hold.unwrap_or(false);
-
-        let when = match item.when.as_deref() {
-            None => None,
-            Some(w) => match When::from_str(w) {
-                Some(when) => Some(when),
+            Some(value) => match value.as_str() {
+                Some(key) => Some(key),
                 None => {
-                    errors.push(Diagnostic::error(
-                        line,
-                        format!("Unknown when \"{w}\" · expected \"listening\" or \"confirming\""),
-                    ));
+                    errors.push(Diagnostic::error(line, "\"key\" must be a string"));
                     None
                 }
             },
+        };
+        let command_raw: Option<&str> = match object.get("command") {
+            None => {
+                errors.push(Diagnostic::error(line, "Binding is missing \"command\""));
+                None
+            }
+            Some(value) => match value.as_str() {
+                Some(command) => Some(command),
+                None => {
+                    errors.push(Diagnostic::error(line, "\"command\" must be a string"));
+                    None
+                }
+            },
+        };
+        let (Some(key_raw), Some(command_raw)) = (key_raw, command_raw) else {
+            continue;
+        };
+
+        let hold: bool = match object.get("hold") {
+            None => false,
+            Some(value) => match value.as_bool() {
+                Some(hold) => hold,
+                None => {
+                    errors.push(Diagnostic::error(line, "\"hold\" must be a boolean"));
+                    continue;
+                }
+            },
+        };
+
+        let mut when_invalid = false;
+        let when: Option<When> = match object.get("when") {
+            None => None,
+            Some(value) => {
+                let Some(w) = value.as_str() else {
+                    errors.push(Diagnostic::error(line, "\"when\" must be a string"));
+                    continue;
+                };
+                match When::from_str(w) {
+                    Some(when) => Some(when),
+                    None => {
+                        errors.push(Diagnostic::error(
+                            line,
+                            format!("Unknown when \"{w}\" · use listening or confirming"),
+                        ));
+                        when_invalid = true;
+                        None
+                    }
+                }
+            }
         };
 
         let command = match Command::from_id(command_raw) {
@@ -401,15 +570,20 @@ pub fn parse_with_warnings(text: &str) -> Result<(Keybindings, Vec<Diagnostic>),
             }
         };
 
-        let key = if hold && key_raw.contains('+') {
+        let mut key: Option<Key> = None;
+        if !hold && HoldSide::from_token(key_raw).is_some() {
+            errors.push(Diagnostic::error(
+                line,
+                format!("\"{key_raw}\" is a hold key · set \"hold\": true"),
+            ));
+        } else if hold && key_raw.contains('+') {
             errors.push(Diagnostic::error(
                 line,
                 "A hold binding is one key alone · remove the chord or drop \"hold\"",
             ));
-            None
         } else {
             match parse_key(key_raw) {
-                Ok(key) => Some(key),
+                Ok(parsed) => key = Some(parsed),
                 Err(message) => {
                     // A lone left modifier never parses (a modifier is not a key),
                     // but with hold it gets the specific §7 message.
@@ -421,14 +595,15 @@ pub fn parse_with_warnings(text: &str) -> Result<(Keybindings, Vec<Diagnostic>),
                     } else {
                         errors.push(Diagnostic::error(line, message));
                     }
-                    None
                 }
             }
-        };
+        }
 
-        if let Some(key) = &key {
-            if let Some(message) = reserved_check(key, key_raw, hold, when) {
-                errors.push(Diagnostic::error(line, message));
+        if !when_invalid {
+            if let Some(parsed) = &key {
+                if let Some(message) = reserved_check(parsed, key_raw, hold, when) {
+                    errors.push(Diagnostic::error(line, message));
+                }
             }
         }
 
@@ -483,28 +658,6 @@ pub fn parse_with_warnings(text: &str) -> Result<(Keybindings, Vec<Diagnostic>),
     } else {
         Err(errors)
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct RawFile {
-    bindings: Vec<RawBinding>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawBinding {
-    #[serde(default)]
-    key: Option<String>,
-    #[serde(default)]
-    hold: Option<bool>,
-    #[serde(default)]
-    when: Option<String>,
-    #[serde(default)]
-    command: Option<String>,
-}
-
-fn raw_file(text: &str) -> anyhow::Result<RawFile> {
-    let value: serde_json::Value = serde_json::from_str(text)?;
-    serde_json::from_value(value).context("keybindings must be an object with a bindings array")
 }
 
 /// 1-based line of each top-level object in the `bindings` array, in order.
@@ -577,8 +730,6 @@ fn parse_key(raw: &str) -> Result<Key, String> {
         if let Some(side) = HoldSide::from_token(tokens[0]) {
             return Ok(Key::Hold(side));
         }
-    } else if let Some(bad) = tokens.iter().find(|t| HoldSide::from_token(t).is_some()) {
-        return Err(format!("Unknown key \"{bad}\" in \"{raw}\""));
     }
 
     let mut modifiers = Vec::new();
@@ -593,10 +744,14 @@ fn parse_key(raw: &str) -> Result<Key, String> {
         }
     }
 
+    // Canonical form is modifiers first (in ctrl+option+shift+cmd order) and
+    // exactly one key name last: `w+ctrl` and `ctrl+w+option` fail here.
     let mut canonical = modifiers.clone();
     canonical.sort_by_key(|m| m.rank());
     canonical.dedup();
-    if canonical.len() != modifiers.len() || modifiers != canonical {
+    let ordered = modifiers.len() == canonical.len() && modifiers == canonical;
+    let name_last = names.len() == 1 && tokens.last() == Some(&names[0]);
+    if names.len() == 1 && (!ordered || !name_last) {
         return Err(format!(
             "Modifiers must be in ctrl+option+shift+cmd order · got \"{raw}\""
         ));
@@ -604,7 +759,7 @@ fn parse_key(raw: &str) -> Result<Key, String> {
 
     match names.as_slice() {
         [name] => Ok(Key::Chord {
-            modifiers,
+            modifiers: canonical,
             key: (*name).to_string(),
         }),
         [] => {
@@ -632,10 +787,14 @@ fn is_key_name(token: &str) -> bool {
 }
 
 fn is_fkey(token: &str) -> bool {
-    token
-        .strip_prefix('f')
-        .and_then(|n| n.parse::<u8>().ok())
-        .is_some_and(|n| (1..=20).contains(&n))
+    let Some(n) = token.strip_prefix('f') else {
+        return false;
+    };
+    let Ok(v) = n.parse::<u8>() else {
+        return false;
+    };
+    // No leading zeros: `f05` is not `f5`.
+    (1..=20).contains(&v) && format!("{v}") == n
 }
 
 /// Reserved-key and hold/context rules (§7). Only called with a parsed key.
@@ -1184,5 +1343,189 @@ mod tests {
             .conflict(&esc, Some(When::Confirming))
             .expect("must clash");
         assert_eq!(clash.command, Command::Cancel);
+    }
+
+    #[test]
+    fn modifier_must_precede_key_name() {
+        for key in ["w+ctrl", "ctrl+w+option", "option+ctrl+w", "ctrl+ctrl+w"] {
+            expect_error(
+                &single_binding(key, false, None, "model.warm"),
+                &format!("Modifiers must be in ctrl+option+shift+cmd order · got \"{key}\""),
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_top_level_field() {
+        expect_error(
+            "{\"$schema\": \"./schemas/keybindings.schema.json\", \"bindings\": [], \"theme\": \"dark\"}",
+            "Unknown field \"theme\"",
+        );
+    }
+
+    #[test]
+    fn missing_bindings_is_error() {
+        let errors = parse("{}").expect_err("missing bindings must fail");
+        assert!(
+            errors.iter().any(|d| d.is_error()),
+            "unexpected diagnostics: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_binding_field_reports_binding_line() {
+        let text = concat!(
+            "{\n",
+            "  \"bindings\": [\n",
+            "    {\"key\": \"ctrl+option+w\", \"command\": \"model.warm\", \"repeat\": true}\n",
+            "  ]\n",
+            "}",
+        );
+        let errors = parse(text).expect_err("unknown field must fail");
+        assert_eq!(errors.len(), 1, "unexpected errors: {errors:?}");
+        assert_eq!(errors[0].line, 3);
+        assert_eq!(errors[0].message, "Unknown field \"repeat\" in binding");
+    }
+
+    #[test]
+    fn binding_type_errors_report_binding_line() {
+        let text = concat!(
+            "{\n",
+            "  \"bindings\": [\n",
+            "    {\"key\": \"ctrl+option+w\", \"hold\": \"true\", \"command\": \"model.warm\"},\n",
+            "    {\"key\": 5, \"command\": \"model.warm\"},\n",
+            "    {\"key\": \"ctrl+hald\", \"command\": \"model.warm\"}\n",
+            "  ]\n",
+            "}",
+        );
+        let errors = parse(text).expect_err("type errors must fail");
+        assert_eq!(errors.len(), 3, "unexpected errors: {errors:?}");
+        assert_eq!(errors[0].line, 3);
+        assert_eq!(errors[0].message, "\"hold\" must be a boolean");
+        assert_eq!(errors[1].line, 4);
+        assert_eq!(errors[1].message, "\"key\" must be a string");
+        assert_eq!(errors[2].line, 5);
+        assert_eq!(errors[2].message, "Unknown key \"hald\" in \"ctrl+hald\"");
+    }
+
+    #[test]
+    fn right_side_key_needs_hold() {
+        for key in ["right_option", "right_cmd", "right_shift", "right_ctrl"] {
+            expect_error(
+                &single_binding(key, false, None, "voice.dictate"),
+                &format!("\"{key}\" is a hold key · set \"hold\": true"),
+            );
+        }
+    }
+
+    #[test]
+    fn function_key_range() {
+        for key in ["f1", "f20"] {
+            parse(&single_binding(key, false, None, "model.warm"))
+                .unwrap_or_else(|e| panic!("{key} must validate: {e:?}"));
+        }
+        for key in ["f0", "f05", "f21"] {
+            expect_error(
+                &single_binding(key, false, None, "model.warm"),
+                &format!("Unknown key \"{key}\" in \"{key}\""),
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_when_reports_once() {
+        // "j" would also be a typing-key error with no `when`; an invalid
+        // `when` must not add the reserved-key error.
+        expect_error(
+            &single_binding("j", false, Some("sleeping"), "model.warm"),
+            "Unknown when \"sleeping\" · use listening or confirming",
+        );
+    }
+
+    #[test]
+    fn key_parse_is_canonical_and_order_independent() {
+        let parsed = Key::parse("ctrl+option+w").expect("canonical chord must parse");
+        assert_eq!(parsed.to_file_string(), "ctrl+option+w");
+        let ordered = Key::Chord {
+            modifiers: vec![Modifier::Ctrl, Modifier::Opt],
+            key: "w".into(),
+        };
+        let swapped = Key::Chord {
+            modifiers: vec![Modifier::Opt, Modifier::Ctrl],
+            key: "w".into(),
+        };
+        assert_eq!(parsed, ordered);
+        assert_eq!(swapped, ordered);
+        assert!(Key::parse("option+ctrl+w").is_err());
+        assert_eq!(
+            Key::parse("right_option")
+                .expect("hold must parse")
+                .to_file_string(),
+            "right_option"
+        );
+    }
+
+    #[test]
+    fn settings_recorder_api() {
+        assert_eq!(When::Listening.as_str(), "listening");
+        assert_eq!(When::Confirming.as_str(), "confirming");
+        assert_eq!(Command::Dictate.as_str(), "voice.dictate");
+        assert_eq!(Command::Dictate.id(), Command::Dictate.as_str());
+
+        let bindings = defaults();
+        let escape = Key::parse("escape").expect("escape must parse");
+        let clash = bindings
+            .conflict(&escape, Some(When::Listening))
+            .expect("escape is taken in listening");
+        let rendered = format!(
+            "Taken by {} ({})",
+            clash.command.as_str(),
+            clash.when.map(When::as_str).unwrap_or("global")
+        );
+        assert_eq!(rendered, "Taken by voice.cancel (listening)");
+    }
+
+    #[test]
+    fn validate_single_binding() {
+        let ok = Binding {
+            key: Key::parse("ctrl+option+w").expect("must parse"),
+            hold: false,
+            when: None,
+            command: Command::Warm,
+        };
+        assert!(validate_binding(&ok).is_empty());
+
+        let hold = Binding {
+            key: Key::parse("right_option").expect("must parse"),
+            hold: true,
+            when: None,
+            command: Command::Dictate,
+        };
+        assert!(validate_binding(&hold).is_empty());
+
+        let missing_hold = Binding {
+            key: Key::parse("right_option").expect("must parse"),
+            hold: false,
+            when: None,
+            command: Command::Dictate,
+        };
+        let diagnostics = validate_binding(&missing_hold);
+        assert_eq!(diagnostics.len(), 1, "unexpected: {diagnostics:?}");
+        assert_eq!(diagnostics[0].line, 0);
+        assert_eq!(
+            diagnostics[0].message,
+            "\"right_option\" is a hold key · set \"hold\": true"
+        );
+
+        let bare_escape = Binding {
+            key: Key::parse("escape").expect("must parse"),
+            hold: false,
+            when: None,
+            command: Command::Cancel,
+        };
+        let diagnostics = validate_binding(&bare_escape);
+        assert_eq!(diagnostics.len(), 1, "unexpected: {diagnostics:?}");
+        assert_eq!(diagnostics[0].line, 0);
+        assert!(diagnostics[0].is_error());
     }
 }
