@@ -233,7 +233,10 @@ fn write_step(out: &mut String, step: &Step) {
         Step::JisunoMenu => out.push_str("{\"do\": \"jisuno.menu\"}"),
         Step::JisunoSettings => out.push_str("{\"do\": \"jisuno.settings\"}"),
         Step::AppOpen { app, arg } => {
-            out.push_str(&format!("{{\"do\": \"app.open\", \"app\": {}", json_str(app)));
+            out.push_str(&format!(
+                "{{\"do\": \"app.open\", \"app\": {}",
+                json_str(app)
+            ));
             if let Some(arg) = arg {
                 out.push_str(&format!(", \"arg\": {}", json_str(arg)));
             }
