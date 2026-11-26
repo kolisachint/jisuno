@@ -29,7 +29,12 @@ pub fn place_frame(visible: Rect, place: Place) -> Rect {
     let Rect { x, y, w, h } = visible;
     match place {
         Place::Full => visible,
-        Place::LeftHalf => Rect { x, y, w: w / 2.0, h },
+        Place::LeftHalf => Rect {
+            x,
+            y,
+            w: w / 2.0,
+            h,
+        },
         Place::RightHalf => Rect {
             x: x + w / 2.0,
             y,
@@ -127,27 +132,105 @@ mod tests {
     fn all_ten_places_tile_single_screen() {
         let visible = single();
         let cases = [
-            (Place::Full, Rect { x: 0.0, y: 80.0, w: 1512.0, h: 878.0 }),
-            (Place::LeftHalf, Rect { x: 0.0, y: 80.0, w: 756.0, h: 878.0 }),
-            (Place::RightHalf, Rect { x: 756.0, y: 80.0, w: 756.0, h: 878.0 }),
-            (Place::TopHalf, Rect { x: 0.0, y: 519.0, w: 1512.0, h: 439.0 }),
-            (Place::BottomHalf, Rect { x: 0.0, y: 80.0, w: 1512.0, h: 439.0 }),
-            (Place::LeftTop, Rect { x: 0.0, y: 519.0, w: 756.0, h: 439.0 }),
-            (Place::LeftBottom, Rect { x: 0.0, y: 80.0, w: 756.0, h: 439.0 }),
-            (Place::RightTop, Rect { x: 756.0, y: 519.0, w: 756.0, h: 439.0 }),
-            (Place::RightBottom, Rect { x: 756.0, y: 80.0, w: 756.0, h: 439.0 }),
+            (
+                Place::Full,
+                Rect {
+                    x: 0.0,
+                    y: 80.0,
+                    w: 1512.0,
+                    h: 878.0,
+                },
+            ),
+            (
+                Place::LeftHalf,
+                Rect {
+                    x: 0.0,
+                    y: 80.0,
+                    w: 756.0,
+                    h: 878.0,
+                },
+            ),
+            (
+                Place::RightHalf,
+                Rect {
+                    x: 756.0,
+                    y: 80.0,
+                    w: 756.0,
+                    h: 878.0,
+                },
+            ),
+            (
+                Place::TopHalf,
+                Rect {
+                    x: 0.0,
+                    y: 519.0,
+                    w: 1512.0,
+                    h: 439.0,
+                },
+            ),
+            (
+                Place::BottomHalf,
+                Rect {
+                    x: 0.0,
+                    y: 80.0,
+                    w: 1512.0,
+                    h: 439.0,
+                },
+            ),
+            (
+                Place::LeftTop,
+                Rect {
+                    x: 0.0,
+                    y: 519.0,
+                    w: 756.0,
+                    h: 439.0,
+                },
+            ),
+            (
+                Place::LeftBottom,
+                Rect {
+                    x: 0.0,
+                    y: 80.0,
+                    w: 756.0,
+                    h: 439.0,
+                },
+            ),
+            (
+                Place::RightTop,
+                Rect {
+                    x: 756.0,
+                    y: 519.0,
+                    w: 756.0,
+                    h: 439.0,
+                },
+            ),
+            (
+                Place::RightBottom,
+                Rect {
+                    x: 756.0,
+                    y: 80.0,
+                    w: 756.0,
+                    h: 439.0,
+                },
+            ),
             (
                 Place::Center,
                 Rect {
                     x: 302.4,
                     y: 255.6,
-                    w: 907.1999999999999,
+                    w: 907.2,
                     h: 526.8,
                 },
             ),
         ];
         for (place, want) in cases {
-            assert_eq!(place_frame(visible, place), want, "{place:?}");
+            let got = place_frame(visible, place);
+            for (got, want) in [got.x, got.y, got.w, got.h]
+                .into_iter()
+                .zip([want.x, want.y, want.w, want.h])
+            {
+                assert!((got - want).abs() < 1e-9, "{place:?}: {got} != {want}");
+            }
         }
         // Halves cover the visible rect exactly, with no gap or overlap.
         let left = place_frame(visible, Place::LeftHalf);
