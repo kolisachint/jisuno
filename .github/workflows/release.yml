@@ -62,8 +62,12 @@ jobs:
           NEW_VERSION="$MAJOR.$MINOR.$PATCH"
           echo "New version: $NEW_VERSION"
 
+          # Workspace version, then the version pins on the workspace path
+          # dependencies (root Cargo.toml [workspace.dependencies]). A stale pin
+          # would make cargo reject the crates after a minor or major bump.
           sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-          cargo update -p jisuno
+          sed -i "/path = \"crates\//s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          cargo update --workspace
 
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
@@ -78,7 +82,10 @@ jobs:
       - name: Push version bump and tag
         run: git push --follow-tags origin main
 
-  # ── 2. Publish crate to crates.io ─────────────────────────────────────
+  # ── 2. Publish crates to crates.io ────────────────────────────────────
+  # Only the four library/CLI crates are published. jisuno-platform,
+  # jisuno-ui and jisuno-bench must never be listed here; they need
+  # `publish = false` in their Cargo.toml (see ci/README.md).
   publish:
     name: Publish to crates.io
     needs: [bump-and-tag]
@@ -86,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install ALSA
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
@@ -112,12 +119,10 @@ jobs:
     needs: [bump-and-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           tag="${{ needs.bump-and-tag.outputs.tag }}"
           if gh release view "$tag" >/dev/null 2>&1; then
@@ -126,46 +131,200 @@ jobs:
             gh release create "$tag" --title "$tag" --generate-notes
           fi
 
-  # ── 4. Cross-platform binary builds ───────────────────────────────────
-  build:
-    name: Build ${{ matrix.target }}
-    needs: [create-release, bump-and-tag]
+  # ── 4. macOS app: universal, signed and notarized when secrets exist ──
+  macos-app:
+    name: macOS app (universal)
+    needs: [bump-and-tag, create-release]
+    runs-on: macos-14
+    outputs:
+      signed: ${{ steps.signing.outputs.enabled }}
+    env:
+      VERSION: ${{ needs.bump-and-tag.outputs.version }}
+      TAG: ${{ needs.bump-and-tag.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check signing secrets
+        id: signing
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_ID: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          missing=()
+          for v in CERT_P12 CERT_PASSWORD SIGN_ID APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            [[ -n "${!v}" ]] || missing+=("$v")
+          done
+          if ((${#missing[@]} > 0)); then
+            echo "::warning::macOS signing skipped (missing secrets: ${missing[*]}); the app zip will be unsigned and not notarized"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/jisuno-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$keychain_password" "$keychain" >/dev/null
+          existing=()
+          while IFS= read -r kc; do existing+=("$kc"); done < <(security list-keychains -d user | tr -d '" ' | grep .)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          security find-identity -v -p codesigning
+
+      - name: Build universal app bundle
+        run: packaging/bundle.sh --version "$VERSION" --arch universal --out dist
+
+      - name: Sign, notarize and zip
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: packaging/sign-notarize.sh --app dist/Jisuno.app --zip "dist/Jisuno-$VERSION-universal.zip"
+
+      - name: Zip unsigned app
+        if: steps.signing.outputs.enabled != 'true'
+        run: ditto -c -k --keepParent dist/Jisuno.app "dist/Jisuno-$VERSION-universal.zip"
+
+      - name: Upload app zip and checksum
+        run: |
+          set -euo pipefail
+          zip="Jisuno-$VERSION-universal.zip"
+          (cd dist && shasum -a 256 "$zip" > "$zip.sha256" && cat "$zip.sha256")
+          gh release upload "$TAG" "dist/$zip" "dist/$zip.sha256" --clobber
+
+      - name: Remove temporary keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/jisuno-signing.keychain-db" || true
+
+  # ── 5. CLI binaries (no app feature), tar.gz per target ───────────────
+  cli:
+    name: CLI ${{ matrix.target }}
+    needs: [bump-and-tag, create-release]
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-14
+            target: x86_64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-13
-            target: x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+    env:
+      VERSION: ${{ needs.bump-and-tag.outputs.version }}
+      TAG: ${{ needs.bump-and-tag.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
       - name: Install ALSA (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Build and upload
-        uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: jisuno
-          target: ${{ matrix.target }}
-          archive: jisuno-$target
-          checksum: sha256
-          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── 5. Aggregate SHA256SUMS ───────────────────────────────────────────
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build CLI
+        run: cargo build --release --locked -p jisuno --target "${{ matrix.target }}"
+
+      - name: Package and upload
+        run: |
+          set -euo pipefail
+          name="jisuno-$VERSION-${{ matrix.target }}"
+          mkdir -p dist
+          tar -C "target/${{ matrix.target }}/release" -czf "dist/$name.tar.gz" jisuno
+          (
+            cd dist
+            if command -v sha256sum >/dev/null; then
+              sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+            else
+              shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+            fi
+            cat "$name.tar.gz.sha256"
+          )
+          gh release upload "$TAG" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256" --clobber
+
+  # ── 6. Homebrew cask, rendered from the notarized zip ─────────────────
+  cask:
+    name: Render Homebrew cask
+    needs: [bump-and-tag, macos-app]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.bump-and-tag.outputs.version }}
+      TAG: ${{ needs.bump-and-tag.outputs.tag }}
+      SIGNED: ${{ needs.macos-app.outputs.signed }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
+
+      - name: Render cask
+        run: |
+          set -euo pipefail
+          zip="Jisuno-$VERSION-universal.zip"
+          mkdir -p dist
+          gh release download "$TAG" --pattern "$zip" --dir dist --clobber
+          sha="$(sha256sum "dist/$zip" | cut -d' ' -f1)"
+          sed -e "s/__VERSION__/$VERSION/g" -e "s/__SHA256__/$sha/g" \
+            packaging/homebrew/jisuno.rb > dist/jisuno.rb
+          if grep -q '__VERSION__\|__SHA256__' dist/jisuno.rb; then
+            echo "error: unfilled placeholder in cask" >&2
+            exit 1
+          fi
+          ruby -c dist/jisuno.rb
+          cat dist/jisuno.rb
+
+      - name: Warn if the app is unsigned
+        if: env.SIGNED != 'true'
+        run: echo "::warning::App zip is unsigned; do not copy the cask to the tap until the app is notarized"
+
+      - name: Upload cask
+        run: gh release upload "$TAG" dist/jisuno.rb --clobber
+
+  # ── 7. Aggregate SHA256SUMS ───────────────────────────────────────────
   checksums:
     name: Aggregate SHA256SUMS
-    needs: [build, bump-and-tag]
+    needs: [bump-and-tag, macos-app, cli]
     runs-on: ubuntu-latest
     steps:
       - name: Build SHA256SUMS from per-asset checksums
