@@ -10,8 +10,6 @@
 //! With no subcommand, `transcribe` runs. All output the consumer cares about
 //! goes to **stdout** as the line protocol in [`protocol`]; logs go to stderr.
 
-mod audio;
-mod mic;
 mod serve;
 mod setup;
 mod tls;
@@ -20,6 +18,7 @@ mod transcribe;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
+use jisuno_audio::{audio, mic};
 use jisuno_logic::protocol;
 use jisuno_logic::vad::{Vad, VadEvent};
 

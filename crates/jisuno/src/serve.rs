@@ -17,12 +17,12 @@ use std::io::BufRead;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
+use jisuno_audio::{audio, mic};
 use jisuno_logic::protocol;
 use jisuno_logic::vad::{self, Vad, VadEvent};
 
 use crate::setup::Model;
 use crate::transcribe::Transcriber;
-use crate::{audio, mic};
 
 /// How often to poll the audio channel while listening, so CANCEL/SHUTDOWN
 /// are noticed promptly even during silence.

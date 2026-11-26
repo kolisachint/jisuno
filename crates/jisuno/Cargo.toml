@@ -7,12 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+jisuno-audio = { workspace = true }
 jisuno-logic = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-cpal = { workspace = true }
 dirs = { workspace = true }
-hound = { workspace = true }
 ndarray = { workspace = true }
 ort = { workspace = true }
 rustls = { workspace = true }
