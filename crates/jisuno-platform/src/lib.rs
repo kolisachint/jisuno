@@ -9,7 +9,9 @@
 //! settings-pane URLs) are framework-free and unit-tested on all OSes.
 
 pub mod frontmost;
+pub mod hud_placement;
 pub mod insert;
 pub mod keys;
 pub mod permissions;
 pub mod secure_input;
+pub mod status_item;
