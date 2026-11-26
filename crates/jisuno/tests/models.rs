@@ -108,7 +108,10 @@ fn remove_refuses_while_download_lock_held() {
     let model = Model::ParakeetV3Int8;
     // Hold the lock in-process (same pid the CLI will see as live).
     let _guard = jisuno_asr::setup::acquire_lock(&model).expect("acquire");
-    assert!(jisuno_asr::setup::acquire_lock(&model).is_err(), "live lock refuses");
+    assert!(
+        jisuno_asr::setup::acquire_lock(&model).is_err(),
+        "live lock refuses"
+    );
     let out = jisuno(tmp.path(), &["remove", model.id()]);
     std::env::remove_var("JISUNO_MODELS_DIR");
     assert_eq!(code(&out), 1, "stdout: {}", stdout(&out));
@@ -126,6 +129,9 @@ fn models_root_override_is_used() {
         stderr(&out)
     );
     // Nothing was created by a read-only list.
-    let entries: Vec<PathBuf> = fs::read_dir(tmp.path()).unwrap().map(|e| e.unwrap().path()).collect();
+    let entries: Vec<PathBuf> = fs::read_dir(tmp.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
     assert!(entries.is_empty(), "{entries:?}");
 }
