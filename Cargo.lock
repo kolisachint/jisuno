@@ -2801,6 +2801,7 @@ dependencies = [
  "anyhow",
  "gpui-pre",
  "gpui-pre-platform",
+ "jisuno-logic",
  "serde_json",
 ]
 
