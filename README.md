@@ -7,7 +7,7 @@ a TUI (e.g. hoocode) as a push-to-talk input. **No audio ever leaves the
 machine.**
 
 ```bash
-jisuno setup --model parakeet-v3   # once — ~650 MB, 25 languages
+jisuno setup --model parakeet-tdt-0.6b-v3-int8   # once — ~650 MB, 25 languages
 jisuno transcribe                  # speak; stops after ~600ms of silence
 ```
 
@@ -33,15 +33,15 @@ cargo build --release -p jisuno
 ## First run: download a model
 
 ```bash
-jisuno setup --model parakeet-v3     # recommended, ~650MB, 25 languages
+jisuno setup --model parakeet-tdt-0.6b-v3-int8     # recommended, ~650MB, 25 languages
 # or
-jisuno setup --model parakeet-v2     # English-only, ~631MB
+jisuno setup --model parakeet-tdt-0.6b-v2-int8     # English-only, ~631MB
 
 jisuno models                        # list what's installed
 ```
 
 Models are stored under your platform data directory, e.g.
-`~/.local/share/voicetools/models/` on Linux.
+`~/.local/share/jisuno/models/` on Linux.
 
 ## Transcribe
 
@@ -56,7 +56,7 @@ jisuno transcribe --silence-ms 800
 jisuno transcribe --wav recording.wav
 ```
 
-Environment variables: `VOICETOOLS_MODEL`, `VOICE_SILENCE_MS`.
+Environment variables: `JISUNO_MODEL`, `JISUNO_SILENCE_MS`.
 
 ## Serve (persistent daemon)
 
@@ -76,8 +76,8 @@ jisuno serve
 While listening it re-decodes the audio-so-far on a short interval and emits a
 `PARTIAL` line; at the end it emits one authoritative `FINAL`. Flags:
 `--model`, `--silence-ms`, and `--partial-ms` (min gap between partials,
-default 400; `0` disables partials). Env vars `VOICETOOLS_MODEL`,
-`VOICE_SILENCE_MS`, `VOICE_PARTIAL_MS`. One capture runs at a time; the mic
+default 400; `0` disables partials). Env vars `JISUNO_MODEL`,
+`JISUNO_SILENCE_MS`, `JISUNO_PARTIAL_MS`. One capture runs at a time; the mic
 opens on `START` and closes when it stops.
 
 ## Output protocol
@@ -86,21 +86,26 @@ Every line on **stdout** is one event; **stderr** carries human logs and
 download progress, so a consumer can parse stdout cleanly:
 
 ```text
-STATUS recording        # state transitions
-SEGMENT hello            # a chunk of recognized text (usually one word)
+STATUS recording        # capture started (mic only; no capture for --wav)
+STATUS transcribing     # final decode running
+SEGMENT hello           # a chunk of recognized text (usually one word)
 SEGMENT world
-DONE                     # finished
-ERROR <message>          # fatal; process exits non-zero
+DONE                    # finished
+ERROR <message>         # fatal; process exits non-zero
 ```
 
 `serve` speaks the same protocol plus daemon-only lines for the live UI:
 
 ```text
 READY                    # models finished loading; ready for START
-LEVEL 0.0123              # live RMS energy per audio chunk, while listening
-PARTIAL hello wor         # interim transcript so far; replaces the last PARTIAL
-PHASE silence             # trailing silence just started, while listening
-FINAL hello world         # committed transcript; DONE follows
+STATUS listening         # capture started
+LEVEL 0.0123             # live RMS energy per audio chunk, while listening
+PARTIAL hello wor        # interim transcript so far; replaces the last PARTIAL
+PHASE silence            # trailing silence just started, while listening
+STATUS transcribing      # final decode running
+FINAL hello world        # committed transcript; DONE follows
+DONE                     # capture finished
+ERROR <message>          # fatal
 ```
 
 `PARTIAL` streams the best guess while you speak and is superseded by the next
@@ -193,7 +198,8 @@ binaries. Requires the `CRATES_IO_TOKEN` secret.
 ## Editor / TUI integration
 
 Reference files for wiring `jisuno` into the hoocode TUI as a `ctrl+r`
-push-to-talk input live in [`docs/hoocode-integration/`](docs/hoocode-integration/).
+push-to-talk input live in [`docs/user/src/tui/`](docs/user/src/tui/):
+[`tui.md`](docs/user/src/tui.md) and `voice-transcribe.ts`.
 
 ## Related
 

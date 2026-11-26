@@ -22,7 +22,8 @@ A single workflow triggered when a PR with a `cargo:patch`, `cargo:minor`, or
 1. **bump-and-tag** — reads the current version, bumps it based on the label,
    updates `Cargo.toml` + `Cargo.lock`, commits to `main`, pushes, and creates
    an annotated `v*` tag
-2. **publish** — publishes `jisuno` to crates.io, skipping a version already
+2. **publish** — publishes `jisuno-logic`, `jisuno-audio`, `jisuno-asr`, then
+   `jisuno` to crates.io in dependency order, skipping a version already
    on the index so a partial run can be retried (needs the `CRATES_IO_TOKEN`
    secret; installs ALSA headers first)
 3. **create-release** — creates the GitHub release with auto-generated notes
