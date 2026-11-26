@@ -863,15 +863,33 @@ mod tests {
     }
 
     #[test]
-    fn declared_list_wins_over_builtin_free_slot() {
-        // `open note {name}` with a declared list for `name` uses the list,
-        // not the built-in free-text `{name}`.
+    fn declaring_builtin_name_is_rejected() {
+        // Built-in names cannot be declared (check 22), so a declared `name`
+        // list can never shadow the built-in free-text slot at runtime.
         let json = r#"{
             "version": 1,
             "commands": [
                 {"id": "note", "say": ["open note {name}"],
                  "slots": {"name": ["standup", "retro"]},
                  "steps": [{"do": "app.open", "app": "Inkuno", "arg": "{name}.md"}]}
+            ]
+        }"#;
+        let errors = crate::voice_control::parse(json).expect_err("built-in name must be rejected");
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(
+            errors[0].message,
+            "command \"note\": slot \"name\" is built in and cannot be declared"
+        );
+    }
+
+    #[test]
+    fn declared_list_slot_restricts_values() {
+        let json = r#"{
+            "version": 1,
+            "commands": [
+                {"id": "note", "say": ["open note {note}"],
+                 "slots": {"note": ["standup", "retro"]},
+                 "steps": [{"do": "app.open", "app": "Inkuno", "arg": "{note}.md"}]}
             ]
         }"#;
         let (config, _) = crate::voice_control::parse(json).expect("test config parses");
@@ -903,16 +921,17 @@ mod tests {
 
     #[test]
     fn fill_failure_returns_failed_with_hud() {
-        // `{name}` is in the steps via the first phrase, but the matched
-        // second phrase fills no value for it.
+        // Validation rejects a phrase that lacks a step slot (check 12), so
+        // inject it after parse: "open settings" matches but fills no `{name}`.
         let json = r#"{
             "version": 1,
             "commands": [
-                {"id": "note", "say": ["open note {name}", "open settings"],
+                {"id": "note", "say": ["open note {name}"],
                  "steps": [{"do": "app.open", "app": "Inkuno", "arg": "{name}.md"}]}
             ]
         }"#;
-        let (config, _) = crate::voice_control::parse(json).expect("test config parses");
+        let (mut config, _) = crate::voice_control::parse(json).expect("test config parses");
+        config.commands[0].say.push("open settings".to_string());
         let commands = Commands::new(
             &config,
             &Runtime {
@@ -933,15 +952,21 @@ mod tests {
 
     #[test]
     fn non_place_slot_value_returns_failed_with_hud() {
-        // `{window}` matched "terminal" is not a valid place.
+        // A declared place list is valid (check 24), so parse accepts it. The
+        // list is then corrupted after parse so the matched value is not a place.
         let json = r#"{
             "version": 1,
             "commands": [
-                {"id": "tile", "say": ["tile {window} somewhere"],
-                 "steps": [{"do": "window.tile", "window": "terminal", "place": "{window}"}]}
+                {"id": "tile", "say": ["tile {window} to {spot}"],
+                 "slots": {"spot": ["left-half", "right-half"]},
+                 "steps": [{"do": "window.tile", "window": "{window}", "place": "{spot}"}]}
             ]
         }"#;
-        let (config, _) = crate::voice_control::parse(json).expect("test config parses");
+        let (mut config, _) = crate::voice_control::parse(json).expect("test config parses");
+        config.commands[0].slots.insert(
+            "spot".to_string(),
+            SlotDecl::List(vec!["nowhere".to_string()]),
+        );
         let commands = Commands::new(
             &config,
             &Runtime {
@@ -951,9 +976,9 @@ mod tests {
             },
         );
         assert_eq!(
-            commands.resolve("tile terminal somewhere", None),
+            commands.resolve("tile terminal to nowhere", None),
             Resolution::Failed {
-                hud: "Could not run \"tile terminal somewhere\": \"terminal\" is not a place"
+                hud: "Could not run \"tile terminal to nowhere\": \"nowhere\" is not a place"
                     .to_string()
             }
         );
