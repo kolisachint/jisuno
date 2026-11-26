@@ -11,18 +11,15 @@
 //! goes to **stdout** as the line protocol in [`protocol`]; logs go to stderr.
 
 mod serve;
-mod setup;
-mod tls;
-mod transcribe;
 
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
+use jisuno_asr::setup::{self, Model};
+use jisuno_asr::{tls, transcribe};
 use jisuno_audio::{audio, mic};
 use jisuno_logic::protocol;
 use jisuno_logic::vad::{Vad, VadEvent};
-
-use setup::Model;
 
 #[derive(Parser)]
 #[command(name = "voicetools", version, about = "Local offline voice-to-text")]

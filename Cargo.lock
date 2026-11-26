@@ -751,8 +751,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "dirs",
+ "jisuno-asr",
  "jisuno-audio",
+ "jisuno-logic",
+]
+
+[[package]]
+name = "jisuno-asr"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
  "jisuno-logic",
  "ndarray",
  "ort",

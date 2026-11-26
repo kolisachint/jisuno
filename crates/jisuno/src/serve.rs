@@ -17,12 +17,11 @@ use std::io::BufRead;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
+use jisuno_asr::setup::Model;
+use jisuno_asr::transcribe::Transcriber;
 use jisuno_audio::{audio, mic};
 use jisuno_logic::protocol;
 use jisuno_logic::vad::{self, Vad, VadEvent};
-
-use crate::setup::Model;
-use crate::transcribe::Transcriber;
 
 /// How often to poll the audio channel while listening, so CANCEL/SHUTDOWN
 /// are noticed promptly even during silence.
@@ -49,7 +48,7 @@ pub fn run(model_name: &str, silence_ms: u64, partial_ms: u64) -> anyhow::Result
         std::process::exit(1);
     }
 
-    let mut transcriber = crate::transcribe::load(model)?;
+    let mut transcriber = jisuno_asr::transcribe::load(model)?;
     protocol::ready();
 
     let cmds = spawn_stdin_reader();

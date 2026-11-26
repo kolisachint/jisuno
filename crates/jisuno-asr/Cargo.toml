@@ -1,0 +1,19 @@
+[package]
+name = "jisuno-asr"
+description = "Parakeet ONNX transcription, model registry and downloads for Jisuno"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+dirs = { workspace = true }
+jisuno-logic = { workspace = true }
+ndarray = { workspace = true }
+ort = { workspace = true }
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+rustls-pemfile = { workspace = true }
+ureq = { workspace = true }
+webpki-roots = { workspace = true }
