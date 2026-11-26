@@ -6,6 +6,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fmt};
 
 use anyhow::{anyhow, Context, Result};
@@ -13,6 +15,12 @@ use serde::{Deserialize, Serialize};
 
 const DICTATION_LIMIT_S: RangeInclusive<u32> = 10..=600;
 const HANDS_FREE_SILENCE_MS: RangeInclusive<u32> = 200..=5000;
+
+/// Bounds the symlink chain followed for a dangling link, as the kernel does.
+const MAX_SYMLINK_HOPS: usize = 40;
+
+/// Makes each temp file name unique within the process. Paired with the pid across processes.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Top-level keys of settings.json, as in `schemas/settings.schema.json`.
 const KNOWN_KEYS: &[&str] = &[
@@ -358,15 +366,18 @@ fn resolve_with(override_dir: Option<OsString>, home: Option<OsString>) -> Resul
     ))
 }
 
-/// Writes `contents` to `<path>.tmp` in the same dir, then renames it over `path`.
+/// Writes `contents` to a unique temp file next to the target, then renames it over the target.
+/// A symlink at `path` is followed, so the link itself survives and its target is updated.
+/// The existing file's permissions are kept; a new file gets the default mode.
 pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+    let target =
+        resolve_write_target(path).with_context(|| format!("resolving {}", path.display()))?;
+    if let Some(parent) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    let mut tmp_name = path.as_os_str().to_owned();
-    tmp_name.push(".tmp");
-    let tmp = PathBuf::from(tmp_name);
-    if let Err(e) = write_then_rename(&tmp, path, contents) {
+    let (tmp, file) =
+        create_temp(&target).with_context(|| format!("creating temp for {}", path.display()))?;
+    if let Err(e) = write_then_rename(file, &tmp, &target, contents) {
         // Best effort: the temp file is only a leftover, the original is untouched.
         let _ = fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("writing {}", path.display()));
@@ -374,12 +385,90 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_then_rename(tmp: &Path, path: &Path, contents: &str) -> io::Result<()> {
-    let mut file = fs::File::create(tmp)?;
+/// The file a write to `path` lands in. A symlink resolves to its target so the link is kept.
+fn resolve_write_target(path: &Path) -> io::Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {}
+        Ok(_) => return Ok(path.to_path_buf()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(path.to_path_buf()),
+        Err(e) => return Err(e),
+    }
+    if let Ok(resolved) = fs::canonicalize(path) {
+        return Ok(resolved);
+    }
+    // Dangling link: follow the chain by hand. A relative target resolves against the
+    // link's own dir; `join` keeps an absolute target as is.
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_SYMLINK_HOPS {
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {}
+            Ok(_) => return Ok(current),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(current),
+            Err(e) => return Err(e),
+        }
+        let next = fs::read_link(&current)?;
+        let base = current.parent().unwrap_or_else(|| Path::new(""));
+        current = base.join(next);
+    }
+    Err(io::Error::other("too many levels of symbolic links"))
+}
+
+/// Creates `<file name>.<pid>.<counter>.tmp` in `target`'s dir. `create_new` means no writer
+/// ever shares a temp file, so a name collision retries with the next counter value.
+fn create_temp(target: &Path) -> io::Result<(PathBuf, fs::File)> {
+    let name = target
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    let dir = target.parent().unwrap_or_else(|| Path::new(""));
+    loop {
+        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = name.to_owned();
+        tmp_name.push(format!(".{}.{n}.tmp", process::id()));
+        let tmp = dir.join(tmp_name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(file) => return Ok((tmp, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn write_then_rename(
+    mut file: fs::File,
+    tmp: &Path,
+    target: &Path,
+    contents: &str,
+) -> io::Result<()> {
+    match fs::metadata(target) {
+        Ok(meta) => file.set_permissions(meta.permissions())?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
     drop(file);
-    fs::rename(tmp, path)
+    fs::rename(tmp, target)?;
+    sync_dir(target.parent().unwrap_or_else(|| Path::new("")))
+}
+
+/// Makes the rename durable. Directories cannot be fsynced on Windows, so this is unix-only.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Keeps the last value that parsed. Hot reload calls `apply` with each new parse result.
@@ -676,6 +765,94 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["settings.json".to_string()]);
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn concurrent_atomic_writes_never_interleave() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let a = format!("{{\"tag\": \"{}\"}}\n", "a".repeat(64 * 1024));
+        let b = format!("{{\"tag\": \"{}\"}}\n", "b".repeat(64 * 1024));
+        std::thread::scope(|s| {
+            for body in [&a, &b] {
+                let path = &path;
+                s.spawn(move || {
+                    for _ in 0..100 {
+                        write_atomic(path, body).unwrap();
+                    }
+                });
+            }
+        });
+        let final_text = fs::read_to_string(&path).unwrap();
+        assert!(final_text == a || final_text == b, "torn write");
+        assert_eq!(dir_names(tmp.path()), vec!["settings.json".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_symlink_keeps_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("dotfiles").join("settings.json");
+        fs::create_dir_all(real.parent().unwrap()).unwrap();
+        fs::write(&real, "{}\n").unwrap();
+        let link = tmp.path().join("settings.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_atomic(&link, "{\"sounds\": false}\n").unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "{\"sounds\": false}\n");
+        assert_eq!(
+            dir_names(real.parent().unwrap()),
+            vec!["settings.json".to_string()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_dangling_relative_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("settings.json");
+        std::os::unix::fs::symlink("sub/settings.json", &link).unwrap();
+        fs::create_dir(tmp.path().join("sub")).unwrap();
+
+        write_atomic(&link, "{}\n").unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("sub").join("settings.json")).unwrap(),
+            "{}\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        fs::write(&path, "{}\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_atomic(&path, "{\"sounds\": false}\n").unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(dir_names(tmp.path()), vec!["settings.json".to_string()]);
     }
 
     #[test]
