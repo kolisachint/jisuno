@@ -9,23 +9,29 @@
 //! * `when` filtering happens first: candidates whose `when_apps` does not
 //!   list the frontmost app are removed before matching.
 //! * Both sides are normalized (lowercase, punctuation stripped, split into
-//!   words; `{slot}` tokens are preserved in phrases).
-//! * Each phrase is scored by word-level edit distance. Substituting word `a`
-//!   for word `b` costs the character-level normalized edit distance between
-//!   them; inserting or deleting a word costs 1. The total is divided by the
-//!   rendered phrase length in words.
-//! * Fixed-list slots are fuzzy matched like literal words: every list value
-//!   is tried (values may be multi-word, e.g. `right-half` matches spoken
-//!   "right half") and the best is kept. The filled slot reports the canonical
-//!   list value.
+//!   words; `{slot}` tokens are preserved in phrases). A word substitutes
+//! * Each phrase is scored by word-level edit distance. A word substitutes
+//!   for another at its character-level normalized edit distance, but only
+//!   when that distance is at most 0.34 and both words start with the same
+//!   letter; any other substitution costs 1, like an insertion or deletion.
+//!   The total is divided by the rendered phrase length in words.
+//! * Fixed-list slots are fuzzy matched like literal words (same per-word
+//!   rule): every list value is tried (values may be multi-word) and the
+//!   best is kept; values that normalize to zero words are skipped, and a
+//!   fixed slot always consumes at least one utterance word. The filled slot
+//!   reports the canonical list value.
 //! * A free slot is allowed once per phrase, as the last token only. It
 //!   captures the remaining utterance words verbatim (original casing,
-//!   trimmed) at zero cost and must capture at least one word.
+//!   trimmed) at zero cost, must capture at least one word, and captures at
+//!   most 10 words: a longer remainder does not match the phrase.
 //! * The best candidate runs when its distance is at most 0.20 and no other
 //!   candidate (different command or phrase) is within 0.05 of it; otherwise
 //!   the best phrase is returned as a `DidYouMean` suggestion (rendered with
 //!   slots filled). `NoMatch` is returned only when there are no eligible
-//!   candidates or the utterance is empty.
+//!   candidates or the utterance is empty. `TooLong` is returned before any
+//!   scoring when the utterance has more than 4x the longest phrase word
+//!   count + 8 words: command mode is for short phrases, and scoring a long
+//!   utterance against slot-heavy configs has a cost cliff.
 //!
 //! Performance: character-level costs between the utterance words and every
 //! distinct phrase/value word are computed once per call into a lookup table,
@@ -39,6 +45,17 @@ use std::rc::Rc;
 const ACCEPT_DISTANCE: f32 = 0.20;
 /// Distance band that turns an accepted match into a near-tie suggestion.
 const TIE_DISTANCE: f32 = 0.05;
+/// A substituted literal or fixed-slot word is accepted at its
+/// character-level distance only up to this fraction, and only when both
+/// words start with the same letter; anything else costs 1.
+const WORD_SUB_MAX: f32 = 0.34;
+/// A free slot captures at most this many words; a longer remainder does not
+/// match the phrase.
+const FREE_MAX_WORDS: usize = 10;
+/// Before any scoring, an utterance longer than this multiple of the longest
+/// phrase word count (plus slack) is `TooLong`.
+const TOO_LONG_FRAC: usize = 4;
+const TOO_LONG_SLACK: usize = 8;
 
 /// A matchable phrase. `phrase` may contain `{slot}` templates.
 #[derive(Debug, Clone, Copy)]
@@ -94,6 +111,9 @@ pub enum Outcome {
     },
     /// No eligible candidates, or the utterance is empty.
     NoMatch,
+    /// The utterance is far longer than any phrase (more than 4x the longest
+    /// phrase word count + 8 words); scoring is skipped.
+    TooLong,
 }
 
 /// Lowercase, strip punctuation, and split into words.
@@ -125,6 +145,17 @@ pub fn match_utterance(
     if eligible.is_empty() {
         return Outcome::NoMatch;
     }
+    // Command mode is for short phrases: a far longer utterance cannot match
+    // anything, and scoring it against slot-heavy configs has a cost cliff
+    // (fixed-slot spans times list values per candidate). Bail before any DP.
+    let longest = eligible
+        .iter()
+        .map(|c| tokenize(c.phrase).len())
+        .max()
+        .unwrap_or(0);
+    if utt.len() > TOO_LONG_FRAC * longest + TOO_LONG_SLACK {
+        return Outcome::TooLong;
+    }
 
     // Intern the utterance words first so they own ids 0..ucount; everything
     // else follows. Character-level costs are then precomputed once per call.
@@ -149,31 +180,48 @@ pub fn match_utterance(
                         value_occurrences += list.len();
                         let key = (list.as_ptr(), list.len());
                         let values = match list_cache.get(&key) {
-                            Some(shared) => Rc::clone(shared),
+                            Some(shared) => {
+                                let max_len = shared.iter().map(|v| v.ids.len()).max().unwrap_or(0);
+                                (Rc::clone(shared), max_len)
+                            }
                             None => {
-                                let built: Vec<FixedValue> = list
-                                    .iter()
-                                    .map(|raw| {
-                                        let (ids, uidx) = value_word_idx(
-                                            raw,
-                                            &mut vocab,
-                                            &mut value_cache,
-                                            &mut uniq_values,
-                                        );
-                                        FixedValue {
-                                            display: raw.replace('-', " "),
-                                            canonical: raw.clone(),
-                                            ids,
-                                            uidx,
-                                        }
-                                    })
-                                    .collect();
+                                let mut built: Vec<FixedValue> = Vec::new();
+                                for raw in list.iter() {
+                                    // Values that normalize to zero words
+                                    // can never match; skip them.
+                                    if normalize(raw).is_empty() {
+                                        continue;
+                                    }
+                                    let (ids, uidx) = value_word_idx(
+                                        raw,
+                                        &mut vocab,
+                                        &mut value_cache,
+                                        &mut uniq_values,
+                                    );
+                                    built.push(FixedValue {
+                                        display: raw.replace('-', " "),
+                                        canonical: raw.clone(),
+                                        ids,
+                                        uidx,
+                                    });
+                                }
+                                let max_len = built.iter().map(|v| v.ids.len()).max().unwrap_or(0);
                                 let shared = Rc::new(built);
                                 list_cache.insert(key, Rc::clone(&shared));
-                                shared
+                                (shared, max_len)
                             }
                         };
-                        tmpl.push(Pattern::Fixed { name, values });
+                        if values.0.is_empty() {
+                            // Every value normalized to zero words: the slot
+                            // can never match, like an unknown slot.
+                            tmpl.push(Pattern::Unknown { name });
+                        } else {
+                            tmpl.push(Pattern::Fixed {
+                                name,
+                                values: values.0,
+                                max_len: values.1,
+                            });
+                        }
                     }
                     Some(SlotValues::Free) => tmpl.push(Pattern::Free { name }),
                     _ => tmpl.push(Pattern::Unknown { name }),
@@ -286,7 +334,9 @@ fn push_token(raw: &str, start: usize, end: usize, out: &mut Vec<Tok>) {
         });
     } else {
         let cleaned: String = lower.chars().filter(|&c| c != '{' && c != '}').collect();
-        if !cleaned.is_empty() {
+        // Drop tokens with no alphanumerics (punctuation runs, `_`, ...): the
+        // matcher scores exactly the word sequence `normalize` returns.
+        if cleaned.chars().any(|c| c.is_alphanumeric()) {
             out.push(Tok {
                 word: cleaned,
                 start,
@@ -342,7 +392,7 @@ impl Vocab {
         let mut costs = Vec::with_capacity(ucount * total);
         for u in 0..ucount {
             for w in 0..total {
-                costs.push(char_norm_dist(&self.words[u], &self.words[w]));
+                costs.push(word_sub_cost(&self.words[u], &self.words[w]));
             }
         }
         self.costs = costs;
@@ -371,6 +421,24 @@ fn value_word_idx(
     uniq.push(Rc::clone(&ids));
     cache.insert(raw.to_string(), (Rc::clone(&ids), idx));
     (ids, idx)
+}
+
+/// Substitution cost between two normalized words: the character-level
+/// normalized distance, accepted only up to `WORD_SUB_MAX` and only when
+/// both words start with the same letter; anything else is a full mismatch.
+fn word_sub_cost(a: &str, b: &str) -> f32 {
+    if a == b {
+        return 0.0;
+    }
+    if a.chars().next() != b.chars().next() {
+        return 1.0;
+    }
+    let d = char_norm_dist(a, b);
+    if d <= WORD_SUB_MAX {
+        d
+    } else {
+        1.0
+    }
 }
 
 /// Character-level edit distance divided by the longer length; 0 is identical.
@@ -437,9 +505,12 @@ enum Pattern {
     Lit(u32),
     /// Fixed-list slot with its candidate values (shared across phrases
     /// that reuse the same value list).
+    /// `{slot}` with a fixed value list. `max_len` is the longest value in
+    /// words; spans wider than `max_len + 1` are never tried.
     Fixed {
         name: String,
         values: Rc<Vec<FixedValue>>,
+        max_len: usize,
     },
     /// Free-text slot; only valid as the last token.
     Free { name: String },
@@ -630,28 +701,9 @@ fn align(
     for j in 1..=m {
         let (cost, back) = match &tmpl[j - 1] {
             Pattern::Lit(_) | Pattern::Unknown { .. } => (ctx.dp[at(0, j - 1)] + 1.0, Back::Ins),
-            Pattern::Fixed { values, .. } => {
-                let mut shortest = usize::MAX;
-                let mut shortest_val = 0;
-                for (vi, v) in values.iter().enumerate() {
-                    if v.ids.len() < shortest {
-                        shortest = v.ids.len();
-                        shortest_val = vi;
-                    }
-                }
-                let ins = if shortest == usize::MAX {
-                    1.0
-                } else {
-                    shortest as f32
-                };
-                (
-                    ctx.dp[at(0, j - 1)] + ins,
-                    Back::Slot {
-                        prev: 0,
-                        val: shortest_val,
-                    },
-                )
-            }
+            // A fixed slot always consumes at least one word: zero words
+            // cannot fill it.
+            Pattern::Fixed { .. } => (f32::INFINITY, Back::Ins),
             Pattern::Free { .. } if j == m => (f32::INFINITY, Back::Free { prev: 0 }),
             Pattern::Free { .. } => (ctx.dp[at(0, j - 1)] + 1.0, Back::Ins),
         };
@@ -681,11 +733,18 @@ fn align(
                     ctx.dp[at(i, j - 1)] + 1.0,
                     Back::Ins,
                 ),
-                Pattern::Fixed { values, .. } => {
+                Pattern::Fixed {
+                    values, max_len, ..
+                } => {
+                    // Span width is bounded by the longest value + 1: a wider
+                    // span can only add deletions. A fixed slot consumes >= 1
+                    // word, so zero-width spans are excluded.
                     let mut best_c = ctx.dp[at(i - 1, j)] + 1.0;
                     let mut best_b = Back::Del;
                     if let Some(table) = spans {
-                        for s in 0..=i {
+                        // Span width is bounded by the longest value + 1.
+                        let lo = i.saturating_sub(max_len + 1);
+                        for s in lo..i {
                             let base = ctx.dp[at(s, j - 1)];
                             if base.is_infinite() {
                                 continue;
@@ -704,7 +763,9 @@ fn align(
                             }
                         }
                     } else {
-                        for s in 0..=i {
+                        // Span width is bounded by the longest value + 1.
+                        let lo = i.saturating_sub(max_len + 1);
+                        for s in lo..i {
                             let base = ctx.dp[at(s, j - 1)];
                             if base.is_infinite() {
                                 continue;
@@ -730,7 +791,9 @@ fn align(
                     }
                 }
                 Pattern::Free { .. } if j == m => {
-                    // Capture all remaining words; must capture at least one.
+                    // Capture all remaining words: the best split of the
+                    // prefix, then 1..=FREE_MAX_WORDS words. A longer
+                    // remainder does not match this phrase.
                     let mut best_c = f32::INFINITY;
                     let mut best_s = 0;
                     for s in 0..i {
@@ -740,7 +803,11 @@ fn align(
                             best_s = s;
                         }
                     }
-                    (best_c, Back::Free { prev: best_s })
+                    if i - best_s > FREE_MAX_WORDS {
+                        (f32::INFINITY, Back::Free { prev: best_s })
+                    } else {
+                        (best_c, Back::Free { prev: best_s })
+                    }
                 }
                 Pattern::Free { .. } => pick(
                     ctx.dp[at(i - 1, j - 1)],
@@ -858,7 +925,7 @@ fn render(
         match p {
             Pattern::Lit(id) => parts.push(vocab.words[*id as usize].clone()),
             Pattern::Unknown { name } => parts.push(format!("{{{name}}}")),
-            Pattern::Fixed { name, values } => match fill_for(fills, t) {
+            Pattern::Fixed { name, values, .. } => match fill_for(fills, t) {
                 Some(f) => match values.get(f.val) {
                     Some(v) => {
                         slots.insert(name.clone(), v.canonical.clone());
@@ -1087,6 +1154,103 @@ mod tests {
     }
 
     #[test]
+    fn normalize_hyphens_match_spaces() {
+        // `open-settings` and `open settings` score identically.
+        assert_eq!(normalize("open-settings"), normalize("open settings"));
+        assert_eq!(normalize("open-settings"), vec!["open", "settings"]);
+        // Tokens with no alphanumerics are dropped from the word sequence.
+        assert!(normalize("___").is_empty());
+    }
+
+    #[test]
+    fn fixed_slot_must_consume_a_word() {
+        let slots = TestSlots::std();
+        let cands = [cand("focus", "focus {window}")];
+        // "focus" alone leaves the fixed slot empty: not a run.
+        match match_utterance("focus", None, &cands, &slots) {
+            Outcome::DidYouMean { .. } => {}
+            other => panic!("expected DidYouMean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_normalizing_values_are_skipped() {
+        let slots = TestSlots::default().with_list("x", "thing", &["!!!"]);
+        let cands = [cand("x", "do {thing}")];
+        // The only value normalizes to zero words: the slot can never match.
+        match match_utterance("do thing", None, &cands, &slots) {
+            Outcome::DidYouMean { .. } => {}
+            other => panic!("expected DidYouMean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn per_word_substitution_needs_same_first_letter() {
+        let slots = TestSlots::default().with_list("m", "mode", &["light", "dark"]);
+        let cands = [cand("m", "set {mode}")];
+        // "night" is char-close to "light" (0.20) but starts with a
+        // different letter: a full mismatch, so this only suggests.
+        // (Old code ran it at distance 0.10.)
+        match match_utterance("set night", None, &cands, &slots) {
+            Outcome::DidYouMean { phrase, .. } => assert_eq!(phrase, "set light"),
+            other => panic!("expected DidYouMean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn per_word_gate_allows_same_letter_mishearing() {
+        let slots = TestSlots::std();
+        let cands = [cand("settings", "open settings")];
+        // "setings" is char-close and starts with `s`: still accepted.
+        match match_utterance("open setings", None, &cands, &slots) {
+            Outcome::Run(m) => assert_eq!(m.command_id, "settings"),
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn free_slot_captures_at_most_ten_words() {
+        let slots = TestSlots::std();
+        let cands = [cand("note", "open note {name}")];
+        let words: Vec<String> = (1..=10).map(|i| format!("w{i}")).collect();
+        let ten = format!("open note {}", words.join(" "));
+        match match_utterance(&ten, None, &cands, &slots) {
+            Outcome::Run(m) => assert_eq!(
+                m.slots.get("name").map(|s| s.split_whitespace().count()),
+                Some(10)
+            ),
+            other => panic!("expected Run, got {other:?}"),
+        }
+        // An 11-word remainder does not match the phrase.
+        let eleven = format!("{ten} w11");
+        match match_utterance(&eleven, None, &cands, &slots) {
+            Outcome::Run(m) => panic!("must not run, got {m:?}"),
+            Outcome::DidYouMean { .. } => {}
+            other => panic!("expected DidYouMean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn far_longer_utterance_is_too_long() {
+        let slots = TestSlots::std();
+        let cands = [cand("settings", "open settings")];
+        // Longest phrase is 2 words: over 4*2+8 = 16 words is TooLong.
+        assert!(matches!(
+            match_utterance(&vec!["word"; 300].join(" "), None, &cands, &slots),
+            Outcome::TooLong
+        ));
+        assert!(matches!(
+            match_utterance(&vec!["word"; 17].join(" "), None, &cands, &slots),
+            Outcome::TooLong
+        ));
+        // At the boundary scoring still runs (and only suggests here).
+        assert!(matches!(
+            match_utterance(&vec!["word"; 16].join(" "), None, &cands, &slots),
+            Outcome::DidYouMean { .. }
+        ));
+    }
+
+    #[test]
     fn declared_fixed_slot_matches() {
         let slots = TestSlots::std();
         let cands = [cand("project", "open project {project}")];
@@ -1163,6 +1327,56 @@ mod tests {
         let outcome = match_utterance("cmd42 action1 value 7", None, &cands, &slots);
         let elapsed = start.elapsed();
         println!("large-config match took {elapsed:?}: {outcome:?}");
+        assert!(
+            elapsed < Duration::from_millis(5),
+            "matcher took {elapsed:?}, budget is 5 ms"
+        );
+    }
+
+    /// 60 commands x 2 phrases (two with a 30-value `{slot}`) against a
+    /// 300-word utterance: the TooLong gate must fire before any DP.
+    /// Ignored on debug builds; enforced with release optimizations.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore)]
+    fn perf_long_utterance_returns_too_long_fast() {
+        let value_list: Vec<String> = (0..30).map(|i| format!("window-{i}")).collect();
+        struct WindowList<'a> {
+            values: &'a [String],
+        }
+        impl SlotSource for WindowList<'_> {
+            fn values(&self, _command_id: &str, slot: &str) -> Option<SlotValues<'_>> {
+                (slot == "window").then_some(SlotValues::List(self.values))
+            }
+        }
+        let slots = WindowList {
+            values: &value_list,
+        };
+
+        let ids: Vec<String> = (0..60).map(|c| format!("cmd{c}")).collect();
+        let mut phrases: Vec<String> = Vec::with_capacity(120);
+        for c in 0..60 {
+            phrases.push(format!("cmd{c} action{c}"));
+            phrases.push(format!("cmd{c} extra{c}"));
+        }
+        phrases[1] = "cmd0 focus {window}".to_string();
+        phrases[3] = "cmd1 focus {window}".to_string();
+        let cands: Vec<Candidate> = phrases
+            .iter()
+            .enumerate()
+            .map(|(i, phrase)| Candidate {
+                command_id: ids[i / 2].as_str(),
+                phrase: phrase.as_str(),
+                when_apps: None,
+            })
+            .collect();
+        assert_eq!(cands.len(), 120);
+
+        let utterance = vec!["word"; 300].join(" ");
+        let start = Instant::now();
+        let outcome = match_utterance(&utterance, None, &cands, &slots);
+        let elapsed = start.elapsed();
+        println!("long-utterance gate took {elapsed:?}: {outcome:?}");
+        assert!(matches!(outcome, Outcome::TooLong));
         assert!(
             elapsed < Duration::from_millis(5),
             "matcher took {elapsed:?}, budget is 5 ms"
