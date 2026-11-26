@@ -1,6 +1,6 @@
 # docs/design: index
 
-Design ground truth for Jisuno (formerly voicetools). Code follows these docs, never the reverse.
+Design ground truth for Jisuno. Code follows these docs, never the reverse.
 Status: `jisuno.md`, `keybindings.md`, `voice-control.md` signed off 2026-11-26; core build
 started. `app-ui.md` and `prototypes/v3.html` pending sign-off; no UI code until then.
 

@@ -13,11 +13,8 @@ cask "jisuno" do
 
   app "Jisuno.app"
 
-  # Model files: setup.rs currently stores them under
-  # ~/Library/Application Support/voicetools/models (pre-rename path). The jisuno
-  # location is not decided yet; add it here once it is, e.g.
-  # "~/Library/Application Support/jisuno".
   zap trash: [
+    "~/Library/Application Support/jisuno",
     "~/.config/jisuno",
     "~/Library/Caches/jisuno",
     "~/Library/Preferences/dev.kolisachint.jisuno.plist",

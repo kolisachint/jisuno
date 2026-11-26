@@ -6,7 +6,9 @@ Last update: 2026-11-26. Decisions are logged in §10; they win over any older t
 
 ## 1. What Jisuno is
 
-`voicetools` becomes **Jisuno**: a macOS menu bar app, always one key away.
+**Jisuno** is a macOS menu bar app, always one key away. It is a separate product from
+`voicetools` (no shared code, config, model storage, or release assets; it started from a copy
+of that code).
 
 - **Dictate**: hold Right ⌥, speak, release; the text lands in the focused app.
 - **Command**: hold Right ⌘, say a phrase from `voice-control-config.json` ("start working",
@@ -254,6 +256,12 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
     The CLI is on crates.io as `jisuno` (`cargo install jisuno` builds the CLI only; the app
     is built with the `app` feature for packaging). Updates are manual in v1 (`brew upgrade`
     or a new download); no update check, which keeps rule 15. Revisit Sparkle after v1.
+
+**2026-11-26, round 5**
+1. Jisuno and `voicetools` are separate products with no runtime relation. Jisuno downloads
+   and stores its own models (`~/Library/Application Support/jisuno/models`), mirrors them on
+   its own `kolisachint/jisuno` release (`models-v1`), and never reads voicetools paths, env
+   vars, or release assets.
 
 ## 11. Open questions
 
