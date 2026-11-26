@@ -2,7 +2,7 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -588,12 +588,11 @@ impl AppState {
                 mode = InsertMode::Type;
             }
         }
+        // No post-paste wait here: the platform restores the clipboard on
+        // its own background thread (~150 ms), and the app process
+        // outlives it. Sleeping would stall the 20 ms tick.
         match insert::insert_text(text, pid, mode, self.settings.restore_clipboard) {
-            Ok(()) => {
-                // Paste leaves the restore to a background thread; outlive it.
-                std::thread::sleep(Duration::from_millis(200));
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(e) => {
                 if e.downcast_ref::<FocusLost>().is_some() {
                     self.log("focus lost: text in Recent");
