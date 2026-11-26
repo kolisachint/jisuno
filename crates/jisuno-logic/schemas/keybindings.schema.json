@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "./schemas/keybindings.schema.json",
+  "title": "keybindings.json",
+  "description": "Jisuno keybindings: an object with the schema reference and the binding list. Hot-reloaded; on error the file is rejected and the last good config stays live.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path of this schema as written under ~/.config/jisuno/schemas/."
+    },
+    "bindings": {
+      "type": "array",
+      "description": "Every key binding. Two bindings with the same key and the same when are a duplicate and rejected.",
+      "items": { "$ref": "#/$defs/binding" }
+    }
+  },
+  "required": ["bindings"],
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Lowercase, +-joined: modifiers first in ctrl+option+shift+cmd order, then the key (e.g. ctrl+option+w). Side-specific hold keys: right_option, right_cmd, right_shift, right_ctrl. Anything uppercase is rejected; write ctrl+option+w, not Ctrl+Option+W.",
+          "pattern": "^(?:right_option|right_cmd|right_shift|right_ctrl|(?:ctrl\\+)?(?:option\\+)?(?:shift\\+)?(?:cmd\\+)?(?:f(?:[1-9]|1[0-9]|20)|[a-z]|[0-9]|,|\\.|/|;|'|\\[|\\]|-|=|space|escape|return|tab|delete))$"
+        },
+        "hold": {
+          "type": "boolean",
+          "description": "When true the key is a hold key: key-down opens the mic, key-up ends the utterance and transcribes. Only a single right-side modifier (right_option, right_cmd, right_shift, right_ctrl) may be a hold key, one key alone, and it counts only if no other key is pressed during it.",
+          "default": false
+        },
+        "when": {
+          "type": "string",
+          "description": "Context the binding lives in; absent means global. listening: a hold utterance or hands-free session is recording. confirming: a command with confirm:true is showing its HUD prompt.",
+          "enum": ["listening", "confirming"]
+        },
+        "command": {
+          "type": "string",
+          "description": "Bindable commands: voice.dictate (hold to dictate; release inserts the text), voice.command (hold to speak a command phrase; release runs it), voice.cancel (cancel the current utterance or pending confirm), voice.confirm (run the pending confirmed command), voice.hands_free_toggle (start/stop hands-free dictation), model.warm (load the model ahead of time), model.unload (unload the model now; no default key), jisuno.settings (open Settings), jisuno.menu (open the menu bar popover; no default key).",
+          "enum": ["voice.dictate", "voice.command", "voice.cancel", "voice.confirm", "voice.hands_free_toggle", "model.warm", "model.unload", "jisuno.settings", "jisuno.menu"]
+        }
+      },
+      "required": ["key", "command"]
+    }
+  }
+}

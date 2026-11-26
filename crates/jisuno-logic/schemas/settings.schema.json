@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "./schemas/settings.schema.json",
+  "title": "settings.json",
+  "description": "Jisuno settings. First run writes every key with its default. Hot-reloaded; on error the file is rejected and the last good config stays live.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path of this schema as written under ~/.config/jisuno/schemas/."
+    },
+    "model": {
+      "type": "string",
+      "description": "Speech recognition model. v3 int8 is multilingual; v2 int8 is English-only.",
+      "enum": ["parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8"],
+      "default": "parakeet-tdt-0.6b-v3-int8"
+    },
+    "language": {
+      "type": "string",
+      "description": "Recognition language; \"auto\" detects it per utterance.",
+      "default": "auto"
+    },
+    "model_load": {
+      "type": "string",
+      "description": "When the model loads: on_demand starts loading at key-down and runs under speech; at_login loads at login.",
+      "enum": ["on_demand", "at_login"],
+      "default": "on_demand"
+    },
+    "unload_after_idle_min": {
+      "type": "integer",
+      "description": "Minutes without use before the model unloads; 0 means never.",
+      "minimum": 0,
+      "default": 10
+    },
+    "input_device": {
+      "type": "string",
+      "description": "Microphone: \"system\" is the system default input, otherwise a device name. A missing device falls back to the system input with a HUD note.",
+      "default": "system"
+    },
+    "dictation_limit_s": {
+      "type": "integer",
+      "description": "Maximum dictation length in seconds (hands-free too); at the cap Jisuno stops and transcribes, as if released.",
+      "minimum": 10,
+      "maximum": 600,
+      "default": 120
+    },
+    "hands_free_silence_ms": {
+      "type": "integer",
+      "description": "Silence duration in milliseconds that ends a hands-free session.",
+      "minimum": 200,
+      "maximum": 5000,
+      "default": 500
+    },
+    "partials": {
+      "type": "boolean",
+      "description": "Show live partial transcripts in the HUD.",
+      "default": true
+    },
+    "insert": {
+      "type": "string",
+      "description": "How text is inserted: paste (with clipboard save/restore) or type (synthetic key events; fallback when the clipboard write fails).",
+      "enum": ["paste", "type"],
+      "default": "paste"
+    },
+    "insert_type_apps": {
+      "type": "array",
+      "description": "Bundle ids of apps that always use typed insertion instead of paste.",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z][A-Za-z0-9-]*(\\.[A-Za-z0-9-]+)+$"
+      },
+      "default": []
+    },
+    "restore_clipboard": {
+      "type": "boolean",
+      "description": "Restore the clipboard contents after paste insertion.",
+      "default": true
+    },
+    "sounds": {
+      "type": "boolean",
+      "description": "Play short tones on start/stop/cancel.",
+      "default": true
+    },
+    "hud": {
+      "type": "string",
+      "description": "Where the HUD appears: at the notch, by the cursor, or off.",
+      "enum": ["notch", "cursor", "off"],
+      "default": "notch"
+    },
+    "login_item": {
+      "type": "boolean",
+      "description": "Launch Jisuno at login.",
+      "default": false
+    }
+  },
+  "required": ["model", "language", "model_load", "unload_after_idle_min", "input_device", "dictation_limit_s", "hands_free_silence_ms", "partials", "insert", "insert_type_apps", "restore_clipboard", "sounds", "hud", "login_item"]
+}
