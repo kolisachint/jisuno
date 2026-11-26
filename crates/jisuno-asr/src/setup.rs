@@ -17,8 +17,7 @@ use crate::tls::TlsOptions;
 /// can't reach huggingface.co (e.g. behind a corporate proxy). Uploaded
 /// manually/once — not kept in sync with upstream. See
 /// `.github/workflows/mirror-models.yml`.
-// Models are mirrored at the existing kolisachint/voicetools release assets for now.
-const MIRROR_BASE: &str = "https://github.com/kolisachint/voicetools/releases/download/models-v1";
+const MIRROR_BASE: &str = "https://github.com/kolisachint/jisuno/releases/download/models-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Model {

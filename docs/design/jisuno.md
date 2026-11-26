@@ -54,7 +54,7 @@ jisuno/
 | `vad.rs`, `protocol.rs` | `jisuno-logic` |
 | `transcribe/*`, `setup.rs`, `tls.rs` | `jisuno-asr` |
 | `serve.rs` | `crates/jisuno` (daemon mode, same pipeline as the app) |
-| `docs/hoocode-integration/` | `docs/user/` "Use from a TUI" |
+| `docs/hoocode-integration/` | `docs/user/src/tui.md` + `docs/user/src/tui/voice-transcribe.ts` (done) |
 
 ## 3. CI
 
