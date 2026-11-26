@@ -120,3 +120,78 @@ only needs the predictor state carried over — no architecture change.
 Second lever if that isn’t enough: a smaller encoder export (the v2
 int8 model) or static int8 quantization with fewer prepacked constants
 to buy warm-RSS headroom.
+
+## Experiment: pause-split streaming (2026-11-27, kept)
+
+Overlapping-window frame splicing was tried first and abandoned as
+unsound. Probing showed the mel frontend normalizes per utterance
+(a windowed mel of identical audio hits cosine −0.21 against the
+full-clip mel) and the full-attention encoder shifts every frame with
+window length (frame 0 already diverges with identical left context).
+Carried predictor state then cascades one divergent window into total
+silence: with `(C, L, R) = (1.0, 2.0, 0.5)` short clips decoded empty,
+and the best grid point `(0.5, 2.0, 0.25)` still lost +0.050 WER mean
+with catastrophic single-window failures. No window length is safe, so
+frame reuse across lengths was dropped entirely.
+
+Kept design: cut pause-bounded segments with a sample-count energy gate
+(hysteresis 0.02/0.01 RMS, 20 ms frames), decode each on a background
+worker thread with a fresh predictor state, `finish` decodes only the
+tail. Cut at the middle of a >= pause run following >= min-speech of
+speech; force-cut at the lowest-energy frame of the last 2 s after
+8 s without a pause; join segments with single spaces plus a documented
+sentence-case heuristic. No predictor state crosses segments, so one
+bad segment cannot poison the rest. `StreamingTranscriber` and the
+`--streaming` bench mode implement this.
+
+Fixtures added (local, `/tmp/fixtures`): `pause45` (32.9 s, 7 distinct
+`say` sentences joined with 0.4–0.7 s digital silence) and
+`continuous40` (29.6 s, same sentences back-to-back, no gaps —
+exercises the forced cut). Existing `loop39`/`loop46` cover repeated
+continuous content.
+
+### Config grid (WER mean over 9 pairs; full-clip mean 0.3875)
+
+| (pause, min-speech, max-seg) | stream WER | delta vs full |
+|--|--|--|
+| (0.30, 1.00, 8.0) default-then | 0.3943 | +0.0068 |
+| **(0.20, 1.00, 8.0) kept default** | **0.3857** | **−0.0018** |
+| (0.20, 0.50, 8.0) | 0.3857 | −0.0018 |
+| (0.30, 1.50, 8.0) | 0.3943 | +0.0068 |
+| (0.30, 1.00, 5.0) | 0.4209 | +0.0334 |
+| (0.15, 0.50, 8.0) | 0.3994 | +0.0119 |
+
+Chosen `(0.2, 1.0, 8.0)`: 0.5 s min-speech ties it but 1.0 s keeps
+segments longer (short windows decode worse); 0.15 s pauses cut
+mid-word; 5 s forced cuts hurt continuous audio. Per-fixture (kept
+config, runs = 5): continuous40 0.289, long 0.579, loop39 0.500,
+loop46 0.647, med 0.150, names 0.348, numbers 0.647, pause45 0.311,
+say 0.000 vs full 0.311/0.579/0.526/0.647/0.150/0.304/0.647/0.322/0.000.
+Remaining deltas are small boundary instabilities (`Shivan/Shivon`,
+`Yayo/Yayoy`, digit phrasing). Deterministic across 10 runs
+(`streaming_is_deterministic_across_runs`).
+
+### Latency (kept config, runs = 5, load ~5.5 on 8 cores)
+
+- push of 100 ms audio: median ~8 us, max 0.1 ms (timer floor in the
+  bench table). Keeps up easily; no ONNX work happens in `push`.
+- `finish()` on pauseless clips (whole tail, no overlap in bench): 5 s
+  median 560 ms (min 489), 15 s median 1715 ms (min 1531).
+- `finish()` production-like (queue drained during speech): ~0 ms when
+  key-up lands in trailing silence (tail skipped by the energy gate:
+  pause45-full, continuous40-full, med); 321 ms for a 4.6 s mid-utterance
+  tail, i.e. ~70 ms per tail second. So ≤ 120 ms holds iff the tail since
+  the last pause is ≤ ~1.7 s — the normal case for dictation rhythm
+  (pauses every few seconds), not for a long final burst.
+- Idempotent repeat `finish()`: ~20 us.
+
+Guard streaming WER ≤ full + 0.01: pass (−0.001 on the kept
+config). The 150 ms key-up target now depends on tail length rather
+than total length: with pauses it is typically one short tail decode
+(tens of ms); without pauses it degrades to a full-clip decode.
+
+Bench: `cargo run --release -p jisuno-bench -- --fixtures-dir
+/tmp/fixtures --runs 5 --warmup 1 --streaming --stream-config
+"0.2,1.0,8.0"`. Integration test:
+`cargo test --release -p jisuno-asr --test streaming -- --ignored`
+(skips without model/fixtures).
