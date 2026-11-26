@@ -375,6 +375,7 @@ struct AppState {
     recent: VecDeque<RecentEntry>,
     announced_secure: Vec<String>,
     announced_bluetooth: bool,
+    mic_satisfied: bool,
     bluetooth_now: bool,
     missing_device_note: Option<String>,
     secure_now: bool,
@@ -581,16 +582,18 @@ pub fn run(opts: AppOptions) {
     );
 
     // Permissions: request what was never asked, then snapshot the rest.
+    // With --debug-wav there is no mic use, so never prompt for it.
+    let mic_override = opts.debug_wav.is_some();
     let mut missing: Vec<(Pane, UiHud)> = Vec::new();
     let mic = permissions::microphone();
-    if mic == PermissionState::NotDetermined {
+    if !mic_override && mic == PermissionState::NotDetermined {
         stamp(start, "microphone: not determined — requesting");
         match permissions::request_microphone() {
             Ok(state) => stamp(start, &format!("microphone prompt answered: {state:?}")),
             Err(e) => stamp(start, &format!("microphone prompt failed: {e:#}")),
         }
     }
-    if permissions::microphone() != PermissionState::Granted {
+    if !mic_override && permissions::microphone() != PermissionState::Granted {
         stamp(start, "microphone: not granted");
         missing.push((Pane::Microphone, UiHud::MicrophoneOff));
     }
@@ -749,6 +752,7 @@ pub fn run(opts: AppOptions) {
             recent: VecDeque::with_capacity(5),
             announced_secure: Vec::new(),
             announced_bluetooth: false,
+            mic_satisfied: mic_override,
             bluetooth_now: false,
             missing_device_note: None,
             secure_now: false,
@@ -1866,7 +1870,7 @@ impl AppState {
         }
         self.last_secure_poll = Instant::now();
         self.perm_granted = [
-            permissions::microphone() == PermissionState::Granted,
+            self.mic_satisfied || permissions::microphone() == PermissionState::Granted,
             permissions::accessibility() == PermissionState::Granted,
             permissions::input_monitoring() == PermissionState::Granted,
         ];
