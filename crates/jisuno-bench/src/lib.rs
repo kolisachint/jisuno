@@ -37,6 +37,15 @@ pub struct BenchConfig {
     pub json: bool,
     /// Exit non-zero when a §6 target fails (CI artifact mode keeps 0).
     pub gate: bool,
+    /// Also measure the streaming path (push/finish latency, streaming WER).
+    /// Informational only: never affects [`gate_failed`].
+    pub streaming: bool,
+    /// Audio per streaming `push`, in milliseconds. No sleeping: pushes run
+    /// back-to-back so each push cost is pure compute.
+    pub stream_push_ms: u64,
+    /// Streaming (pause, min-speech, max-segment) in seconds. Defaults to
+    /// [`jisuno_asr::transcribe::StreamConfig::default`] when `None`.
+    pub stream_config: Option<(f32, f32, f32)>,
 }
 
 impl Default for BenchConfig {
@@ -48,11 +57,14 @@ impl Default for BenchConfig {
             warmup: 1,
             json: false,
             gate: false,
+            streaming: false,
+            stream_push_ms: 100,
+            stream_config: None,
         }
     }
 }
 
-/// Median / p90 / min / max over timed samples, in milliseconds.
+/// Median / p90 / min / max / mean over timed samples, in milliseconds.
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
     pub n: usize,
@@ -60,6 +72,7 @@ pub struct Stats {
     pub max_ms: f64,
     pub median_ms: f64,
     pub p90_ms: f64,
+    pub mean_ms: f64,
 }
 
 /// Summarize `samples_ms`. Returns `None` when there are no samples.
@@ -77,12 +90,14 @@ pub fn summarize(mut samples_ms: Vec<f64>) -> Option<Stats> {
     // Nearest-rank percentile: rank = ceil(p/100 * n), 1-based.
     let rank = (0.9 * n as f64).ceil() as usize;
     let p90_ms = samples_ms[rank.saturating_sub(1).min(n - 1)];
+    let mean_ms = samples_ms.iter().sum::<f64>() / n as f64;
     Some(Stats {
         n,
         min_ms: samples_ms[0],
         max_ms: samples_ms[n - 1],
         median_ms,
         p90_ms,
+        mean_ms,
     })
 }
 
@@ -339,6 +354,22 @@ pub struct BenchReport {
     pub wer_cases: Vec<WerCase>,
     pub wer_mean: Option<f64>,
     pub wer_note: String,
+    /// Streaming WER over the same fixture pairs (`None` unless `streaming`).
+    pub stream_wer_mean: Option<f64>,
+    /// Per-fixture streaming hypotheses (same order/refs as `wer_cases`).
+    pub stream_wer_cases: Vec<WerCase>,
+    /// How streaming WER was scored.
+    pub stream_wer_note: String,
+    /// Per-push compute cost across all streaming runs (`None` unless
+    /// `streaming`). Every push feeds `stream_push_ms` of audio with no
+    /// sleeping, so this is pure compute per real-time chunk.
+    pub streaming_push_ms: Option<Stats>,
+    /// `finish()` (key-up) cost for the 5 s clip (`None` unless `streaming`).
+    pub streaming_finish_5s_ms: Option<Stats>,
+    /// `finish()` (key-up) cost for the 15 s clip (`None` unless `streaming`).
+    pub streaming_finish_15s_ms: Option<Stats>,
+    /// Streaming config, push size, and push avg/max summary.
+    pub streaming_note: String,
     pub checks: Vec<Check>,
 }
 
@@ -424,6 +455,29 @@ pub fn format_human(report: &BenchReport) -> String {
         "≤ 10 ms",
         check("insert (paste)"),
     ));
+    if report.streaming_push_ms.is_some()
+        || report.streaming_finish_5s_ms.is_some()
+        || report.streaming_finish_15s_ms.is_some()
+    {
+        out.push_str(&row(
+            "stream push",
+            &report.streaming_push_ms,
+            "avg<100",
+            check("stream push (<100 ms)"),
+        ));
+        out.push_str(&row(
+            "stream finish, 5 s",
+            &report.streaming_finish_5s_ms,
+            "≤ 120 ms",
+            check("stream finish (5 s)"),
+        ));
+        out.push_str(&row(
+            "stream finish, 15 s",
+            &report.streaming_finish_15s_ms,
+            "≤ 120 ms",
+            check("stream finish (15 s)"),
+        ));
+    }
     out.push('\n');
     out.push_str(&format!(
         "memory RSS: before {}  warm {}  unloaded {}\n",
@@ -447,11 +501,29 @@ pub fn format_human(report: &BenchReport) -> String {
         }
         None => out.push_str("WER: n/a\n"),
     }
+    match report.stream_wer_mean {
+        Some(mean) => {
+            out.push_str(&format!(
+                "stream WER: mean {:.3} over {} case(s)\n",
+                mean,
+                report.stream_wer_cases.len()
+            ));
+            for case in &report.stream_wer_cases {
+                out.push_str(&format!(
+                    "  {:<20} WER {:.3} (errors {} / {} ref words)\n",
+                    case.name, case.wer, case.errors, case.ref_words
+                ));
+            }
+        }
+        None => out.push_str("stream WER: n/a\n"),
+    }
     out.push_str("notes:\n");
     out.push_str(&format!("  * {}\n", report.cold_load_note));
     out.push_str(&format!("  * {}\n", report.flush_note));
     out.push_str(&format!("  * {}\n", report.insert_note));
     out.push_str(&format!("  * {}\n", report.wer_note));
+    out.push_str(&format!("  * {}\n", report.streaming_note));
+    out.push_str(&format!("  * {}\n", report.stream_wer_note));
     out
 }
 
@@ -537,6 +609,16 @@ pub fn run(config: &BenchConfig) -> anyhow::Result<BenchReport> {
     let (wer_cases, wer_mean, wer_note) = measure_wer(config, &mut *transcriber)?;
 
     drop(transcriber);
+
+    // f. Streaming path (opt-in): sequential session, so peak RSS stays one
+    // model. Informational only: the checks below carry `passed: None` and
+    // never affect `gate_failed`.
+    let streaming = if config.streaming {
+        Some(measure_streaming(config, &clip_5s, &clip_15s)?)
+    } else {
+        None
+    };
+
     // Experiment 5: give freed allocator pages back to the OS before
     // measuring "unloaded", so the number reflects what *can* be returned.
     // The product needs the same call on its unload path (see PERF.md).
@@ -552,7 +634,7 @@ pub fn run(config: &BenchConfig) -> anyhow::Result<BenchReport> {
     let pass_keyup = keyup_5s_ms
         .as_ref()
         .is_some_and(|s| s.median_ms <= TARGET_KEYUP_MS);
-    let checks = vec![
+    let mut checks = vec![
         Check {
             name: "cold load".to_string(),
             target: "—".to_string(),
@@ -589,6 +671,61 @@ pub fn run(config: &BenchConfig) -> anyhow::Result<BenchReport> {
             passed: None,
         },
     ];
+    // Streaming checks are informational (passed: None) so `--gate` only
+    // ever reflects the full-clip path.
+    if streaming.is_some() {
+        checks.extend([
+            Check {
+                name: "stream finish (5 s)".to_string(),
+                target: "≤ 120 ms (median)".to_string(),
+                passed: None,
+            },
+            Check {
+                name: "stream finish (15 s)".to_string(),
+                target: "≤ 120 ms (median)".to_string(),
+                passed: None,
+            },
+            Check {
+                name: "stream push (<100 ms)".to_string(),
+                target: "avg < 100 ms (max best-effort)".to_string(),
+                passed: None,
+            },
+            Check {
+                name: "stream WER".to_string(),
+                target: "within +0.01 of full-clip mean".to_string(),
+                passed: None,
+            },
+        ]);
+    }
+
+    let (
+        stream_push,
+        stream_f5,
+        stream_f15,
+        stream_wer_mean_opt,
+        stream_wer_cases,
+        stream_wer_note,
+        streaming_note,
+    ) = match streaming {
+        Some(s) => (
+            s.push_ms,
+            s.finish_5s_ms,
+            s.finish_15s_ms,
+            s.wer_mean,
+            s.wer_cases,
+            s.wer_note,
+            s.note,
+        ),
+        None => (
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            "streaming not measured (pass --streaming).".to_string(),
+            "streaming not measured (pass --streaming).".to_string(),
+        ),
+    };
 
     Ok(BenchReport {
         model: model.id().to_string(),
@@ -621,6 +758,13 @@ pub fn run(config: &BenchConfig) -> anyhow::Result<BenchReport> {
         wer_cases,
         wer_mean,
         wer_note,
+        stream_wer_mean: stream_wer_mean_opt,
+        stream_wer_cases,
+        stream_wer_note,
+        streaming_push_ms: stream_push,
+        streaming_finish_5s_ms: stream_f5,
+        streaming_finish_15s_ms: stream_f15,
+        streaming_note,
         checks,
     })
 }
@@ -711,17 +855,10 @@ fn make_clip(base: &[f32], secs: u64) -> Vec<f32> {
     clip
 }
 
-/// Decode every `name.wav` with a sibling `name.txt` and score WER.
-fn measure_wer(
-    config: &BenchConfig,
-    transcriber: &mut dyn jisuno_asr::transcribe::Transcriber,
-) -> anyhow::Result<(Vec<WerCase>, Option<f64>, String)> {
+/// Every (`stem`, `wav`) fixture pair: `*.wav` files with a sibling `.txt`.
+fn fixture_pairs(config: &BenchConfig) -> anyhow::Result<Vec<(String, PathBuf)>> {
     let Some(dir) = &config.fixtures_dir else {
-        return Ok((
-            Vec::new(),
-            None,
-            "no --fixtures-dir given; WER skipped.".to_string(),
-        ));
+        return Ok(Vec::new());
     };
     let mut wavs: Vec<PathBuf> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
@@ -736,20 +873,38 @@ fn measure_wer(
         }
     }
     wavs.sort();
+    Ok(wavs
+        .iter()
+        .filter(|wav| wav.with_extension("txt").exists())
+        .map(|wav| {
+            let name = wav
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| wav.display().to_string());
+            (name, wav.clone())
+        })
+        .collect())
+}
+
+/// Decode every `name.wav` with a sibling `name.txt` and score WER.
+fn measure_wer(
+    config: &BenchConfig,
+    transcriber: &mut dyn jisuno_asr::transcribe::Transcriber,
+) -> anyhow::Result<(Vec<WerCase>, Option<f64>, String)> {
+    if config.fixtures_dir.is_none() {
+        return Ok((
+            Vec::new(),
+            None,
+            "no --fixtures-dir given; WER skipped.".to_string(),
+        ));
+    }
     let mut cases = Vec::new();
-    for wav in &wavs {
+    for (name, wav) in fixture_pairs(config)? {
         let txt = wav.with_extension("txt");
-        if !txt.exists() {
-            continue;
-        }
         let reference = std::fs::read_to_string(&txt)?;
-        let pcm = jisuno_audio::audio::load_wav_16k_mono(wav)?;
+        let pcm = jisuno_audio::audio::load_wav_16k_mono(&wav)?;
         let (hypothesis, _) = decode_to_string(transcriber, &pcm)?;
         let score = wer(&reference, &hypothesis);
-        let name = wav
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| wav.display().to_string());
         cases.push(WerCase {
             name,
             wer: score.wer,
@@ -765,13 +920,153 @@ fn measure_wer(
             None,
             format!(
                 "no name.wav + name.txt pairs in {}; WER skipped.",
-                dir.display()
+                config
+                    .fixtures_dir
+                    .as_ref()
+                    .map(|d| d.display().to_string())
+                    .unwrap_or_default()
             ),
         ));
     }
     let mean = cases.iter().map(|c| c.wer).sum::<f64>() / cases.len() as f64;
     let n = cases.len();
     Ok((cases, Some(mean), format!("{n} pair(s) decoded.")))
+}
+
+/// Streaming results: per-push compute, `finish()` latency, streaming WER.
+#[derive(Debug)]
+struct StreamingResults {
+    push_ms: Option<Stats>,
+    finish_5s_ms: Option<Stats>,
+    finish_15s_ms: Option<Stats>,
+    wer_mean: Option<f64>,
+    wer_cases: Vec<WerCase>,
+    wer_note: String,
+    note: String,
+}
+
+/// Feed `pcm` to `session` in `push_samples` pieces with no sleeping,
+/// timing each push, then time `finish()`. Returns the transcript, the
+/// per-push costs, and the finish cost.
+fn stream_decode_timed(
+    session: &mut dyn jisuno_asr::transcribe::StreamingTranscriber,
+    pcm: &[f32],
+    push_samples: usize,
+) -> anyhow::Result<(String, Vec<f64>, f64)> {
+    use std::time::Instant;
+    let mut pushes = Vec::new();
+    for chunk in pcm.chunks(push_samples.max(1)) {
+        let t0 = Instant::now();
+        session.push(chunk)?;
+        pushes.push(t0.elapsed().as_secs_f64() * 1000.0);
+    }
+    let t0 = Instant::now();
+    let text = session.finish()?;
+    let finish_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    Ok((text, pushes, finish_ms))
+}
+
+/// Measure the streaming path: per-push compute over the 5 s and 15 s clips
+/// (no sleeping between pushes), `finish()` latency, and WER over the same
+/// fixture pairs as [`measure_wer`]. Loads its own session so peak RSS stays
+/// one model; callers must drop the full-clip transcriber first.
+fn measure_streaming(
+    config: &BenchConfig,
+    clip_5s: &[f32],
+    clip_15s: &[f32],
+) -> anyhow::Result<StreamingResults> {
+    use jisuno_asr::transcribe::StreamConfig;
+    let stream_config = match config.stream_config {
+        Some((pause_secs, min_speech_secs, max_segment_secs)) => StreamConfig {
+            pause_secs,
+            min_speech_secs,
+            max_segment_secs,
+            ..Default::default()
+        },
+        None => StreamConfig::default(),
+    };
+    let push_samples = (config.stream_push_ms as usize * SAMPLE_RATE as usize / 1000).max(1);
+    let model = jisuno_asr::setup::Model::parse(&config.model)?;
+    let mut session = jisuno_asr::transcribe::load_streaming_with_config(model, stream_config)?;
+
+    // Warm-up: one full pass so ORT arenas and threads are hot, matching the
+    // full-clip warmup discipline.
+    for _ in 0..config.warmup.max(1) {
+        session.reset();
+        let _ = stream_decode_timed(&mut *session, clip_5s, push_samples)?;
+    }
+
+    let mut push_costs = Vec::new();
+    let mut finish_5s = Vec::new();
+    for _ in 0..config.runs.max(1) {
+        session.reset();
+        let (_, pushes, finish_ms) = stream_decode_timed(&mut *session, clip_5s, push_samples)?;
+        push_costs.extend(pushes);
+        finish_5s.push(finish_ms);
+    }
+    let mut finish_15s = Vec::new();
+    for _ in 0..config.runs.max(1) {
+        session.reset();
+        let (_, pushes, finish_ms) = stream_decode_timed(&mut *session, clip_15s, push_samples)?;
+        push_costs.extend(pushes);
+        finish_15s.push(finish_ms);
+    }
+
+    // Streaming WER over the same pairs, one fresh session state per fixture.
+    let mut cases = Vec::new();
+    for (name, wav) in fixture_pairs(config)? {
+        let txt = wav.with_extension("txt");
+        let reference = std::fs::read_to_string(&txt)?;
+        let pcm = jisuno_audio::audio::load_wav_16k_mono(&wav)?;
+        session.reset();
+        let (hypothesis, _, _) = stream_decode_timed(&mut *session, &pcm, push_samples)?;
+        let score = wer(&reference, &hypothesis);
+        cases.push(WerCase {
+            name,
+            wer: score.wer,
+            errors: score.errors,
+            ref_words: score.ref_words,
+            hyp_words: score.hyp_words,
+            hypothesis,
+        });
+    }
+    drop(session);
+
+    let mean = if cases.is_empty() {
+        None
+    } else {
+        Some(cases.iter().map(|c| c.wer).sum::<f64>() / cases.len() as f64)
+    };
+    let wer_note = format!(
+        "streaming pushes of {} ms, {} pair(s) decoded.",
+        config.stream_push_ms,
+        cases.len()
+    );
+    let push_stats = summarize(push_costs);
+    let (push_avg, push_max) = match &push_stats {
+        Some(s) => (
+            format!("{:.1} ms", s.mean_ms),
+            format!("{:.1} ms", s.max_ms),
+        ),
+        None => ("n/a".to_string(), "n/a".to_string()),
+    };
+    let note = format!(
+        "pause-split (pause, min-speech, max-seg) = ({:.2}, {:.2}, {:.2}) s, push {} ms; push avg {push_avg}, max {push_max} over {} pushes.",
+        stream_config.pause_secs,
+        stream_config.min_speech_secs,
+        stream_config.max_segment_secs,
+        config.stream_push_ms,
+        push_stats.as_ref().map(|s| s.n).unwrap_or(0),
+    );
+    Ok(StreamingResults {
+        push_ms: push_stats,
+        finish_5s_ms: summarize(finish_5s),
+        finish_15s_ms: summarize(finish_15s),
+        wer_mean: mean,
+        wer_cases: cases,
+        wer_note,
+        note,
+    })
 }
 
 #[cfg(test)]
@@ -885,6 +1180,13 @@ mod tests {
             wer_cases: Vec::new(),
             wer_mean: None,
             wer_note: String::new(),
+            stream_wer_mean: None,
+            stream_wer_cases: Vec::new(),
+            stream_wer_note: String::new(),
+            streaming_push_ms: None,
+            streaming_finish_5s_ms: None,
+            streaming_finish_15s_ms: None,
+            streaming_note: String::new(),
             checks: vec![Check {
                 name: "warm decode, 5 s".to_string(),
                 target: "≤ 100 ms (median)".to_string(),

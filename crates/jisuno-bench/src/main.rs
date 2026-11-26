@@ -26,9 +26,37 @@ struct Args {
     /// Exit 1 when a §6 target fails (default: exit 0 always).
     #[arg(long)]
     gate: bool,
+    /// Also measure the streaming path: per-push compute (no sleeping),
+    /// finish() latency, and streaming WER. Informational only.
+    #[arg(long)]
+    streaming: bool,
+    /// Audio per streaming push in milliseconds.
+    #[arg(long, default_value_t = 100)]
+    stream_push_ms: u64,
+    /// Streaming pause-split config in seconds, e.g. "0.3,1.0,8.0".
+    #[arg(long)]
+    stream_config: Option<String>,
 }
 
-fn main() {
+/// Parse `--stream-config "PAUSE,MIN_SPEECH,MAX_SEG"` into seconds
+/// (pause length, speech required before a pause may cut, forced-cut
+/// horizon; defaults 0.3, 1.0, 8.0 — see `StreamConfig`).
+fn parse_stream_config(s: &str) -> anyhow::Result<(f32, f32, f32)> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 3 {
+        anyhow::bail!(
+            "--stream-config must be \"PAUSE,MIN_SPEECH,MAX_SEG\" in seconds, e.g. \"0.3,1.0,8.0\""
+        );
+    }
+    let parse = |p: &str| -> anyhow::Result<f32> {
+        p.trim()
+            .parse::<f32>()
+            .map_err(|_| anyhow::anyhow!("--stream-config has a non-number: {p:?}"))
+    };
+    Ok((parse(parts[0])?, parse(parts[1])?, parse(parts[2])?))
+}
+
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     // Accept the short aliases alongside the full registry ids.
     let model = match args.model.trim().to_lowercase().as_str() {
@@ -36,6 +64,11 @@ fn main() {
         "parakeet-v2" => "parakeet-tdt-0.6b-v2-int8".to_string(),
         _ => args.model,
     };
+    let stream_config = args
+        .stream_config
+        .as_deref()
+        .map(parse_stream_config)
+        .transpose()?;
     let config = jisuno_bench::BenchConfig {
         model,
         fixtures_dir: args.fixtures_dir,
@@ -43,6 +76,9 @@ fn main() {
         warmup: args.warmup,
         json: args.json,
         gate: args.gate,
+        streaming: args.streaming,
+        stream_push_ms: args.stream_push_ms.max(1),
+        stream_config,
     };
     match jisuno_bench::run(&config) {
         Ok(report) => {
@@ -66,4 +102,5 @@ fn main() {
             std::process::exit(1);
         }
     }
+    Ok(())
 }
