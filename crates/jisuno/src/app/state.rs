@@ -7,14 +7,14 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use gpui::{AnyWindowHandle, App};
 use jisuno_audio::mic::Capture;
 use jisuno_logic::hold::{CapturedKey, HoldMachine, Input, Mode};
 use jisuno_logic::keybindings::Keybindings;
 use jisuno_logic::runner::Plan;
-use jisuno_logic::settings::Settings;
+use jisuno_logic::settings::{LastGood, Settings};
 use jisuno_logic::voice_control::Config;
 use jisuno_platform::{
     frontmost::AppInfo,
@@ -22,17 +22,16 @@ use jisuno_platform::{
     status_item::{MenuAction, StatusItem},
 };
 use jisuno_ui::hud_model::HudState as UiHud;
+use jisuno_ui::tokens::ThemeJson;
 
 use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
 use super::worker::{FromWorker, ToWorker};
 
 /// Last-good holder with show-once errors, keyed by message. `LastGood` in
-/// `jisuno-logic` fixes its error type to the settings diagnostic, so config
-/// types with their own diagnostics (keybindings, theme) need this instead.
-/// Last-good holder with show-once errors, keyed by message. `LastGood` in
-/// `jisuno-logic` fixes its error type to the settings diagnostic, so config
-/// types with their own diagnostics (keybindings, theme) need this instead.
+/// `jisuno-logic` fixes its error type to the settings diagnostic, so the
+/// startup path (keybindings, theme) uses this instead; hot reload uses
+/// `LastGood` with converted diagnostics.
 pub(crate) struct Holder<T> {
     pub(crate) current: T,
     pub(crate) last_error: Option<String>,
@@ -74,25 +73,6 @@ pub(crate) struct ListeningUi {
     pub(crate) countdown_ms: Option<u64>,
 }
 
-pub(crate) struct Watched {
-    pub(crate) path: PathBuf,
-    pub(crate) mtime: Option<SystemTime>,
-}
-
-impl Watched {
-    pub(crate) fn changed(&mut self) -> bool {
-        let mtime = std::fs::metadata(&self.path)
-            .and_then(|m| m.modified())
-            .ok();
-        if mtime != self.mtime {
-            self.mtime = mtime;
-            true
-        } else {
-            false
-        }
-    }
-}
-
 // Read by the popover (comes later); until then entries are logged on push.
 #[allow(dead_code)]
 pub(crate) struct RecentEntry {
@@ -101,7 +81,6 @@ pub(crate) struct RecentEntry {
 }
 
 pub(crate) const TICK_MS: u64 = 20;
-pub(crate) const CONFIG_POLL_MS: u64 = 500;
 pub(crate) const SECURE_POLL_MS: u64 = 1000;
 
 pub(crate) struct AppState {
@@ -109,10 +88,6 @@ pub(crate) struct AppState {
     pub(crate) machine: Arc<Mutex<HoldMachine>>,
     pub(crate) bindings: Keybindings,
     pub(crate) settings: Settings,
-    pub(crate) settings_watch: Watched,
-    pub(crate) keybindings_watch: Watched,
-    pub(crate) theme_watch: Watched,
-    pub(crate) last_poll: Instant,
     pub(crate) last_secure_poll: Instant,
     pub(crate) pending: Option<PendingTranscribe>,
     pub(crate) capture: Option<Capture>,
@@ -163,6 +138,11 @@ pub(crate) struct AppState {
     pub(crate) cmd_rx: mpsc::Receiver<CommandDone>,
     pub(crate) hook_tx: mpsc::Sender<HookRequest>,
     pub(crate) hook_rx: mpsc::Receiver<HookRequest>,
+    pub(crate) settings_good: LastGood<Settings>,
+    pub(crate) bindings_good: LastGood<Keybindings>,
+    pub(crate) voice_good: LastGood<Config>,
+    pub(crate) theme_good: LastGood<ThemeJson>,
+    pub(crate) watch_rx: mpsc::Receiver<PathBuf>,
 }
 
 impl AppState {

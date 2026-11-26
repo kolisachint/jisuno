@@ -40,7 +40,7 @@ use gpui::{ActivationPolicy, App, AsyncApp};
 use jisuno_asr::setup::Model as AsrModel;
 use jisuno_logic::hold::{CapturedKey, HoldKind, HoldMachine, Timing};
 use jisuno_logic::keybindings::{self, Command, Key, Keybindings};
-use jisuno_logic::settings::{self, ConfigDir, Settings};
+use jisuno_logic::settings::{self, ConfigDir, LastGood, Settings};
 use jisuno_platform::{
     keys::{Captured, KeyTap, RightKey, ShouldCapture, TapConfig},
     permissions::{self, Pane, PermissionState},
@@ -50,7 +50,7 @@ use jisuno_ui::hud_model::HudState as UiHud;
 
 use crate::app::config::{embedded_app_files, read_file, stamp};
 use crate::app::model::{model_id, ModelState};
-use crate::app::state::{AppState, Holder, Watched, TICK_MS};
+use crate::app::state::{AppState, Holder, TICK_MS};
 use crate::app::worker::worker_main;
 
 /// Launch options for the menu bar app.
@@ -323,25 +323,6 @@ pub fn run(opts: AppOptions) {
             machine,
             bindings: bindings_holder.current.clone(),
             settings: settings.clone(),
-            settings_watch: Watched {
-                path: dir.settings_path(),
-                mtime: std::fs::metadata(dir.settings_path())
-                    .and_then(|m| m.modified())
-                    .ok(),
-            },
-            keybindings_watch: Watched {
-                path: dir.keybindings_path(),
-                mtime: std::fs::metadata(dir.keybindings_path())
-                    .and_then(|m| m.modified())
-                    .ok(),
-            },
-            theme_watch: Watched {
-                path: dir.theme_path(),
-                mtime: std::fs::metadata(dir.theme_path())
-                    .and_then(|m| m.modified())
-                    .ok(),
-            },
-            last_poll: Instant::now(),
             last_secure_poll: Instant::now(),
             pending: None,
             capture: None,
@@ -384,7 +365,7 @@ pub fn run(opts: AppOptions) {
             debug_wav: opts.debug_wav,
             debug_hold,
             quit_requested: false,
-            voice_config,
+            voice_config: voice_config.clone(),
             installed_apps,
             installed_at,
             pending_plan: None,
@@ -394,6 +375,19 @@ pub fn run(opts: AppOptions) {
             cmd_rx,
             hook_tx,
             hook_rx,
+            settings_good: LastGood::new(settings.clone()),
+            bindings_good: LastGood::new(bindings_holder.current.clone()),
+            voice_good: LastGood::new(voice_config.clone()),
+            theme_good: LastGood::new(theme_holder.current.clone()),
+            watch_rx: crate::watch::spawn_watcher(
+                vec![
+                    dir.settings_path(),
+                    dir.keybindings_path(),
+                    dir.theme_path(),
+                    dir.voice_control_path(),
+                ],
+                std::time::Duration::from_millis(500),
+            ),
         }));
         if settings.model_load == settings::ModelLoad::AtLogin {
             state.borrow_mut().start_load(cx, "at-login");

@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use gpui::App;
 use jisuno_logic::hold::{CapturedKey, HoldMachine, Input, Timing};
-use jisuno_logic::keybindings::{self};
+use jisuno_logic::keybindings::{self, Keybindings};
 use jisuno_logic::settings::{self, ConfigDir, EmbeddedFile, Settings};
+use jisuno_logic::voice_control::{self, Config};
 use jisuno_platform::{
     keys::{Captured, KeyTap, ShouldCapture},
     permissions::{self, PermissionState},
@@ -18,7 +19,7 @@ use jisuno_platform::{
 use jisuno_ui::hud_model::HudState as UiHud;
 
 use super::model::model_id;
-use super::state::{AppState, CONFIG_POLL_MS, SECURE_POLL_MS};
+use super::state::{AppState, SECURE_POLL_MS};
 use super::tap_config_for;
 
 // --- Startup: config files, permissions -----------------------------------
@@ -71,11 +72,18 @@ pub(crate) fn stamp(start: Instant, msg: &str) {
 impl AppState {
     // --- Polls ---
 
-    pub(crate) fn poll_config(&mut self, cx: &mut App) {
-        if self.last_poll.elapsed() < Duration::from_millis(CONFIG_POLL_MS) {
+    /// Drain the background watcher: re-parse each changed file, keep last
+    /// good on error (first error shows once via `LastGood`), apply live.
+    /// `settings::LastGood` owns the error state; other config types convert
+    /// their diagnostics into it.
+    pub(crate) fn drain_watch(&mut self, cx: &mut App) {
+        let mut changed = Vec::new();
+        while let Ok(path) = self.watch_rx.try_recv() {
+            changed.push(path);
+        }
+        if changed.is_empty() {
             return;
         }
-        self.last_poll = Instant::now();
         let dir = match ConfigDir::resolve() {
             Ok(dir) => dir,
             Err(e) => {
@@ -83,77 +91,177 @@ impl AppState {
                 return;
             }
         };
-        if self.settings_watch.changed() {
-            match read_file(&dir.settings_path()).map(|t| Settings::parse(&t)) {
-                Ok(Ok(settings)) => {
-                    if settings != self.settings {
-                        self.log("settings reloaded");
-                        if settings.dictation_limit_s != self.settings.dictation_limit_s {
-                            *self.machine.lock().unwrap_or_else(|e| e.into_inner()) =
-                                HoldMachine::new(Timing {
-                                    dictation_limit_s: u64::from(settings.dictation_limit_s),
-                                    ..Timing::default()
-                                });
-                        }
-                        self.model_name = model_id(&settings);
-                        self.settings = settings;
-                        self.last_config_error = None;
-                    }
-                }
-                Ok(Err(d)) => self.note_config_error(cx, &format!("{d} · using last good config")),
-                Err(e) => self.log(&format!("settings unreadable: {e:#}")),
+        let settings_path = dir.settings_path();
+        let keybindings_path = dir.keybindings_path();
+        let theme_path = dir.theme_path();
+        let voice_path = dir.voice_control_path();
+        for path in changed {
+            if path == settings_path {
+                self.reload_settings(cx, &dir);
+            } else if path == keybindings_path {
+                self.reload_keybindings(cx, &dir);
+            } else if path == theme_path {
+                self.reload_theme(cx, &dir);
+            } else if path == voice_path {
+                self.reload_voice(cx, &dir);
             }
         }
-        if self.keybindings_watch.changed() {
-            match read_file(&dir.keybindings_path()).map(|t| keybindings::parse_with_warnings(&t)) {
-                Ok(Ok((bindings, warnings))) => {
-                    for w in &warnings {
-                        self.log(&format!(
-                            "keybindings warning: keybindings.json:{}: {}",
-                            w.line, w.message
-                        ));
-                    }
-                    if bindings != self.bindings {
-                        self.log("keybindings reloaded — restarting tap");
-                        self.bindings = bindings;
-                        self.restart_tap();
-                    }
-                    self.last_config_error = None;
-                }
-                Ok(Err(errors)) => {
-                    let first = errors.first().map(|d| {
-                        format!(
-                            "keybindings.json:{}: {} · using last good config",
-                            d.line, d.message
-                        )
-                    });
-                    if let Some(msg) = first {
-                        self.note_config_error(cx, &msg);
-                    }
-                }
-                Err(e) => self.log(&format!("keybindings unreadable: {e:#}")),
+    }
+
+    pub(crate) fn reload_settings(&mut self, cx: &mut App, dir: &ConfigDir) {
+        let result = match read_file(&dir.settings_path()) {
+            Ok(text) => Settings::parse(&text),
+            Err(e) => {
+                self.log(&format!("settings unreadable: {e:#}"));
+                return;
             }
-        }
-        if self.theme_watch.changed() {
-            match read_file(&dir.theme_path()).map(|t| {
-                serde_json::from_str::<serde_json::Value>(&t)
-                    .map_err(|e| format!("invalid JSON: {e}"))
-                    .and_then(|v| {
-                        jisuno_ui::tokens::ThemeJson::from_value(&v).map_err(|e| format!("{e:#}"))
-                    })
-            }) {
-                Ok(Ok(theme)) => {
-                    self.show_latency = theme.show_latency;
-                    self.last_config_error = None;
-                    self.log("theme reloaded");
-                }
-                Ok(Err(message)) => self.note_config_error(
-                    cx,
-                    &format!("theme.json: {message} · using last good config"),
+        };
+        if let Some(d) = self.settings_good.apply(result) {
+            self.note_config_error(
+                cx,
+                &format!(
+                    "settings.json:{}: {} · using last good config",
+                    d.line, d.message
                 ),
-                Err(e) => self.log(&format!("theme unreadable: {e:#}")),
-            }
+            );
+            return;
         }
+        let fresh = self.settings_good.current().clone();
+        if fresh != self.settings {
+            self.log("settings reloaded");
+            if fresh.dictation_limit_s != self.settings.dictation_limit_s {
+                *self.machine.lock().unwrap_or_else(|e| e.into_inner()) =
+                    HoldMachine::new(Timing {
+                        dictation_limit_s: u64::from(fresh.dictation_limit_s),
+                        ..Timing::default()
+                    });
+            }
+            self.model_name = model_id(&fresh);
+            self.settings = fresh;
+        }
+        self.last_config_error = None;
+    }
+
+    pub(crate) fn reload_keybindings(&mut self, cx: &mut App, dir: &ConfigDir) {
+        let result: Result<Keybindings, jisuno_logic::settings::Diagnostic> =
+            match read_file(&dir.keybindings_path()) {
+                Ok(text) => match keybindings::parse_with_warnings(&text) {
+                    Ok((bindings, warnings)) => {
+                        for w in &warnings {
+                            self.log(&format!(
+                                "keybindings warning: keybindings.json:{}: {}",
+                                w.line, w.message
+                            ));
+                        }
+                        Ok(bindings)
+                    }
+                    Err(errors) => Err(errors.into_iter().next().map_or_else(
+                        || jisuno_logic::settings::Diagnostic::new(1, "invalid keybindings file"),
+                        |d| jisuno_logic::settings::Diagnostic::new(d.line, d.message),
+                    )),
+                },
+                Err(e) => {
+                    self.log(&format!("keybindings unreadable: {e:#}"));
+                    return;
+                }
+            };
+        if let Some(d) = self.bindings_good.apply(result) {
+            self.note_config_error(
+                cx,
+                &format!(
+                    "keybindings.json:{}: {} · using last good config",
+                    d.line, d.message
+                ),
+            );
+            return;
+        }
+        let fresh = self.bindings_good.current().clone();
+        if fresh != self.bindings {
+            self.log("keybindings reloaded — restarting tap");
+            self.bindings = fresh;
+            self.restart_tap();
+        }
+        self.last_config_error = None;
+    }
+
+    pub(crate) fn reload_theme(&mut self, cx: &mut App, dir: &ConfigDir) {
+        let result: Result<jisuno_ui::tokens::ThemeJson, jisuno_logic::settings::Diagnostic> =
+            match read_file(&dir.theme_path()) {
+                Ok(text) => {
+                    match serde_json::from_str::<serde_json::Value>(&text)
+                        .map_err(|e| format!("invalid JSON: {e}"))
+                        .and_then(|v| {
+                            jisuno_ui::tokens::ThemeJson::from_value(&v)
+                                .map_err(|e| format!("{e:#}"))
+                        }) {
+                        Ok(theme) => Ok(theme),
+                        Err(message) => Err(jisuno_logic::settings::Diagnostic::new(1, message)),
+                    }
+                }
+                Err(e) => {
+                    self.log(&format!("theme unreadable: {e:#}"));
+                    return;
+                }
+            };
+        if let Some(d) = self.theme_good.apply(result) {
+            self.note_config_error(
+                cx,
+                &format!(
+                    "theme.json:{}: {} · using last good config",
+                    d.line, d.message
+                ),
+            );
+            return;
+        }
+        self.show_latency = self.theme_good.current().show_latency;
+        self.last_config_error = None;
+        self.log("theme reloaded");
+    }
+
+    pub(crate) fn reload_voice(&mut self, cx: &mut App, dir: &ConfigDir) {
+        let result: Result<Config, jisuno_logic::settings::Diagnostic> =
+            match read_file(&dir.voice_control_path()) {
+                Ok(text) => match voice_control::parse(&text) {
+                    Ok((config, warnings)) => {
+                        for w in &warnings {
+                            self.log(&format!(
+                                "voice-control warning: {}",
+                                w.render("voice-control-config.json")
+                            ));
+                        }
+                        Ok(config)
+                    }
+                    Err(errors) => Err(errors.into_iter().next().map_or_else(
+                        || {
+                            jisuno_logic::settings::Diagnostic::new(
+                                1,
+                                "invalid voice-control config",
+                            )
+                        },
+                        |d| jisuno_logic::settings::Diagnostic::new(d.line, d.message),
+                    )),
+                },
+                Err(e) => {
+                    self.log(&format!("voice-control unreadable: {e:#}"));
+                    return;
+                }
+            };
+        if let Some(d) = self.voice_good.apply(result) {
+            self.note_config_error(
+                cx,
+                &format!(
+                    "voice-control-config.json:{}: {} · using last good config",
+                    d.line, d.message
+                ),
+            );
+            return;
+        }
+        let fresh = self.voice_good.current().clone();
+        if fresh != self.voice_config {
+            self.voice_config = fresh;
+            self.log("voice-control config reloaded");
+        }
+        self.last_config_error = None;
     }
 
     pub(crate) fn note_config_error(&mut self, cx: &mut App, msg: &str) {

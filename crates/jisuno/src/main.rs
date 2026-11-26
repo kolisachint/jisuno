@@ -10,6 +10,9 @@ mod control;
 #[cfg_attr(not(all(feature = "app", target_os = "macos")), allow(dead_code))]
 mod runtime;
 mod serve;
+// Like `runtime`: only the macOS app (plus tests) uses this.
+#[cfg_attr(not(all(feature = "app", target_os = "macos")), allow(dead_code))]
+mod watch;
 
 fn main() {
     cli::run();

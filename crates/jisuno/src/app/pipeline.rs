@@ -48,7 +48,7 @@ impl AppState {
         }
         self.exec_effects(cx, effects);
         self.drain_mic();
-        self.poll_config(cx);
+        self.drain_watch(cx);
         self.poll_secure(cx);
         self.poll_idle_unload();
         self.refresh_hud_level(cx);
