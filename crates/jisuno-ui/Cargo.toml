@@ -16,4 +16,4 @@ gpui = { package = "gpui-pre", version = "=0.3.14" }
 # Window bootstrap for the gallery example only (mirrors inkuno's
 # `gpui_platform::application()`); the library itself opens no windows.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit"] }

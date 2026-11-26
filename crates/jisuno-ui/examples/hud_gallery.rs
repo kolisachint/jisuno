@@ -112,6 +112,9 @@ mod gallery {
 
     pub fn run() {
         gpui_platform::application().run(|cx: &mut App| {
+            if let Err(error) = jisuno_ui::hud_view::load_system_fonts(cx) {
+                eprintln!("hud_gallery: {error:#}");
+            }
             let bounds = Bounds::centered(None, size(px(680.0), px(560.0)), cx);
             cx.open_window(
                 WindowOptions {

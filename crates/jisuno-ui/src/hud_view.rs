@@ -5,12 +5,41 @@
 //! with the state (90 ms in the app); the spinner is a static ring and the
 //! island does not animate on its own, so there is nothing to disable for
 //! Reduce Motion — gpui-pre 0.3 also exposes no reduced-motion query. The
-//! view sets no font files: text draws in the macOS system fonts (SF Pro for
-//! UI, SF Mono for the meta/countdown), which CoreText resolves by name.
+//! view sets its families to SF Pro (UI) and SF Mono (meta/countdown);
+//! [`load_system_fonts`] reads those faces from `/System/Library/Fonts` at
+//! startup, since no font files ship with the app.
 
 use gpui::{
-    div, hsla, point, prelude::*, px, rgb, BoxShadow, Context, DefiniteLength, Div, FontWeight,
+    div, hsla, point, prelude::*, px, rgb, App, BoxShadow, Context, DefiniteLength, Div, FontWeight,
 };
+
+/// Load the macOS system faces at runtime: SF Pro (`SFNS.ttf`) and SF Mono
+/// (`SFNSMono.ttf`) from `/System/Library/Fonts`. No font files ship with
+/// the app (§1.2); the faces are read from the running system instead.
+///
+/// The app shell calls this once before opening windows (the gallery does
+/// the same). Belt and braces next to the `font-kit` platform feature:
+/// without that feature gpui renders no text at all, and without loaded
+/// faces it depends on CoreText enumeration alone.
+pub fn load_system_fonts(cx: &mut App) -> anyhow::Result<()> {
+    use std::borrow::Cow;
+    let mut data = Vec::new();
+    for path in [
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/SFNSMono.ttf",
+    ] {
+        match std::fs::read(path) {
+            Ok(bytes) => data.push(Cow::Owned(bytes)),
+            Err(error) => eprintln!("jisuno-ui: cannot read {path}: {error}"),
+        }
+    }
+    if data.is_empty() {
+        anyhow::bail!("jisuno-ui: no system fonts loaded");
+    }
+    cx.text_system()
+        .add_fonts(data)
+        .map_err(|error| anyhow::anyhow!("jisuno-ui: add_fonts: {error}"))
+}
 
 use crate::hud_model::{
     detail_lines, render_model, tail_text, HudAccent, HudIcon, HudState, PARTIAL_TAIL_CHARS,
