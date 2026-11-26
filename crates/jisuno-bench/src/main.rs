@@ -30,8 +30,14 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    // Accept the short aliases alongside the full registry ids.
+    let model = match args.model.trim().to_lowercase().as_str() {
+        "parakeet-v3" => "parakeet-tdt-0.6b-v3-int8".to_string(),
+        "parakeet-v2" => "parakeet-tdt-0.6b-v2-int8".to_string(),
+        _ => args.model,
+    };
     let config = jisuno_bench::BenchConfig {
-        model: args.model,
+        model,
         fixtures_dir: args.fixtures_dir,
         runs: args.runs,
         warmup: args.warmup,

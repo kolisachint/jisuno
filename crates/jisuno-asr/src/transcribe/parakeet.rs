@@ -22,6 +22,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context};
 use ndarray::{s, ArrayD, ArrayViewD, IxDyn};
+use ort::execution_providers::CPUExecutionProvider;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{Tensor, TensorRef};
@@ -156,13 +157,23 @@ impl ParakeetTranscriber {
     }
 }
 
+/// True when `JISUNO_PROFILE` is set: `transcribe` prints per-stage
+/// milliseconds to stderr. Debug-only instrumentation for the perf work.
+fn profiling() -> bool {
+    std::env::var_os("JISUNO_PROFILE").is_some()
+}
+
 impl Transcriber for ParakeetTranscriber {
     fn transcribe(&mut self, pcm: &[f32], on_segment: &mut dyn FnMut(&str)) -> anyhow::Result<()> {
         if pcm.is_empty() {
             return Ok(());
         }
+        let profile = profiling();
+        let t0 = std::time::Instant::now();
         let feats = self.extract_features(pcm)?;
+        let t1 = std::time::Instant::now();
         let enc = self.encode(&feats)?;
+        let t2 = std::time::Instant::now();
 
         // Encoder output is channels-first: [1, D, T'].
         let d = enc.shape()[1];
@@ -181,9 +192,11 @@ impl Transcriber for ParakeetTranscriber {
 
         let mut t = 0usize;
         let mut symbols_at_t = 0usize;
+        let mut steps = 0usize;
         let mut word = String::new();
 
         while t < n_frames {
+            steps += 1;
             // Single encoder frame as [1, D, 1], standard layout.
             let frame: ArrayD<f32> = enc.slice(s![.., .., t..=t]).to_owned().into_dyn();
             let (logits, next1, next2) =
@@ -233,6 +246,15 @@ impl Transcriber for ParakeetTranscriber {
             on_segment(&word);
         }
         let _ = d; // D is documented above; referenced for clarity.
+        if profile {
+            let secs = pcm.len() as f64 / 16_000.0;
+            eprintln!(
+                "[parakeet-profile] audio={secs:.2}s mel={:.1}ms enc={:.1}ms dec={:.1}ms frames={n_frames} steps={steps}",
+                t1.duration_since(t0).as_secs_f64() * 1000.0,
+                t2.duration_since(t1).as_secs_f64() * 1000.0,
+                t2.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
         Ok(())
     }
 }
@@ -267,19 +289,30 @@ fn argmax(values: &[f32]) -> usize {
 
 /// Build a CPU ONNX session with graph optimizations enabled.
 ///
-/// **Single-threaded on purpose.** With multiple intra-op threads, ORT's int8
-/// reductions run in a non-deterministic order, so the encoder/joint logits
-/// wobble slightly between runs. Greedy TDT decoding is unusually sensitive to
-/// that: one flipped duration argmax shifts every following frame alignment,
-/// and the predictor (conditioned on emitted tokens) diverges — the same clip
-/// decodes correctly one run and drops or garbles half the words the next.
-/// One thread makes decoding deterministic and correct, and measured no slower
-/// here (the int8 kernels barely parallelize), so there's nothing to trade.
+/// Threading (measured on the reference Mac, MacBook Air M1/8 GB — see
+/// `crates/jisuno-asr/PERF.md`): 2 intra-op threads is the sweet spot for
+/// the int8 encoder (5 s clip: 351 ms vs 573 ms single-threaded; 3–4
+/// threads are slower again, 8 far slower — the matmuls are memory-bandwidth
+/// bound). `deterministic_compute` keeps the multi-threaded int8 reductions
+/// bit-stable, so greedy TDT decoding stays byte-identical run to run
+/// (verified: 10/10 identical decodes on five fixtures, hypotheses
+/// byte-equal to the single-threaded baseline) at no measurable speed cost.
+/// Re-run that 10x determinism check if you touch threading: one flipped
+/// duration argmax shifts every following frame alignment and the
+/// token-conditioned predictor diverges, garbling the whole utterance.
+///
+/// The CPU arena allocator is off: ORT's arena holds ~0.5 GB past session
+/// drop, and disabling it cuts warm RSS by a third at identical decode
+/// speed (see PERF.md, experiment 5).
 fn build_session(path: &Path) -> anyhow::Result<Session> {
     Session::builder()
         .context("creating ort session builder")?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(1)?
+        .with_intra_threads(2)?
+        .with_deterministic_compute(true)?
+        .with_execution_providers([CPUExecutionProvider::default()
+            .with_arena_allocator(false)
+            .build()])?
         .commit_from_file(path)
         .with_context(|| format!("loading model {}", path.display()))
 }
