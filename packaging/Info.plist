@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Jisuno app bundle Info.plist. Placeholders substituted by packaging/bundle.sh:
+    __VERSION__  -> the --version argument (X.Y.Z)
+
+  Privacy strings: only keys with a system-level usage string are listed.
+  Accessibility and Input Monitoring have no Info.plist key; macOS shows their
+  prompts when the app calls AXIsProcessTrusted / CGRequestListenEventAccess.
+  NSAppleEventsUsageDescription is intentionally absent: window placement uses
+  the Accessibility API and app launch uses NSWorkspace, neither sends Apple
+  Events. Add the key (and the apple-events entitlement) if that changes.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>jisuno</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.kolisachint.jisuno</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Jisuno</string>
+	<key>CFBundleDisplayName</key>
+	<string>Jisuno</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<!-- Menu bar app: no Dock icon, no app menu bar owned by the app. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Jisuno listens only while you hold a Jisuno key, and transcribes on this Mac.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT</string>
+</dict>
+</plist>
