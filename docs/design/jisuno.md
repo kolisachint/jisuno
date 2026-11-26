@@ -1,8 +1,8 @@
 # Jisuno: design (v3, signed off 2026-11-26)
 
-Status: signed off 2026-11-26 (with `keybindings.md`, `voice-control.md`). UI code waits for
-`app-ui.md` and `prototypes/v3.html` sign-off.
-Last update: 2026-11-26. Decisions are logged in §10; they win over any older text.
+Status: signed off 2026-11-26 (round 6), with `keybindings.md`, `voice-control.md`, `app-ui.md` and
+`prototypes/v3.html`. The UI build may start.
+Last update: 2026-11-26 (round 6). Decisions are logged in §10; they win over any older text.
 
 ## 1. What Jisuno is
 
@@ -77,7 +77,7 @@ config stays live, with the error in the HUD and in `jisuno control validate`.
 |--|--|
 | `settings.json` | `model`, `language`, `model_load` (on_demand/at_login), `unload_after_idle_min`, `input_device`, `dictation_limit_s`, `hands_free_silence_ms`, partials, `insert` (paste/type) + `insert_type_apps`, `restore_clipboard`, sounds, `hud` position, login item |
 | `keybindings.json` | `{"bindings": [{key, hold?, when?, command}]}` |
-| `theme.json` | theme name, appearance, dictate/command accents, HUD style |
+| `theme.json` | theme name, appearance, dictate/command accents, HUD style and latency (`app-ui.md` §5) |
 | `voice-control-config.json` | `commands[]` and `workspaces{}` |
 
 ## 5. Voice control
@@ -135,6 +135,8 @@ Hold keys are the fast path: key-up ends the utterance, so there is no silence t
 | Insert (paste + clipboard restore) | ≤ 10 ms |
 | **Key-up → text** | **≤ 150 ms** |
 
+Cold load and memory targets are in §6.1.
+
 Levers: incremental (chunked) encoding instead of today's re-decode-everything partials in
 `serve.rs`; CoreML vs CPU execution provider measured on the reference Mac; paste instead of
 typing; mic opened on key-down.
@@ -149,6 +151,14 @@ reference Mac is where numbers are signed off.
 Reference machine: MacBook Air M1 (MacBookAir10,1), 4 performance + 4 efficiency cores,
 **8 GB RAM**, macOS 27.3. A warm model at ~0.9 GB is over 10% of that RAM, which is why
 on-demand loading and idle unload are the default. The 150 ms target must hold on this machine.
+
+Targets (round 6), on the reference Mac:
+
+| Metric | Target |
+|--|--|
+| Cold load | ≤ 1.5 s |
+| Memory, warm | < 1 GB |
+| Memory, unloaded | < 60 MB |
 
 ## 7. Model lifecycle
 
@@ -236,7 +246,7 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
    ("Focus lost: text in Recent").
 7. Secure input (a password field or app holding Secure Event Input) blocks the event tap.
    While it is on, the menu bar icon shows a lock badge and the popover names the app. The HUD
-   shows "Secure input on: keys paused" once per holding app per session.
+   shows "Secure input on (<app>) · keys paused" once per holding app per session (round 6, item 5).
 8. First hold key wins (§8).
 9. A dictation is capped at 2 min (`dictation_limit_s`, default 120; hands-free too). The HUD
    shows a countdown for the last 15 s (from 1:45 with the default); at the cap Jisuno stops and transcribes, as if released.
@@ -263,7 +273,28 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
    its own `kolisachint/jisuno` release (`models-v1`), and never reads voicetools paths, env
    vars, or release assets.
 
+**2026-11-26, round 6** (owner sign-off of `app-ui.md` and `prototypes/v3.html`)
+1. `app-ui.md` and `prototypes/v3.html` are signed off. All docs in `docs/design/` are signed off;
+   the UI build may start.
+2. Fonts: macOS system fonts, nothing bundled. SF Pro for UI text, SF Mono for code and key caps.
+   Inter and JetBrains Mono are dropped (`app-ui.md` §1.2).
+3. Performance targets on the reference Mac: cold load ≤ 1.5 s; memory warm < 1 GB; memory
+   unloaded < 60 MB (§6.1).
+4. Popover: the workspace starter stays dropped.
+5. Secure input copy is `Secure input on (<app>) · keys paused` everywhere. This fixes round 4
+   item 7.
+6. Login item key is `login_item`, as in `settings.schema.json`. `launch_at_login` is dropped.
+7. The partials toggle lives only in `settings.json` `partials`, in Settings → General.
+   `hud.show_partials` is removed from `theme.json`. `hud.show_latency` stays in `theme.json`.
+8. Esc in `confirming` is already in `keybindings.md` §3 (8 default bindings); removed from the
+   `app-ui.md` conflicts list.
+9. The rest of the `app-ui.md` decisions list is accepted as written. Conflicts in `app-ui.md` §11
+   are resolved there, one line each.
+10. `theme.json` has a schema (`crates/jisuno-logic/schemas/theme.schema.json`) and defaults
+    (`crates/jisuno-logic/defaults/theme.json`). Every key is optional; a missing key uses its
+    default.
+11. `docs/user/src/config-files.md` lists the `theme.json` keys.
+
 ## 11. Open questions
 
-None. Next: owner sign-off of this doc, `keybindings.md`, `voice-control.md`, `app-ui.md` and
-`prototypes/v3.html`, then the implementation plan.
+None. All design docs are signed off (round 6). Next: the implementation plan and the UI build.

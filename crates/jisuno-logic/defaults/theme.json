@@ -1,0 +1,11 @@
+{
+  "$schema": "./schemas/theme.schema.json",
+  "name": "quiet-light",
+  "appearance": "system",
+  "accent_dictate": "#3a85f7",
+  "accent_command": "#e39b17",
+  "hud": {
+    "style": "island",
+    "show_latency": false
+  }
+}

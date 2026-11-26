@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "./schemas/theme.schema.json",
+  "title": "theme.json",
+  "description": "Jisuno theme. Every key is optional: a missing key uses its default. Hot-reloaded; on error the file is rejected and the last good config stays live.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path of this schema as written under ~/.config/jisuno/schemas/."
+    },
+    "name": {
+      "type": "string",
+      "description": "Palette (inkuno Quiet). Used when appearance is fixed.",
+      "enum": ["quiet-light", "quiet-dark"],
+      "default": "quiet-light"
+    },
+    "appearance": {
+      "type": "string",
+      "description": "system follows macOS light and dark; fixed always uses name.",
+      "enum": ["system", "fixed"],
+      "default": "system"
+    },
+    "accent_dictate": {
+      "type": "string",
+      "description": "Dictate accent fill, as #rrggbb (lowercase). Text variants are derived from it for legibility.",
+      "pattern": "^#[0-9a-f]{6}$",
+      "default": "#3a85f7"
+    },
+    "accent_command": {
+      "type": "string",
+      "description": "Command accent fill, as #rrggbb (lowercase). Text variants are derived from it for legibility.",
+      "pattern": "^#[0-9a-f]{6}$",
+      "default": "#e39b17"
+    },
+    "hud": {
+      "type": "object",
+      "description": "HUD look. Its position is set in settings.json (hud).",
+      "additionalProperties": false,
+      "properties": {
+        "style": {
+          "type": "string",
+          "description": "HUD style. island is the only value in v1.",
+          "enum": ["island"],
+          "default": "island"
+        },
+        "show_latency": {
+          "type": "boolean",
+          "description": "Show the time in ms after the Inserted line.",
+          "default": false
+        }
+      }
+    }
+  }
+}
