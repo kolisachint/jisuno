@@ -14,6 +14,14 @@ use crate::tokens::{
 };
 use crate::welcome_model::{PermissionKind, WelcomeIntent, WelcomeModel, PERMISSIONS};
 
+/// Host callback: receives the intent plus the GPUI window/app so the
+/// host can update its state (`entity.update(cx, …)`) and perform the
+/// file/OS side of the intent.
+pub type WelcomeEmit = Rc<dyn Fn(WelcomeIntent, &mut gpui::Window, &mut gpui::App)>;
+
+/// A tap handler for plain buttons (no intent of its own).
+pub type WelcomeTap = Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
+
 fn body_text(text: String, theme: &Theme) -> Div {
     div()
         .text_size(px(BODY.size))
@@ -35,7 +43,7 @@ fn button(
     theme: &Theme,
     primary: bool,
     enabled: bool,
-    on_tap: Option<Rc<dyn Fn()>>,
+    on_tap: Option<WelcomeTap>,
 ) -> Div {
     let mut b = div()
         .min_h(px(CONTROL_MIN_H))
@@ -59,11 +67,12 @@ fn button(
         return b;
     }
     if let Some(on_tap) = on_tap {
-        b = b
-            .cursor_pointer()
-            .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                on_tap();
-            });
+        b = b.cursor_pointer().on_mouse_down(
+            gpui::MouseButton::Left,
+            move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                on_tap(window, cx);
+            },
+        );
     }
     b.child(label.to_string())
 }
@@ -95,11 +104,7 @@ fn step_header(n: &str, title: &str, theme: &Theme) -> Div {
 }
 
 /// Render the Welcome window. `on_intent` receives every interaction.
-pub fn welcome_view(
-    model: &WelcomeModel,
-    theme: &Theme,
-    on_intent: Rc<dyn Fn(WelcomeIntent)>,
-) -> Div {
+pub fn welcome_view(model: &WelcomeModel, theme: &Theme, on_intent: WelcomeEmit) -> Div {
     let mut root = div()
         .w(px(WELCOME_W))
         .h(px(WELCOME_H))
@@ -194,15 +199,19 @@ pub fn welcome_view(
     let on_intent_dl = on_intent.clone();
     root = root.child(div().flex().items_center().gap(px(8.0)).py(px(8.0)).child({
         let enabled = model.download.is_none() && !model.model_present;
-        let tap: Option<Rc<dyn Fn()>> = enabled.then(|| {
-            let tap: Rc<dyn Fn()> = Rc::new(move || on_intent_dl(WelcomeIntent::DownloadModel));
+        let tap: Option<WelcomeTap> = enabled.then(|| {
+            let tap: WelcomeTap = Rc::new(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                on_intent_dl(WelcomeIntent::DownloadModel, window, cx);
+            });
             tap
         });
         button("Download", theme, false, enabled, tap)
     }));
     let on_intent_start = on_intent.clone();
-    let start_tap: Option<Rc<dyn Fn()>> = model.can_start().then(|| {
-        let tap: Rc<dyn Fn()> = Rc::new(move || on_intent_start(WelcomeIntent::Start));
+    let start_tap: Option<WelcomeTap> = model.can_start().then(|| {
+        let tap: WelcomeTap = Rc::new(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+            on_intent_start(WelcomeIntent::Start, window, cx);
+        });
         tap
     });
     root.child(
@@ -231,7 +240,7 @@ fn permission_row(
     kind: PermissionKind,
     allowed: bool,
     theme: &Theme,
-    on_intent: &Rc<dyn Fn(WelcomeIntent)>,
+    on_intent: &WelcomeEmit,
 ) -> Div {
     let mut row = div()
         .flex()
@@ -259,7 +268,9 @@ fn permission_row(
         );
     } else {
         let on_intent = on_intent.clone();
-        let tap: Rc<dyn Fn()> = Rc::new(move || on_intent(WelcomeIntent::OpenPermissionPane(kind)));
+        let tap: WelcomeTap = Rc::new(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+            on_intent(WelcomeIntent::OpenPermissionPane(kind), window, cx);
+        });
         row = row.child(
             div()
                 .flex()

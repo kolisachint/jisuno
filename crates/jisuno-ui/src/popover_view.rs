@@ -9,6 +9,11 @@ use std::rc::Rc;
 use gpui::{div, prelude::*, px, rgb, Div, FontWeight};
 
 use crate::popover_model::{ModelState, PermissionPane, PopoverIntent, PopoverModel};
+
+/// Host callback: receives the intent plus the GPUI window/app so the
+/// host can update its state (`entity.update(cx, …)`) and perform the
+/// file/OS side of the intent.
+pub type PopoverEmit = Rc<dyn Fn(PopoverIntent, &mut gpui::Window, &mut gpui::App)>;
 use crate::tokens::{
     Theme, BODY, CAPTION, CONTROL_MIN_H, MICRO, POPOVER_PAD, POPOVER_ROW_H, POPOVER_W,
     RADIUS_CONTROL, RADIUS_WINDOW,
@@ -49,7 +54,7 @@ fn section_label(text: &str, theme: &Theme) -> Div {
         .child(text.to_uppercase())
 }
 
-fn row(theme: &Theme, on_intent: Rc<dyn Fn(PopoverIntent)>, intent: Option<PopoverIntent>) -> Div {
+fn row(theme: &Theme, on_intent: PopoverEmit, intent: Option<PopoverIntent>) -> Div {
     let mut row = div()
         .flex()
         .items_center()
@@ -62,8 +67,8 @@ fn row(theme: &Theme, on_intent: Rc<dyn Fn(PopoverIntent)>, intent: Option<Popov
             .cursor_pointer()
             .rounded(px(RADIUS_CONTROL))
             .hover(move |s| s.bg(rgb(hover_bg)))
-            .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                on_intent(intent.clone());
+            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                on_intent(intent.clone(), window, cx);
             });
     }
     row
@@ -86,11 +91,7 @@ fn caption_text(text: String, theme: &Theme) -> Div {
 }
 
 /// Render the popover. `on_intent` receives every interaction.
-pub fn popover_view(
-    model: &PopoverModel,
-    theme: &Theme,
-    on_intent: Rc<dyn Fn(PopoverIntent)>,
-) -> Div {
+pub fn popover_view(model: &PopoverModel, theme: &Theme, on_intent: PopoverEmit) -> Div {
     let mut root = div()
         .w(px(POPOVER_W))
         .bg(rgb(theme.palette.popover))
@@ -159,7 +160,7 @@ fn header(model: &PopoverModel, theme: &Theme) -> Div {
         )
 }
 
-fn model_section(model: &PopoverModel, theme: &Theme, on_intent: Rc<dyn Fn(PopoverIntent)>) -> Div {
+fn model_section(model: &PopoverModel, theme: &Theme, on_intent: PopoverEmit) -> Div {
     let action = model.model.action_label();
     let intent = match &model.model.presence {
         crate::popover_model::ModelPresence::NotDownloaded => Some(PopoverIntent::DownloadModel),
@@ -182,7 +183,7 @@ fn action_enabled(state: &ModelState) -> bool {
 fn intended_row(
     model: &PopoverModel,
     theme: &Theme,
-    on_intent: Rc<dyn Fn(PopoverIntent)>,
+    on_intent: PopoverEmit,
     intent: Option<PopoverIntent>,
     action: &str,
 ) -> Div {
@@ -198,11 +199,7 @@ fn intended_row(
     r
 }
 
-fn permissions_section(
-    model: &PopoverModel,
-    theme: &Theme,
-    on_intent: Rc<dyn Fn(PopoverIntent)>,
-) -> Div {
+fn permissions_section(model: &PopoverModel, theme: &Theme, on_intent: PopoverEmit) -> Div {
     let mut section = div()
         .flex()
         .flex_col()
@@ -217,7 +214,7 @@ fn permission_row(
     pane: PermissionPane,
     allowed: bool,
     theme: &Theme,
-    on_intent: Rc<dyn Fn(PopoverIntent)>,
+    on_intent: PopoverEmit,
 ) -> Div {
     if allowed {
         row(theme, on_intent, None)
@@ -269,11 +266,7 @@ fn secure_row(holder: &str, theme: &Theme) -> Div {
         )
 }
 
-fn recent_section(
-    model: &PopoverModel,
-    theme: &Theme,
-    on_intent: Rc<dyn Fn(PopoverIntent)>,
-) -> Div {
+fn recent_section(model: &PopoverModel, theme: &Theme, on_intent: PopoverEmit) -> Div {
     let mut section = div()
         .flex()
         .flex_col()
@@ -311,7 +304,7 @@ fn recent_section(
     section
 }
 
-fn footer(theme: &Theme, on_intent: Rc<dyn Fn(PopoverIntent)>) -> Div {
+fn footer(theme: &Theme, on_intent: PopoverEmit) -> Div {
     div()
         .flex()
         .flex_col()

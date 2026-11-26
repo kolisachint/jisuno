@@ -14,6 +14,14 @@ use crate::settings_model::{
     AppearanceModel, AudioModel, FileRow, GeneralModel, KeybindingRow, ModelId, ModelPaneModel,
     Pane, PerfRow, SettingsIntent, SettingsModel,
 };
+
+/// Host callback: receives the intent plus the GPUI window/app so the
+/// host can update its state (`entity.update(cx, …)`) and perform the
+/// file/OS side of the intent.
+pub type SettingsEmit = Rc<dyn Fn(SettingsIntent, &mut gpui::Window, &mut gpui::App)>;
+
+/// A tap handler for plain buttons (no intent of its own).
+pub type SettingsTap = Rc<dyn Fn(&mut gpui::Window, &mut gpui::App)>;
 use crate::tokens::{
     Theme, BODY, CAPTION, CONTROL_MIN_H, KBD, LABEL, MICRO, RADIUS_CONTROL, RADIUS_WINDOW,
     SETTINGS_H, SETTINGS_PAD, SETTINGS_SIDEBAR_W, SETTINGS_W, TITLE,
@@ -57,7 +65,7 @@ fn button(
     theme: &Theme,
     primary: bool,
     enabled: bool,
-    on_tap: Option<Rc<dyn Fn()>>,
+    on_tap: Option<SettingsTap>,
 ) -> Div {
     let mut b = div()
         .min_h(px(CONTROL_MIN_H))
@@ -81,11 +89,12 @@ fn button(
         return b;
     }
     if let Some(on_tap) = on_tap {
-        b = b
-            .cursor_pointer()
-            .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                on_tap();
-            });
+        b = b.cursor_pointer().on_mouse_down(
+            gpui::MouseButton::Left,
+            move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                on_tap(window, cx);
+            },
+        );
     }
     b.child(label.to_string())
 }
@@ -96,7 +105,7 @@ fn intent_button(
     primary: bool,
     enabled: bool,
     intent: SettingsIntent,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
+    on_intent: &SettingsEmit,
 ) -> Div {
     let on_intent = on_intent.clone();
     button(
@@ -105,7 +114,9 @@ fn intent_button(
         primary,
         enabled,
         enabled.then(|| {
-            let tap: Rc<dyn Fn()> = Rc::new(move || on_intent(intent.clone()));
+            let tap: SettingsTap = Rc::new(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+                on_intent(intent.clone(), window, cx);
+            });
             tap
         }),
     )
@@ -129,21 +140,19 @@ fn field_row(label: &str, hint: Option<&str>, theme: &Theme, control: Div) -> Di
         .child(div().flex().items_center().child(control))
 }
 
-fn toggle(
-    on: bool,
-    theme: &Theme,
-    file: &'static str,
-    key: &str,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
-) -> Div {
+fn toggle(on: bool, theme: &Theme, file: &'static str, key: &str, on_intent: &SettingsEmit) -> Div {
     let on_intent = on_intent.clone();
     let key = key.to_string();
-    let tap: Rc<dyn Fn()> = Rc::new(move || {
-        on_intent(SettingsIntent::SetSetting {
-            file,
-            key: key.clone(),
-            value: serde_json::Value::Bool(!on),
-        });
+    let tap: SettingsTap = Rc::new(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+        on_intent(
+            SettingsIntent::SetSetting {
+                file,
+                key: key.clone(),
+                value: serde_json::Value::Bool(!on),
+            },
+            window,
+            cx,
+        );
     });
     button(if on { "On" } else { "Off" }, theme, on, true, Some(tap))
 }
@@ -154,7 +163,7 @@ fn options(
     theme: &Theme,
     file: &'static str,
     key: &str,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
+    on_intent: &SettingsEmit,
 ) -> Div {
     div().flex().flex_row().flex_wrap().gap(px(6.0)).children(
         choices
@@ -181,13 +190,20 @@ fn options(
                         .bg(rgb(theme.palette.chip))
                         .text_color(rgb(theme.palette.text))
                         .cursor_pointer()
-                        .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                            on_intent(SettingsIntent::SetSetting {
-                                file,
-                                key: key.clone(),
-                                value: serde_json::Value::String(value.clone()),
-                            });
-                        });
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                                on_intent(
+                                    SettingsIntent::SetSetting {
+                                        file,
+                                        key: key.clone(),
+                                        value: serde_json::Value::String(value.clone()),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            },
+                        );
                 }
                 pill.child(label.to_string())
             })
@@ -200,17 +216,21 @@ fn stepper(
     theme: &Theme,
     file: &'static str,
     key: &str,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
+    on_intent: &SettingsEmit,
 ) -> Div {
     let mk = |next: u32| {
         let on_intent = on_intent.clone();
         let key = key.to_string();
-        let tap: Rc<dyn Fn()> = Rc::new(move || {
-            on_intent(SettingsIntent::SetSetting {
-                file,
-                key: key.clone(),
-                value: serde_json::Value::from(next),
-            });
+        let tap: SettingsTap = Rc::new(move |window: &mut gpui::Window, cx: &mut gpui::App| {
+            on_intent(
+                SettingsIntent::SetSetting {
+                    file,
+                    key: key.clone(),
+                    value: serde_json::Value::from(next),
+                },
+                window,
+                cx,
+            );
         });
         tap
     };
@@ -246,11 +266,7 @@ fn pane_title(title: &str, subtitle: &str, theme: &Theme) -> Div {
 }
 
 /// Render the Settings window. `on_intent` receives every interaction.
-pub fn settings_view(
-    model: &SettingsModel,
-    theme: &Theme,
-    on_intent: Rc<dyn Fn(SettingsIntent)>,
-) -> Div {
+pub fn settings_view(model: &SettingsModel, theme: &Theme, on_intent: SettingsEmit) -> Div {
     div()
         .w(px(SETTINGS_W))
         .h(px(SETTINGS_H))
@@ -268,7 +284,7 @@ pub fn settings_view(
         )
 }
 
-fn sidebar(model: &SettingsModel, theme: &Theme, on_intent: &Rc<dyn Fn(SettingsIntent)>) -> Div {
+fn sidebar(model: &SettingsModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     let all = Pane::all();
     div()
         .w(px(SETTINGS_SIDEBAR_W))
@@ -299,15 +315,18 @@ fn sidebar(model: &SettingsModel, theme: &Theme, on_intent: &Rc<dyn Fn(SettingsI
                 item = item
                     .text_color(rgb(theme.palette.text))
                     .cursor_pointer()
-                    .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                        on_intent(SettingsIntent::SelectPane(pane));
-                    });
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                            on_intent(SettingsIntent::SelectPane(pane), window, cx);
+                        },
+                    );
             }
             item.child(pane.title().to_string())
         }))
 }
 
-fn pane_body(model: &SettingsModel, theme: &Theme, on_intent: &Rc<dyn Fn(SettingsIntent)>) -> Div {
+fn pane_body(model: &SettingsModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     match model.pane {
         Pane::General => general_pane(&model.general, theme, on_intent),
         Pane::Audio => audio_pane(&model.audio, theme, on_intent),
@@ -320,11 +339,7 @@ fn pane_body(model: &SettingsModel, theme: &Theme, on_intent: &Rc<dyn Fn(Setting
     }
 }
 
-fn general_pane(
-    general: &GeneralModel,
-    theme: &Theme,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
-) -> Div {
+fn general_pane(general: &GeneralModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     div().flex().flex_col()
         .child(pane_title("General", "settings.json. Each change is written at once and hot-reloaded.", theme))
         .child(field_row("Listening cue", Some("Where the HUD appears. Off hides it; failures still show in the popover and icon."), theme,
@@ -347,7 +362,7 @@ fn general_pane(
             toggle(general.login_item, theme, "settings", "login_item", on_intent)))
 }
 
-fn audio_pane(audio: &AudioModel, theme: &Theme, on_intent: &Rc<dyn Fn(SettingsIntent)>) -> Div {
+fn audio_pane(audio: &AudioModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     let mut pane = div()
         .flex()
         .flex_col()
@@ -386,13 +401,20 @@ fn audio_pane(audio: &AudioModel, theme: &Theme, on_intent: &Rc<dyn Fn(SettingsI
                                 .bg(rgb(theme.palette.chip))
                                 .text_color(rgb(theme.palette.text))
                                 .cursor_pointer()
-                                .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                                    on_intent(SettingsIntent::SetSetting {
-                                        file: "settings",
-                                        key: "input_device".into(),
-                                        value: serde_json::Value::String(device.clone()),
-                                    });
-                                });
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                                        on_intent(
+                                            SettingsIntent::SetSetting {
+                                                file: "settings",
+                                                key: "input_device".into(),
+                                                value: serde_json::Value::String(device.clone()),
+                                            },
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                );
                         }
                         pill.child(label)
                     })
@@ -447,11 +469,7 @@ fn notice(text: &str, color: u32, _theme: &Theme) -> Div {
         .child(text.to_string())
 }
 
-fn model_pane(
-    model: &ModelPaneModel,
-    theme: &Theme,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
-) -> Div {
+fn model_pane(model: &ModelPaneModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     let mut pane = div().flex().flex_col().child(pane_title(
         "Model",
         "One model is loaded at a time. Switching unloads the current one.",
@@ -471,15 +489,20 @@ fn model_pane(
         if selected {
             card = card.bg(rgb(theme.palette.selected));
         } else {
-            card = card
-                .cursor_pointer()
-                .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                    on_intent(SettingsIntent::SetSetting {
-                        file: "settings",
-                        key: "model".into(),
-                        value: serde_json::Value::String(file_id.clone()),
-                    });
-                });
+            card = card.cursor_pointer().on_mouse_down(
+                gpui::MouseButton::Left,
+                move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                    on_intent(
+                        SettingsIntent::SetSetting {
+                            file: "settings",
+                            key: "model".into(),
+                            value: serde_json::Value::String(file_id.clone()),
+                        },
+                        window,
+                        cx,
+                    );
+                },
+            );
         }
         pane = pane.child(card.child(body_text(format!("{} · {}", id.label(), id.note()), theme)));
     }
@@ -584,11 +607,7 @@ fn progress_bar(percent: u32, theme: &Theme) -> Div {
         )
 }
 
-fn keybindings_pane(
-    model: &SettingsModel,
-    theme: &Theme,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
-) -> Div {
+fn keybindings_pane(model: &SettingsModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     let mut pane = div().flex().flex_col().child(pane_title(
         "Keybindings",
         "keybindings.json. Click a key, then press the new keys. Esc cancels. Save is immediate.",
@@ -604,7 +623,7 @@ fn keybinding_row_view(
     model: &SettingsModel,
     row: &KeybindingRow,
     theme: &Theme,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
+    on_intent: &SettingsEmit,
 ) -> Div {
     let recording = model
         .recording
@@ -636,9 +655,12 @@ fn keybinding_row_view(
             theme.palette.text
         }))
         .cursor_pointer()
-        .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-            cell_intent(SettingsIntent::StartRecording { command, when });
-        })
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                cell_intent(SettingsIntent::StartRecording { command, when }, window, cx);
+            },
+        )
         .child(key_copy);
     let on_intent = on_intent.clone();
     let mut pane = div().flex().flex_col().py(px(4.0)).child(
@@ -672,9 +694,12 @@ fn keybinding_row_view(
                     .font_family("SF Pro")
                     .text_color(rgb(theme.dictate_text))
                     .cursor_pointer()
-                    .on_mouse_down(gpui::MouseButton::Left, move |_, _, _| {
-                        on_intent(SettingsIntent::ResetBinding(command));
-                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                            on_intent(SettingsIntent::ResetBinding(command), window, cx);
+                        },
+                    )
                     .child("Set to default")
             }),
     );
@@ -796,11 +821,7 @@ fn command_row_view(say: &str, steps: &str, confirm: bool, theme: &Theme) -> Div
         }))
 }
 
-fn appearance_pane(
-    appearance: &AppearanceModel,
-    theme: &Theme,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
-) -> Div {
+fn appearance_pane(appearance: &AppearanceModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     div()
         .flex()
         .flex_col()
@@ -867,11 +888,7 @@ fn appearance_pane(
         ))
 }
 
-fn performance_pane(
-    model: &SettingsModel,
-    theme: &Theme,
-    on_intent: &Rc<dyn Fn(SettingsIntent)>,
-) -> Div {
+fn performance_pane(model: &SettingsModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     let mut pane = div().flex().flex_col()
         .child(pane_title("Performance", "Targets from jisuno.md §6 and §6.1. Measured values come from jisuno bench on the reference Mac.", theme));
     pane = pane.child(perf_table(&model.perf, theme));
@@ -931,7 +948,7 @@ fn perf_table(rows: &[PerfRow], theme: &Theme) -> Div {
     table
 }
 
-fn files_pane(files: &[FileRow], theme: &Theme, on_intent: &Rc<dyn Fn(SettingsIntent)>) -> Div {
+fn files_pane(files: &[FileRow], theme: &Theme, on_intent: &SettingsEmit) -> Div {
     let mut pane = div().flex().flex_col()
         .child(pane_title("Files", "Files are the settings. Open one in your editor, or copy its last error. Folder: ~/.config/jisuno/", theme));
     for file in files {
