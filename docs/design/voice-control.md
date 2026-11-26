@@ -300,13 +300,13 @@ are slot references filled at match time (§5); other values are literals.
 | `jisuno.settings` | — | Opens the Settings window | — |
 | `app.open` | R `app` (installed app name); O `arg` (file, URL, or extra argument) | Launches the app if needed, opens `arg` in it | `app not installed: Foo` |
 | `window.focus` | R `window` (workspace window id, or name of a running app) | Focuses the window | `no window "terminal"` |
-| `window.tile` | R `window`; R `place` (one of the 10 `place` values, §3) | Moves and resizes the window | `no window "terminal"`, `tile failed: no permission` |
+| `window.tile` | R `window`; R `place` (one of the 10 `place` values, §3) | Moves and resizes the window within the screen's visible frame (menu bar and Dock excluded); `center` is 60% of the visible frame, centered | `no window "terminal"`, `tile failed: no permission` |
 | `workspace.open` | R `workspace` (a key of `workspaces`) | Opens each window in turn: launches apps, opens `open` targets, starts `run` commands, places windows | Underlying window reason, e.g. `no window "terminal"`, `app not installed: Foo` |
 | `workspace.close` | R `workspace` | Closes the workspace windows | `no window "terminal"` |
-| `ax.press` | R `app` (`"focused"` = frontmost app); R `role`; R `name` | Direct AX lookup of one element by app + role + name, presses it. Never a scan | `AX element not found: AXButton "Send"` |
+| `ax.press` | R `app` (`"focused"` = frontmost app); R `role`; R `name` | Lookup of one element by app + role + name in the focused window: direct attributes first (`AXDefaultButton`, `AXCancelButton`), then a bounded search (depth <= 4, <= 300 elements). Never an unbounded scan | `AX element not found: AXButton "Send"` |
 | `ax.set_value` | R `app`; R `role`; R `name`; R `value` | Direct AX lookup, sets the value | `AX element not found: AXButton "Send"` |
 | `keys.send` | R `keys` (key spelling as in keybindings) | Sends the key chord to the focused app | `no focused app` |
-| `shell.run` | R `cmd`; O `cwd` | Runs the shell command. Command must have `confirm: true` (§7) | `shell exited 1` |
+| `shell.run` | R `cmd`; O `cwd` | Runs the shell command via `/bin/zsh -lc` in `cwd`, stdin closed, 60 s timeout. Command must have `confirm: true` (§7) | `shell exited 1`, `shell timed out after 60 s` |
 | `theme.set` | R `theme` (installed theme name) | Switches the theme | `unknown theme "quiet-blue"` |
 | `model.warm` | — | Starts loading the model | `model not installed` |
 | `model.unload` | — | Unloads the model from memory | — |
@@ -477,7 +477,7 @@ removed "mail"
 ## 9. Out of scope v1
 
 - No LLM in the matcher: fixed phrases plus `{slot}` templates only.
-- No runtime AX traversal: `ax.*` is a direct lookup by app + role + name.
+- No unbounded AX traversal: `ax.*` is a direct lookup by app + role + name with a bounded fallback (§4).
 - No spoken punctuation: the model's own punctuation and casing are used as is.
 - No voice editing ("delete that", "replace X with Y").
 - No wake word: commands run from the hold key only.
@@ -505,3 +505,10 @@ removed "mail"
     `No command matched`.
 12. Runner: fill failure HUD `Could not run "<label>": <reason>`; free-slot text in
     `shell.run` is shell-quoted; the confirm prompt shows `(in <cwd>)` when `cwd` is set.
+
+**2026-11-26, round 8**
+1. `ax.*`: direct attributes first, then a bounded search (depth <= 4, <= 300 elements) in the
+   focused window. Never unbounded.
+2. `window.tile` `center` = 60% of the visible frame, centered.
+3. `shell.run` runs `/bin/zsh -lc` with stdin closed and a 60 s timeout; timeout reason
+   `shell timed out after 60 s`.

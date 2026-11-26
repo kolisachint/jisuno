@@ -4,7 +4,7 @@
 //! the command runs behind the step runner's `confirm` gate (validation
 //! rejects `shell.run` without `"confirm": true`). A 60 s timeout kills the
 //! child; the failure reason stays the spec string (`shell exited <code>`,
-//! `124` on timeout). Stdout is discarded; stderr is drained (so a chatty
+//! `shell timed out after 60 s`). Stdout is discarded; stderr is drained (so a chatty
 //! child can never block on a full pipe) and only its tail is kept — the
 //! reason text itself never carries output.
 
@@ -83,7 +83,7 @@ fn run(cmd: &str, dir: Option<&str>) -> Result<(), String> {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("shell exited 124".to_string());
+                    return Err("shell timed out after 60 s".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
