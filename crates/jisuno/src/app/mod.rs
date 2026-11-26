@@ -20,6 +20,7 @@
 //! `config`, `model`, `status` own `impl AppState` method groups. No behavior
 //! change from the single-file `app.rs`.
 
+pub(crate) mod command;
 pub(crate) mod config;
 pub(crate) mod hud;
 pub(crate) mod model;
@@ -114,7 +115,20 @@ pub fn run(opts: AppOptions) {
         last_error: None,
     };
 
+    let (voice_config, voice_error) = command::load_voice_config(&dir);
+    let installed_apps = crate::runtime::scan_installed_apps(&crate::runtime::applications_dirs());
+    let installed_at = Instant::now();
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    let (hook_tx, hook_rx) = mpsc::channel();
+
     let mut startup_errors: Vec<UiHud> = Vec::new();
+    if let Some(message) = voice_error {
+        stamp(start, &format!("config error: {message}"));
+        startup_errors.push(UiHud::ConfigError {
+            location: "voice-control-config.json".to_string(),
+            message,
+        });
+    }
     let reload_configs = |settings_holder: &mut Holder<Settings>,
                           bindings_holder: &mut Holder<Keybindings>,
                           theme_holder: &mut Holder<jisuno_ui::tokens::ThemeJson>,
@@ -370,6 +384,16 @@ pub fn run(opts: AppOptions) {
             debug_wav: opts.debug_wav,
             debug_hold,
             quit_requested: false,
+            voice_config,
+            installed_apps,
+            installed_at,
+            pending_plan: None,
+            confirming: None,
+            esc_cancel: false,
+            cmd_tx,
+            cmd_rx,
+            hook_tx,
+            hook_rx,
         }));
         if settings.model_load == settings::ModelLoad::AtLogin {
             state.borrow_mut().start_load(cx, "at-login");

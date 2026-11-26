@@ -36,6 +36,8 @@ impl AppState {
         self.drain_menu(cx);
         self.drain_tap(cx);
         self.drain_worker(cx);
+        self.drain_hook_requests(cx);
+        self.drain_cmd_done(cx);
         let effects = self
             .machine
             .lock()
@@ -128,6 +130,9 @@ impl AppState {
                 KeyEvent::Chord(key) => self.on_chord(cx, &key),
                 KeyEvent::Escape => {
                     if self.machine_captures(CapturedKey::Escape) {
+                        if self.confirming.is_some() {
+                            self.esc_cancel = true;
+                        }
                         self.input(cx, Input::Cancel, "cancel (esc)");
                     }
                 }
@@ -335,12 +340,29 @@ impl AppState {
                 Effect::StartModelLoad => self.start_load(cx, "hold"),
                 Effect::CancelModelLoad => self.cancel_load(),
                 Effect::ShowHud(state) => self.show_machine_hud(cx, state),
-                Effect::HideHud => self.hide_hud(cx),
-                Effect::Transcribe { mode, id } => self.begin_transcribe(cx, mode, id),
-                Effect::RunCommand => self.log("run command: command mode comes later"),
-                Effect::ShowConfirm { label } => {
-                    self.log(&format!("confirm prompt (stub): {label}"))
+                Effect::HideHud => {
+                    if self.confirming.take().is_some() {
+                        self.pending_plan = None;
+                        let expired = !std::mem::replace(&mut self.esc_cancel, false);
+                        self.hide_hud(cx);
+                        let state = if expired {
+                            UiHud::ConfirmExpired
+                        } else {
+                            UiHud::Cancelled
+                        };
+                        let tag = if expired {
+                            "confirm expired"
+                        } else {
+                            "cancelled"
+                        };
+                        self.show_ephemeral(cx, state, tag);
+                    } else {
+                        self.hide_hud(cx);
+                    }
                 }
+                Effect::Transcribe { mode, id } => self.begin_transcribe(cx, mode, id),
+                Effect::RunCommand => self.run_command(cx),
+                Effect::ShowConfirm { label } => self.show_confirm(cx, label),
                 Effect::PassThrough => {}
                 Effect::Countdown { secs_left } => {
                     if let Some(listening) = &mut self.listening {
@@ -370,6 +392,8 @@ impl AppState {
                 Effect::OpenMic => self.open_mic_no_cx(),
                 Effect::HideHud => {
                     self.listening = None;
+                    self.confirming = None;
+                    self.pending_plan = None;
                     if let Some(hud) = &mut self.hud {
                         hud.sticky = false;
                         hud.dismiss_at = Some(Instant::now());
@@ -548,21 +572,7 @@ impl AppState {
                     }
                 }
             }
-            Mode::Command => {
-                self.input(
-                    cx,
-                    Input::Finished { hud: None, id },
-                    "finished (command stub)",
-                );
-                self.log(&format!("command phrase (stub): {text:?}"));
-                self.show_ephemeral(
-                    cx,
-                    UiHud::RanCommand {
-                        label: "Commands coming soon".to_string(),
-                    },
-                    "command mode comes later",
-                );
-            }
+            Mode::Command => self.resolve_command(cx, id, text),
         }
     }
 

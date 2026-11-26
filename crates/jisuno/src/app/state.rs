@@ -13,7 +13,9 @@ use gpui::{AnyWindowHandle, App};
 use jisuno_audio::mic::Capture;
 use jisuno_logic::hold::{CapturedKey, HoldMachine, Input, Mode};
 use jisuno_logic::keybindings::Keybindings;
+use jisuno_logic::runner::Plan;
 use jisuno_logic::settings::Settings;
+use jisuno_logic::voice_control::Config;
 use jisuno_platform::{
     frontmost::AppInfo,
     keys::{KeyEvent, KeyTap},
@@ -21,6 +23,7 @@ use jisuno_platform::{
 };
 use jisuno_ui::hud_model::HudState as UiHud;
 
+use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
 use super::worker::{FromWorker, ToWorker};
 
@@ -150,6 +153,16 @@ pub(crate) struct AppState {
     pub(crate) debug_wav: Option<PathBuf>,
     pub(crate) debug_hold: Option<(Instant, Instant, bool)>,
     pub(crate) quit_requested: bool,
+    pub(crate) voice_config: Config,
+    pub(crate) installed_apps: Vec<String>,
+    pub(crate) installed_at: Instant,
+    pub(crate) pending_plan: Option<Plan>,
+    pub(crate) confirming: Option<Plan>,
+    pub(crate) esc_cancel: bool,
+    pub(crate) cmd_tx: mpsc::Sender<CommandDone>,
+    pub(crate) cmd_rx: mpsc::Receiver<CommandDone>,
+    pub(crate) hook_tx: mpsc::Sender<HookRequest>,
+    pub(crate) hook_rx: mpsc::Receiver<HookRequest>,
 }
 
 impl AppState {
