@@ -202,18 +202,20 @@ impl<'a> Parser<'a> {
 
     /// Parse a `"..."` string starting at the opening quote. Returns its
     /// contents with escapes resolved minimally (only `\"` and `\\` matter
-    /// for scanning; other escapes are kept verbatim).
+    /// for scanning; other escapes are kept verbatim). Raw bytes are collected
+    /// and decoded as UTF-8 at the end, so non-ASCII keys (`"café"`) keep their
+    /// spelling and match the parsed `Value`.
     fn parse_string(&mut self) -> Option<String> {
         if !self.expect(b'"') {
             return None;
         }
-        let mut out = String::new();
+        let mut out: Vec<u8> = Vec::new();
         loop {
             let byte = self.peek()?;
             match byte {
                 b'"' => {
                     self.pos += 1;
-                    return Some(out);
+                    return Some(String::from_utf8_lossy(&out).into_owned());
                 }
                 b'\\' => {
                     self.pos += 1;
@@ -221,23 +223,23 @@ impl<'a> Parser<'a> {
                         Some(next) => {
                             self.pos += 1;
                             match next {
-                                b'"' => out.push('"'),
-                                b'\\' => out.push('\\'),
-                                b'n' => out.push('\n'),
-                                b't' => out.push('\t'),
-                                b'r' => out.push('\r'),
+                                b'"' => out.push(b'"'),
+                                b'\\' => out.push(b'\\'),
+                                b'n' => out.push(b'\n'),
+                                b't' => out.push(b'\t'),
+                                b'r' => out.push(b'\r'),
                                 _ => {
-                                    out.push('\\');
-                                    out.push(next as char);
+                                    out.push(b'\\');
+                                    out.push(next);
                                 }
                             }
                         }
-                        None => return Some(out),
+                        None => return Some(String::from_utf8_lossy(&out).into_owned()),
                     }
                 }
                 _ => {
                     self.pos += 1;
-                    out.push(byte as char);
+                    out.push(byte);
                 }
             }
         }
