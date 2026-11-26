@@ -12,3 +12,7 @@ clap = { workspace = true }
 jisuno-asr = { workspace = true }
 jisuno-audio = { workspace = true }
 jisuno-logic = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

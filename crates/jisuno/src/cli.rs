@@ -6,6 +6,8 @@
 //!   * `transcribe` — capture from the mic (or `--wav`) and stream text
 //!   * `serve`      — load models once, then serve START/CANCEL/SHUTDOWN
 //!     commands over stdin (see `serve.rs`)
+//!   * `control`    — list/add/remove/validate voice-control commands for agents
+//!     (see `control.rs`)
 //!
 //! With no subcommand, `transcribe` runs. All output the consumer cares about
 //! goes to **stdout** as the line protocol in [`protocol`]; logs go to stderr.
@@ -18,6 +20,8 @@ use jisuno_asr::{tls, transcribe};
 use jisuno_audio::{audio, mic};
 use jisuno_logic::protocol;
 use jisuno_logic::vad::{Vad, VadEvent};
+
+use crate::control;
 
 #[derive(Parser)]
 #[command(name = "jisuno", version, about = "Local offline voice-to-text")]
@@ -48,6 +52,11 @@ enum Command {
     /// Run as a persistent daemon: load models once, then serve
     /// START/CANCEL/SHUTDOWN commands over stdin.
     Serve(ServeArgs),
+    /// Agent CLI for voice-control-config.json: list, add, remove, validate.
+    Control {
+        #[command(subcommand)]
+        command: control::ControlCommand,
+    },
 }
 
 #[derive(Args, Clone)]
@@ -123,6 +132,7 @@ pub fn run() {
         Some(Command::Serve(args)) => {
             crate::serve::run(&args.model, args.silence_ms, args.partial_ms)
         }
+        Some(Command::Control { command }) => std::process::exit(control::run(command)),
         None => run_transcribe(TranscribeArgs::from_env()),
     };
 
