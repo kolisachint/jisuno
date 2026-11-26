@@ -6,6 +6,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The macOS menu bar app (GPUI runtime + NSStatusItem alongside).
+# Code is also gated on target_os = "macos", so Linux CI builds with the
+# feature enabled but compiles the CLI only.
+app = [
+    "dep:cpal",
+    "dep:gpui",
+    "dep:gpui-platform",
+    "dep:jisuno-platform",
+    "dep:jisuno-ui",
+]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -13,6 +25,13 @@ jisuno-asr = { workspace = true }
 jisuno-audio = { workspace = true }
 jisuno-logic = { workspace = true }
 serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal = { workspace = true, optional = true }
+gpui = { package = "gpui-pre", version = "=0.3.14", optional = true }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit"], optional = true }
+jisuno-platform = { workspace = true, optional = true }
+jisuno-ui = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

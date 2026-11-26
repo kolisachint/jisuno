@@ -15,6 +15,8 @@ pub mod welcome_model;
 #[cfg(target_os = "macos")]
 pub mod hud_view;
 #[cfg(target_os = "macos")]
+pub mod hud_window;
+#[cfg(target_os = "macos")]
 pub mod popover_view;
 #[cfg(target_os = "macos")]
 pub mod settings_view;

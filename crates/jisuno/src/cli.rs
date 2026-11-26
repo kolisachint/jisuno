@@ -58,6 +58,9 @@ enum Command {
         #[command(subcommand)]
         command: control::ControlCommand,
     },
+    /// Start the menu bar app (macOS, `app` feature).
+    #[cfg(all(feature = "app", target_os = "macos"))]
+    App(AppArgs),
 }
 
 #[derive(Args, Debug)]
@@ -90,6 +93,18 @@ enum ModelsCommand {
         /// Registry id, e.g. parakeet-tdt-0.6b-v3-int8.
         model: String,
     },
+}
+
+#[derive(Args, Clone, Debug)]
+#[cfg(all(feature = "app", target_os = "macos"))]
+struct AppArgs {
+    /// Substitute this WAV file for the microphone (hidden debug flag).
+    #[arg(long, hide = true)]
+    debug_wav: Option<PathBuf>,
+    /// Simulate one internal dictate hold of this many ms (hidden debug
+    /// flag; bypasses the event tap).
+    #[arg(long, hide = true)]
+    debug_hold_ms: Option<u64>,
 }
 
 #[derive(Args, Clone)]
@@ -129,7 +144,9 @@ struct TranscribeArgs {
 
 impl TranscribeArgs {
     /// Defaults used when `transcribe` runs as the implicit command, honoring
-    /// the same env vars clap would.
+    /// the same env vars clap would. Unused with the `app` feature on macOS,
+    /// where bare `jisuno` starts the menu bar app instead.
+    #[cfg_attr(all(feature = "app", target_os = "macos"), allow(dead_code))]
     fn from_env() -> Self {
         let model =
             std::env::var("JISUNO_MODEL").unwrap_or_else(|_| "parakeet-tdt-0.6b-v3-int8".into());
@@ -200,7 +217,31 @@ pub fn run() {
             crate::serve::run(&args.model, args.silence_ms, args.partial_ms)
         }
         Some(Command::Control { command }) => std::process::exit(control::run(command)),
-        None => run_transcribe(TranscribeArgs::from_env()),
+        #[cfg(all(feature = "app", target_os = "macos"))]
+        Some(Command::App(args)) => {
+            let mut opts = crate::app::AppOptions::from_env();
+            if args.debug_wav.is_some() {
+                opts.debug_wav = args.debug_wav;
+            }
+            if args.debug_hold_ms.is_some() {
+                opts.debug_hold_ms = args.debug_hold_ms;
+            }
+            crate::app::run(opts);
+            Ok(())
+        }
+        None => {
+            // With the `app` feature on macOS, bare `jisuno` starts the menu
+            // bar app; everywhere else it transcribes from the mic.
+            #[cfg(all(feature = "app", target_os = "macos"))]
+            {
+                crate::app::run(crate::app::AppOptions::from_env());
+                Ok(())
+            }
+            #[cfg(not(all(feature = "app", target_os = "macos")))]
+            {
+                run_transcribe(TranscribeArgs::from_env())
+            }
+        }
     };
 
     if let Err(e) = result {

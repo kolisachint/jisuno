@@ -2720,9 +2720,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cpal",
+ "gpui-pre",
+ "gpui-pre-platform",
  "jisuno-asr",
  "jisuno-audio",
  "jisuno-logic",
+ "jisuno-platform",
+ "jisuno-ui",
  "serde_json",
  "tempfile",
 ]

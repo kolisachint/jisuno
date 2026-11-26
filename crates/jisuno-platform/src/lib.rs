@@ -10,7 +10,9 @@
 
 pub mod actions;
 pub mod frontmost;
+pub mod hud_placement;
 pub mod insert;
 pub mod keys;
 pub mod permissions;
 pub mod secure_input;
+pub mod status_item;
