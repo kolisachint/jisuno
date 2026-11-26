@@ -516,7 +516,10 @@ fn non_ascii_keys_map_to_the_right_line() {
 #[test]
 fn hyphen_and_punctuation_normalize_before_phrase_checks() {
     assert_eq!(normalize("right-half"), vec!["right", "half"]);
-    assert_eq!(normalize("open note {name}."), vec!["open", "note", "{name}"]);
+    assert_eq!(
+        normalize("open note {name}."),
+        vec!["open", "note", "{name}"]
+    );
 
     let text = format!(
         "{{\"version\": 1, \"commands\": [\n{}\n,\n{}\n]}}",
@@ -588,9 +591,7 @@ fn row_23_slot_names_follow_the_rule() {
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "command \"x\": bad slot name \"Project\"");
 
-    let text = doc(
-        r#"{"id": "x", "say": ["open {Project}"], "steps": [{"do": "jisuno.menu"}]}"#,
-    );
+    let text = doc(r#"{"id": "x", "say": ["open {Project}"], "steps": [{"do": "jisuno.menu"}]}"#);
     let diags = errors(&text);
     assert!(diags
         .iter()
@@ -601,10 +602,19 @@ fn row_23_slot_names_follow_the_rule() {
 fn row_25_malformed_declarations_are_errors_even_when_unused() {
     let cases = [
         (r#"{"project": []}"#, "bad declaration for slot \"project\""),
-        (r#"{"project": ["a", ""]}"#, "bad declaration for slot \"project\""),
+        (
+            r#"{"project": ["a", ""]}"#,
+            "bad declaration for slot \"project\"",
+        ),
         (r#"{"project": 3}"#, "bad declaration for slot \"project\""),
-        (r#"{"project": "fixed"}"#, "bad declaration for slot \"project\""),
-        (r#"{"project": ["  "]}"#, "slot \"project\" has an empty value"),
+        (
+            r#"{"project": "fixed"}"#,
+            "bad declaration for slot \"project\"",
+        ),
+        (
+            r#"{"project": ["  "]}"#,
+            "slot \"project\" has an empty value",
+        ),
     ];
     for (slots, expected) in cases {
         let text = doc(&format!(
@@ -664,5 +674,8 @@ fn bundle_ids_match_the_schema_pattern() {
     );
     let diags = errors(&bad_text);
     assert_eq!(diags.len(), 1);
-    assert_eq!(diags[0].message, "command \"pw\": bad bundle id \"1password.mac\"");
+    assert_eq!(
+        diags[0].message,
+        "command \"pw\": bad bundle id \"1password.mac\""
+    );
 }

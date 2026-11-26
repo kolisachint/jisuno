@@ -196,14 +196,20 @@ fn is_builtin_slot(name: &str) -> bool {
 /// `{name}` when the whole text is one brace reference (a `place` value).
 fn whole_slot(text: &str) -> Option<&str> {
     let inner = text.strip_prefix('{')?.strip_suffix('}')?;
-    (!inner.is_empty() && inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
-        .then_some(inner)
+    (!inner.is_empty()
+        && inner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+    .then_some(inner)
 }
 
 /// A list value naming a place, in wire or spoken form (`right half`).
 fn place_value(value: &str) -> Option<Place> {
     Place::from_str(&normalize(value).join("-"))
 }
+
+/// Commands that already use a phrase: `(id, when.app set)` per holder.
+type Holders = Vec<(String, Option<HashSet<String>>)>;
 
 /// Per-command facts gathered for the cross-command checks (7, 21).
 struct CmdFacts {
@@ -613,7 +619,10 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                         }
                         // Check 23: declared names follow the slot-name rule.
                         if !is_slot_name(name) {
-                            errors.push(error(line, format!("command {tag}: bad slot name \"{name}\"")));
+                            errors.push(error(
+                                line,
+                                format!("command {tag}: bad slot name \"{name}\""),
+                            ));
                         }
                         // Check 25: the declaration must be "free" or a non-empty
                         // list of non-empty strings.
@@ -633,7 +642,9 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                                 if values.iter().any(|v| normalize(v).is_empty()) {
                                     errors.push(error(
                                         line,
-                                        format!("command {tag}: slot \"{name}\" has an empty value"),
+                                        format!(
+                                            "command {tag}: slot \"{name}\" has an empty value"
+                                        ),
                                     ));
                                 }
                                 Decl::List(values)
@@ -777,7 +788,7 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
         let usable =
             |when: &Option<HashSet<String>>| when.as_ref().filter(|set| !set.is_empty()).cloned();
         // Every earlier holder of a phrase is compared, not just the first.
-        let mut seen: HashMap<String, Vec<(String, Option<HashSet<String>>)>> = HashMap::new();
+        let mut seen: HashMap<String, Holders> = HashMap::new();
         for fact in &facts {
             let Some(id) = &fact.id else { continue };
             let current = usable(&fact.when);
