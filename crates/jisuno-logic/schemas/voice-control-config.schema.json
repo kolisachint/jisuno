@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "./schemas/voice-control-config.schema.json",
+  "title": "voice-control-config.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } },
+    "workspaces": {
+      "type": "object",
+      "additionalProperties": { "type": "array", "items": { "$ref": "#/$defs/window" } }
+    }
+  },
+  "required": ["version", "commands"],
+  "$defs": {
+    "place": {
+      "type": "string",
+      "enum": ["left-half", "right-half", "top-half", "bottom-half", "left-top", "left-bottom", "right-top", "right-bottom", "full", "center"]
+    },
+    "slotRef": {
+      "type": "string",
+      "pattern": "^\\{[a-z_][a-z0-9_]*\\}$"
+    },
+    "bundleId": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9-]*(\\.[A-Za-z0-9-]+)+$"
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "say": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
+        "confirm": { "type": "boolean" },
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "app": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/bundleId" } }
+          },
+          "required": ["app"]
+        },
+        "slots": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+              { "const": "free" }
+            ]
+          }
+        },
+        "agent": { "type": "boolean" }
+      },
+      "required": ["id", "say", "steps"]
+    },
+    "step": {
+      "oneOf": [
+        { "$ref": "#/$defs/stepJisunoMenu" },
+        { "$ref": "#/$defs/stepJisunoSettings" },
+        { "$ref": "#/$defs/stepAppOpen" },
+        { "$ref": "#/$defs/stepWindowFocus" },
+        { "$ref": "#/$defs/stepWindowTile" },
+        { "$ref": "#/$defs/stepWorkspaceOpen" },
+        { "$ref": "#/$defs/stepWorkspaceClose" },
+        { "$ref": "#/$defs/stepAxPress" },
+        { "$ref": "#/$defs/stepAxSetValue" },
+        { "$ref": "#/$defs/stepKeysSend" },
+        { "$ref": "#/$defs/stepShellRun" },
+        { "$ref": "#/$defs/stepThemeSet" },
+        { "$ref": "#/$defs/stepModelWarm" },
+        { "$ref": "#/$defs/stepModelUnload" },
+        { "$ref": "#/$defs/stepWait" }
+      ]
+    },
+    "stepJisunoMenu": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "do": { "const": "jisuno.menu" } },
+      "required": ["do"]
+    },
+    "stepJisunoSettings": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "do": { "const": "jisuno.settings" } },
+      "required": ["do"]
+    },
+    "stepAppOpen": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "app.open" },
+        "app": { "type": "string", "minLength": 1 },
+        "arg": { "type": "string" }
+      },
+      "required": ["do", "app"]
+    },
+    "stepWindowFocus": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "window.focus" },
+        "window": { "type": "string", "minLength": 1 }
+      },
+      "required": ["do", "window"]
+    },
+    "stepWindowTile": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "window.tile" },
+        "window": { "type": "string", "minLength": 1 },
+        "place": { "anyOf": [ { "$ref": "#/$defs/place" }, { "$ref": "#/$defs/slotRef" } ] }
+      },
+      "required": ["do", "window", "place"]
+    },
+    "stepWorkspaceOpen": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "workspace.open" },
+        "workspace": { "type": "string", "minLength": 1 }
+      },
+      "required": ["do", "workspace"]
+    },
+    "stepWorkspaceClose": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "workspace.close" },
+        "workspace": { "type": "string", "minLength": 1 }
+      },
+      "required": ["do", "workspace"]
+    },
+    "stepAxPress": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "ax.press" },
+        "app": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "required": ["do", "app", "role", "name"]
+    },
+    "stepAxSetValue": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "ax.set_value" },
+        "app": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "value": { "type": "string" }
+      },
+      "required": ["do", "app", "role", "name", "value"]
+    },
+    "stepKeysSend": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "keys.send" },
+        "keys": { "type": "string", "minLength": 1 }
+      },
+      "required": ["do", "keys"]
+    },
+    "stepShellRun": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "shell.run" },
+        "cmd": { "type": "string", "minLength": 1 },
+        "cwd": { "type": "string", "minLength": 1 }
+      },
+      "required": ["do", "cmd"]
+    },
+    "stepThemeSet": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "theme.set" },
+        "theme": { "type": "string", "minLength": 1 }
+      },
+      "required": ["do", "theme"]
+    },
+    "stepModelWarm": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "do": { "const": "model.warm" } },
+      "required": ["do"]
+    },
+    "stepModelUnload": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "do": { "const": "model.unload" } },
+      "required": ["do"]
+    },
+    "stepWait": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "do": { "const": "wait" },
+        "window": { "type": "string", "minLength": 1 },
+        "ms": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      },
+      "required": ["do"],
+      "oneOf": [
+        { "required": ["do", "window"] },
+        { "required": ["do", "ms"] }
+      ]
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "app": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "open": { "type": "string", "minLength": 1 },
+        "run": { "type": "string", "minLength": 1 },
+        "place": { "$ref": "#/$defs/place" }
+      },
+      "required": ["id", "app", "place"],
+      "not": { "required": ["open", "run"] }
+    }
+  }
+}
