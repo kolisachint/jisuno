@@ -13,8 +13,8 @@
 //! island height varies with partial text and notes.
 
 use gpui::{
-    prelude::*, px, size, AnyWindowHandle, App, Bounds, Point, TitlebarOptions, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions,
+    prelude::*, px, size, AnyWindowHandle, App, Bounds, Point, WindowBounds, WindowHandle,
+    WindowKind, WindowOptions,
 };
 
 use crate::hud_view::HudView;
@@ -43,11 +43,11 @@ pub fn open_hud_window(
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: None,
-                appears_transparent: true,
-                traffic_light_position: None,
-            }),
+            // No titlebar at all: with `Some`, gpui-pre-macos adds the
+            // Closable mask (traffic lights) and `None` position restores
+            // the default buttons. Bare Titled|FullSizeContentView draws
+            // nothing, which is the borderless HUD island.
+            titlebar: None,
             focus: false,
             show: true,
             kind: WindowKind::PopUp,
