@@ -4,6 +4,7 @@ pub mod hold;
 pub mod keybindings;
 pub mod matcher;
 pub mod protocol;
+pub mod runner;
 pub mod settings;
 pub mod vad;
 pub mod voice_control;
