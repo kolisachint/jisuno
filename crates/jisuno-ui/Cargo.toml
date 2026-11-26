@@ -1,0 +1,19 @@
+[package]
+name = "jisuno-ui"
+description = "Jisuno app UI foundation: theme tokens and the HUD view (GPUI, macOS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.14" }
+
+# Window bootstrap for the gallery example only (mirrors inkuno's
+# `gpui_platform::application()`); the library itself opens no windows.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit"] }
