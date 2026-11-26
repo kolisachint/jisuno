@@ -1,4 +1,4 @@
-//! Validation: the 21 §7 checks, plus typed conversion.
+//! Validation: the §7 checks, plus typed conversion.
 //!
 //! Checks run over `serde_json::Value` (not the typed [`Config`](super::Config))
 //! so unknown keys, unknown actions, and missing arguments produce the §7
@@ -74,15 +74,16 @@ fn render_value(value: &Value) -> String {
     }
 }
 
+/// Bundle id per the schema pattern `^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$`.
 fn is_bundle_id(text: &str) -> bool {
     let mut parts = text.split('.');
     match parts.next() {
-        Some(first) if is_bid_part(first, true) => {}
+        Some(first) if is_bid_first(first) => {}
         _ => return false,
     }
     let mut count = 1;
     for part in parts {
-        if !is_bid_part(part, false) {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return false;
         }
         count += 1;
@@ -90,10 +91,7 @@ fn is_bundle_id(text: &str) -> bool {
     count >= 2
 }
 
-fn is_bid_part(part: &str, _first: bool) -> bool {
-    if part.is_empty() {
-        return false;
-    }
+fn is_bid_first(part: &str) -> bool {
     let mut bytes = part.bytes();
     match bytes.next() {
         Some(b'A'..=b'Z' | b'a'..=b'z') => {}
@@ -102,44 +100,65 @@ fn is_bid_part(part: &str, _first: bool) -> bool {
     bytes.all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// `{name}` substrings inside step string values (e.g. `"{name}.md"`).
-fn extract_refs(text: &str) -> Vec<String> {
+/// `[a-z_][a-z0-9_]*`: the only slot names (§5). The runner fills exactly
+/// these, so anything else inside braces is not a slot.
+fn is_slot_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// Identifier-shaped text that breaks the slot-name rule (e.g. `Window`).
+fn is_ident_like(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+/// Brace references in `text`: `(slots, bad)`. A `{name}` with a valid
+/// slot name is a slot; an identifier-shaped `{name}` that breaks the rule
+/// (uppercase, etc.) is `bad`. `${...}` is never a reference (shell vars),
+/// and other brace text (`{src,test}`) is ignored.
+fn brace_refs(text: &str) -> (Vec<String>, Vec<String>) {
     let bytes = text.as_bytes();
-    let mut out = Vec::new();
+    let mut slots = Vec::new();
+    let mut bad = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' {
-            let mut j = i + 1;
-            while j < bytes.len()
-                && bytes[j] != b'}'
-                && bytes[j] != b'{'
-                && !bytes[j].is_ascii_whitespace()
-            {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'}' && j > i + 1 {
-                out.push(text[i + 1..j].to_lowercase());
-                i = j + 1;
+        if bytes[i] == b'{' && (i == 0 || bytes[i - 1] != b'$') {
+            let run = bytes[i + 1..]
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
+                .count();
+            let close = i + 1 + run;
+            if run > 0 && close < bytes.len() && bytes[close] == b'}' {
+                let name = &text[i + 1..close];
+                if is_slot_name(name) {
+                    slots.push(name.to_string());
+                } else if is_ident_like(name) {
+                    bad.push(name.to_string());
+                }
+                i = close + 1;
                 continue;
             }
         }
         i += 1;
     }
-    out
+    (slots, bad)
 }
 
-/// Slot names used by a phrase: whitespace tokens wrapped in braces.
-fn phrase_slots(phrase: &str) -> Vec<String> {
-    phrase
-        .split_whitespace()
-        .filter_map(|token| {
-            let lower = token.to_lowercase();
-            if is_slot_token(&lower) {
-                Some(lower[1..lower.len() - 1].to_string())
-            } else {
-                None
-            }
-        })
+/// Slot names in normalized phrase words (`{slot}` tokens, §5).
+fn phrase_slots(words: &[String]) -> Vec<String> {
+    words
+        .iter()
+        .filter(|word| is_slot_token(word))
+        .map(|word| word[1..word.len() - 1].to_string())
         .collect()
 }
 
@@ -160,11 +179,30 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// A declared slot after its declaration is read. `Bad` is reported once by
+/// check 25; phrases then treat it as declared so the error is not repeated.
 #[derive(Debug, Clone, PartialEq)]
 enum Decl {
-    List,
+    List(Vec<String>),
     Free,
     Bad,
+}
+
+/// Built-in slot names (§5). Declared slots cannot reuse them (check 22).
+fn is_builtin_slot(name: &str) -> bool {
+    BUILTIN_LIST_SLOTS.contains(&name) || name == BUILTIN_FREE_SLOT
+}
+
+/// `{name}` when the whole text is one brace reference (a `place` value).
+fn whole_slot(text: &str) -> Option<&str> {
+    let inner = text.strip_prefix('{')?.strip_suffix('}')?;
+    (!inner.is_empty() && inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then_some(inner)
+}
+
+/// A list value naming a place, in wire or spoken form (`right half`).
+fn place_value(value: &str) -> Option<Place> {
+    Place::from_str(&normalize(value).join("-"))
 }
 
 /// Per-command facts gathered for the cross-command checks (7, 21).
@@ -354,6 +392,12 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                                     format!("command {tag}: empty phrase in \"say\""),
                                 ));
                             } else {
+                                for name in brace_refs(phrase).1 {
+                                    errors.push(error(
+                                        line,
+                                        format!("command {tag}: bad slot name \"{name}\""),
+                                    ));
+                                }
                                 phrases.push((phrase.to_string(), words));
                             }
                         }
@@ -368,6 +412,7 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
             // Step checks 9–11, 16–19.
             let mut has_shell = false;
             let mut step_refs: HashSet<String> = HashSet::new();
+            let mut place_refs: Vec<(String, usize)> = Vec::new();
             if let Some(steps) = steps {
                 for (j, step) in steps.iter().enumerate() {
                     let n = j + 1;
@@ -481,9 +526,9 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                     }
                     if action == "window.tile" {
                         if let Some(Value::String(place)) = sobj.get("place") {
-                            if !is_slot_token(&place.to_lowercase())
-                                && super::Place::from_str(place).is_none()
-                            {
+                            if let Some(name) = whole_slot(place) {
+                                place_refs.push((name.to_string(), sline));
+                            } else if super::Place::from_str(place).is_none() {
                                 errors.push(error(
                                     sline,
                                     format!("command {tag}: bad place \"{place}\""),
@@ -499,9 +544,14 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                     for (key, value) in sobj.iter() {
                         if key != "do" {
                             if let Some(text) = value.as_str() {
-                                for slot in extract_refs(text) {
-                                    step_refs.insert(slot);
+                                let (slots, bad) = brace_refs(text);
+                                for name in bad {
+                                    errors.push(error(
+                                        sline,
+                                        format!("command {tag}: bad slot name \"{name}\""),
+                                    ));
                                 }
+                                step_refs.extend(slots);
                             }
                         }
                     }
@@ -562,7 +612,13 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                                         .iter()
                                         .all(|v| v.as_str().is_some_and(|s| !s.is_empty())) =>
                             {
-                                Decl::List
+                                Decl::List(
+                                    items
+                                        .iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_string)
+                                        .collect(),
+                                )
                             }
                             _ => Decl::Bad,
                         };
@@ -572,7 +628,7 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
                 Some(_) => errors.push(error(line, format!("command {tag}: bad \"slots\""))),
             }
             let known_slot = |name: &str| match decls.get(name) {
-                Some(Decl::List) | Some(Decl::Free) => true,
+                Some(Decl::List(_)) | Some(Decl::Free) => true,
                 Some(Decl::Bad) => false,
                 None => BUILTIN_LIST_SLOTS.contains(&name) || name == BUILTIN_FREE_SLOT,
             };
@@ -583,8 +639,8 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
             };
 
             // Check 13.
-            for (raw, _) in &phrases {
-                let mut slots = phrase_slots(raw);
+            for (raw, words) in &phrases {
+                let mut slots = phrase_slots(words);
                 slots.sort();
                 slots.dedup();
                 for slot in slots {
@@ -622,7 +678,7 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
             // Check 12.
             let phrase_slot_set: HashSet<String> = phrases
                 .iter()
-                .flat_map(|(raw, _)| phrase_slots(raw))
+                .flat_map(|(_, words)| phrase_slots(words))
                 .collect();
             let mut refs: Vec<String> = step_refs.into_iter().collect();
             refs.sort();

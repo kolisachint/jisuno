@@ -489,3 +489,15 @@ fn remove_command_reports_presence() {
     assert!(warnings.is_empty());
     assert_eq!(again, config);
 }
+
+#[test]
+fn non_ascii_keys_map_to_the_right_line() {
+    let text = "{\n\"version\": 1,\n\"workspaces\": {\"caf\u{e9}\": [\n{\"id\": \"t\", \"app\": \"Rex\", \"place\": \"left-half\", \"zoom\": 1}\n]},\n\"commands\": []}";
+    let diags = errors(text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].line, 4);
+    assert_eq!(
+        diags[0].message,
+        "unknown key \"zoom\" in workspace \"caf\u{e9}\" window \"t\""
+    );
+}
