@@ -69,6 +69,8 @@ impl Diagnostic {
 /// The validated `voice-control-config.json` document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
     pub version: u32,
     pub commands: Vec<CommandDef>,
     #[serde(default)]
@@ -77,11 +79,269 @@ pub struct Config {
 
 impl Config {
     /// Serialize with 2-space indent, omitting defaults (`confirm: false`,
-    /// `agent: false`, empty `slots`, absent `when`). Stable: parsing the
-    /// output and serializing again yields the same string.
+    /// `agent: false`, empty `slots`, absent `when`). Layout matches the
+    /// defaults file byte for byte: top-level pretty, each command and each
+    /// workspace window on one line. Stable: parsing the output and
+    /// serializing again yields the same string.
     pub fn to_pretty_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+        let mut out = String::from("{\n");
+        let mut first = true;
+        if let Some(schema) = &self.schema {
+            out.push_str(&format!("  \"$schema\": {}", json_str(schema)));
+            first = false;
+        }
+        if !first {
+            out.push_str(",\n");
+        }
+        out.push_str(&format!("  \"version\": {}", self.version));
+        out.push_str(",\n  \"commands\": ");
+        if self.commands.is_empty() {
+            out.push_str("[]");
+        } else {
+            out.push_str("[\n");
+            for (i, command) in self.commands.iter().enumerate() {
+                out.push_str("    ");
+                write_command(&mut out, command);
+                if i + 1 < self.commands.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str("  ]");
+        }
+        out.push_str(",\n  \"workspaces\": ");
+        if self.workspaces.is_empty() {
+            out.push_str("{}");
+        } else {
+            out.push_str("{\n");
+            for (i, (name, windows)) in self.workspaces.iter().enumerate() {
+                out.push_str(&format!("    {}: ", json_str(name)));
+                if windows.is_empty() {
+                    out.push_str("[]");
+                } else {
+                    out.push_str("[\n");
+                    for (j, window) in windows.iter().enumerate() {
+                        out.push_str("      ");
+                        write_window(&mut out, window);
+                        if j + 1 < windows.len() {
+                            out.push(',');
+                        }
+                        out.push('\n');
+                    }
+                    out.push_str("    ]");
+                }
+                if i + 1 < self.workspaces.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str("  }");
+        }
+        out.push_str("\n}\n");
+        out
     }
+
+    /// Append `command` after validating the resulting config (for
+    /// `jisuno control add`). On validation failure the config is left
+    /// unchanged and the errors are returned.
+    pub fn add_command(&mut self, command: CommandDef) -> Result<(), Vec<Diagnostic>> {
+        self.commands.push(command);
+        match parse(&self.to_pretty_json()) {
+            Ok((validated, _)) => {
+                *self = validated;
+                Ok(())
+            }
+            Err(errors) => {
+                self.commands.pop();
+                Err(errors)
+            }
+        }
+    }
+
+    /// Remove the command with `id` (for `jisuno control remove`). True when
+    /// a command was removed. Removal cannot introduce validation errors.
+    pub fn remove_command(&mut self, id: &str) -> bool {
+        let before = self.commands.len();
+        self.commands.retain(|command| command.id != id);
+        self.commands.len() != before
+    }
+}
+
+/// JSON string with correct escaping.
+fn json_str(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| format!("{text:?}"))
+}
+
+/// JSON list of strings: `["a", "b"]`.
+fn json_str_list(items: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&json_str(item));
+    }
+    out.push(']');
+    out
+}
+
+/// One command object on one line, fields in struct order.
+fn write_command(out: &mut String, command: &CommandDef) {
+    out.push('{');
+    out.push_str(&format!("\"id\": {}", json_str(&command.id)));
+    out.push_str(&format!(", \"say\": {}", json_str_list(&command.say)));
+    out.push_str(", \"steps\": [");
+    for (i, step) in command.steps.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        write_step(out, step);
+    }
+    out.push(']');
+    if command.confirm {
+        out.push_str(", \"confirm\": true");
+    }
+    if let Some(when) = &command.when {
+        out.push_str(&format!(
+            ", \"when\": {{\"app\": {}}}",
+            json_str_list(&when.app)
+        ));
+    }
+    if !command.slots.is_empty() {
+        out.push_str(", \"slots\": {");
+        for (i, (name, decl)) in command.slots.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!("{}: ", json_str(name)));
+            match decl {
+                SlotDecl::List(values) => out.push_str(&json_str_list(values)),
+                SlotDecl::Free => out.push_str("\"free\""),
+            }
+        }
+        out.push('}');
+    }
+    if command.agent {
+        out.push_str(", \"agent\": true");
+    }
+    out.push('}');
+}
+
+/// One step object, fields in declaration order.
+fn write_step(out: &mut String, step: &Step) {
+    match step {
+        Step::JisunoMenu => out.push_str("{\"do\": \"jisuno.menu\"}"),
+        Step::JisunoSettings => out.push_str("{\"do\": \"jisuno.settings\"}"),
+        Step::AppOpen { app, arg } => {
+            out.push_str(&format!("{{\"do\": \"app.open\", \"app\": {}", json_str(app)));
+            if let Some(arg) = arg {
+                out.push_str(&format!(", \"arg\": {}", json_str(arg)));
+            }
+            out.push('}');
+        }
+        Step::WindowFocus { window } => {
+            out.push_str(&format!(
+                "{{\"do\": \"window.focus\", \"window\": {}}}",
+                json_str(window)
+            ));
+        }
+        Step::WindowTile { window, place } => {
+            let place = match place {
+                PlaceOrSlot::Place(place) => format!("\"{}\"", place.as_str()),
+                PlaceOrSlot::Slot(slot) => json_str(slot),
+            };
+            out.push_str(&format!(
+                "{{\"do\": \"window.tile\", \"window\": {}, \"place\": {place}}}",
+                json_str(window)
+            ));
+        }
+        Step::WorkspaceOpen { workspace } => {
+            out.push_str(&format!(
+                "{{\"do\": \"workspace.open\", \"workspace\": {}}}",
+                json_str(workspace)
+            ));
+        }
+        Step::WorkspaceClose { workspace } => {
+            out.push_str(&format!(
+                "{{\"do\": \"workspace.close\", \"workspace\": {}}}",
+                json_str(workspace)
+            ));
+        }
+        Step::AxPress { app, role, name } => {
+            out.push_str(&format!(
+                "{{\"do\": \"ax.press\", \"app\": {}, \"role\": {}, \"name\": {}}}",
+                json_str(app),
+                json_str(role),
+                json_str(name)
+            ));
+        }
+        Step::AxSetValue {
+            app,
+            role,
+            name,
+            value,
+        } => {
+            out.push_str(&format!(
+                "{{\"do\": \"ax.set_value\", \"app\": {}, \"role\": {}, \"name\": {}, \"value\": {}}}",
+                json_str(app),
+                json_str(role),
+                json_str(name),
+                json_str(value)
+            ));
+        }
+        Step::KeysSend { keys } => {
+            out.push_str(&format!(
+                "{{\"do\": \"keys.send\", \"keys\": {}}}",
+                json_str(keys)
+            ));
+        }
+        Step::ShellRun { cmd, cwd } => {
+            out.push_str(&format!(
+                "{{\"do\": \"shell.run\", \"cmd\": {}",
+                json_str(cmd)
+            ));
+            if let Some(cwd) = cwd {
+                out.push_str(&format!(", \"cwd\": {}", json_str(cwd)));
+            }
+            out.push('}');
+        }
+        Step::ThemeSet { theme } => {
+            out.push_str(&format!(
+                "{{\"do\": \"theme.set\", \"theme\": {}}}",
+                json_str(theme)
+            ));
+        }
+        Step::ModelWarm => out.push_str("{\"do\": \"model.warm\"}"),
+        Step::ModelUnload => out.push_str("{\"do\": \"model.unload\"}"),
+        Step::Wait { window, ms } => {
+            out.push_str("{\"do\": \"wait\"");
+            if let Some(window) = window {
+                out.push_str(&format!(", \"window\": {}", json_str(window)));
+            }
+            if let Some(ms) = ms {
+                out.push_str(&format!(", \"ms\": {ms}"));
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// One workspace window object on one line, fields in struct order.
+fn write_window(out: &mut String, window: &WindowDef) {
+    out.push('{');
+    out.push_str(&format!("\"id\": {}", json_str(&window.id)));
+    out.push_str(&format!(", \"app\": {}", json_str(&window.app)));
+    if let Some(title) = &window.title {
+        out.push_str(&format!(", \"title\": {}", json_str(title)));
+    }
+    if let Some(open) = &window.open {
+        out.push_str(&format!(", \"open\": {}", json_str(open)));
+    }
+    if let Some(run) = &window.run {
+        out.push_str(&format!(", \"run\": {}", json_str(run)));
+    }
+    out.push_str(&format!(", \"place\": \"{}\"", window.place.as_str()));
+    out.push('}');
 }
 
 /// One entry of `commands[]`.

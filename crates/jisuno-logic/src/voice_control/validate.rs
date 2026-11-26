@@ -790,6 +790,10 @@ pub fn convert(root: &Value) -> Config {
         }
     }
     Config {
+        schema: root
+            .get("$schema")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         version,
         commands,
         workspaces,

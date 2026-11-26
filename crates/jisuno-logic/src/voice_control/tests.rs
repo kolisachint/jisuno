@@ -425,3 +425,67 @@ fn pretty_json_omits_defaults_and_round_trips() {
     assert_eq!(again, config);
     assert_eq!(again.to_pretty_json(), pretty);
 }
+
+#[test]
+fn pretty_json_matches_defaults_file_byte_for_byte() {
+    let config = defaults().expect("embedded defaults parse");
+    assert_eq!(
+        config.schema.as_deref(),
+        Some("./schemas/voice-control-config.schema.json")
+    );
+    assert_eq!(
+        config.to_pretty_json(),
+        include_str!("../../defaults/voice-control-config.json")
+    );
+}
+
+#[test]
+fn add_command_validates_result() {
+    let mut config = defaults().expect("embedded defaults parse");
+    let len = config.commands.len();
+    config
+        .add_command(CommandDef {
+            id: "mail".to_string(),
+            say: vec!["open mail".to_string()],
+            steps: vec![Step::AppOpen {
+                app: "Mail".to_string(),
+                arg: None,
+            }],
+            confirm: false,
+            when: None,
+            slots: BTreeMap::new(),
+            agent: true,
+        })
+        .expect("valid command adds cleanly");
+    assert_eq!(config.commands.len(), len + 1);
+    assert!(config.commands.last().is_some_and(|c| c.agent));
+    let (again, warnings) = ok(&config.to_pretty_json());
+    assert!(warnings.is_empty());
+    assert_eq!(again, config);
+
+    let before = config.clone();
+    let errors = config
+        .add_command(CommandDef {
+            id: "menu".to_string(),
+            say: vec!["open mail".to_string()],
+            steps: vec![Step::JisunoMenu],
+            confirm: false,
+            when: None,
+            slots: BTreeMap::new(),
+            agent: true,
+        })
+        .expect_err("duplicate id must fail");
+    assert!(errors.iter().any(|e| e.severity == Severity::Error));
+    assert_eq!(config, before, "failed add leaves config unchanged");
+}
+
+#[test]
+fn remove_command_reports_presence() {
+    let mut config = defaults().expect("embedded defaults parse");
+    assert!(config.remove_command("dark"));
+    assert!(!config.commands.iter().any(|c| c.id == "dark"));
+    assert!(!config.remove_command("dark"));
+    let (again, warnings) = ok(&config.to_pretty_json());
+    assert!(warnings.is_empty());
+    assert_eq!(again, config);
+}
