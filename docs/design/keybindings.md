@@ -33,6 +33,7 @@ Matches `jisuno.md` §8 exactly.
 | `model.warm` | ⌃⌥W | `ctrl+option+w` | no | global | Load the model ahead of time |
 | `voice.hands_free_toggle` | ⌃⌥Space | `ctrl+option+space` | no | global | Start/stop hands-free dictation (§4) |
 | `voice.cancel` | Esc | `escape` | no | `listening` | Cancel the current utterance; nothing inserted |
+| `voice.cancel` | Esc | `escape` | no | `confirming` | Cancel the pending command; nothing runs |
 | `voice.confirm` | Return | `return` | no | `confirming` | Run the pending command shown in the confirm prompt |
 | `jisuno.settings` | ⌃⌥, | `ctrl+option+,` | no | global | Open Settings |
 
@@ -46,7 +47,7 @@ Matches `jisuno.md` §8 exactly.
 - **Key-up ends and transcribes.** Releasing the hold key stops recording and transcribes.
 - **Minimum hold: 150 ms (design value).** A release before 150 ms is a tap: the mic closes, the audio is discarded, a load started by this press is cancelled, no HUD, nothing transcribed.
 - **Hands-free toggle.** ⌃⌥Space starts hands-free dictation without holding. It ends when silence lasts `hands_free_silence_ms` (default 500, from `settings.json`) or when the toggle is pressed again. Esc cancels it; nothing is inserted.
-- **Cap: 2 min.** `dictation_limit_s` (default 120) caps dictation and hands-free alike. The HUD shows a countdown from 1:45 (`0:15 left`); at 2:00 Jisuno stops and transcribes, as if released.
+- **Cap: 2 min.** `dictation_limit_s` (default 120) caps dictation and hands-free alike. The HUD shows a countdown for the last 15 s before the cap (`0:15 left`, at 1:45 with the default); at the cap Jisuno stops and transcribes, as if released.
 - **Esc and Return capture.** Esc is captured only in `listening`/`confirming` contexts; Return only in `confirming`. Everywhere else both pass through to the app untouched.
 
 ## 5. Contexts (`when`)

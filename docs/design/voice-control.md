@@ -286,7 +286,7 @@ Notes on the schema:
   missing arguments fail the `oneOf`.
 - `stepWait.oneOf` enforces exactly one of `window`/`ms`: both present matches twice,
   neither matches zero times, both fail. `ms` is capped at 10000.
-- `window.not` forbids `open` and `run` together. Neither is allowed (focus existing).
+- `window.not` forbids `open` and `run` together. A window with neither is valid: Jisuno focuses the existing window.
 - `when.app` items must look like bundle ids; anything else is a schema error.
 
 ## 4. Actions

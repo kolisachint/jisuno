@@ -6,6 +6,7 @@
     {"key": "ctrl+option+w", "command": "model.warm"},
     {"key": "ctrl+option+space", "command": "voice.hands_free_toggle"},
     {"key": "escape", "when": "listening", "command": "voice.cancel"},
+    {"key": "escape", "when": "confirming", "command": "voice.cancel"},
     {"key": "return", "when": "confirming", "command": "voice.confirm"},
     {"key": "ctrl+option+,", "command": "jisuno.settings"}
   ]

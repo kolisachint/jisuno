@@ -167,7 +167,7 @@ States: `unloaded → loading → warm → (idle) unloaded`.
 | `voice.command` | hold Right ⌘ |
 | `model.warm` | ⌃⌥W |
 | `voice.hands_free_toggle` | ⌃⌥Space |
-| `voice.cancel` | Esc (when listening) |
+| `voice.cancel` | Esc (when listening or confirming) |
 | `voice.confirm` | Return (when confirming) |
 | `jisuno.settings` | ⌃⌥, |
 
@@ -237,7 +237,7 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
    shows "Secure input on: keys paused" once per holding app per session.
 8. First hold key wins (§8).
 9. A dictation is capped at 2 min (`dictation_limit_s`, default 120; hands-free too). The HUD
-   shows a countdown from 1:45; at the cap Jisuno stops and transcribes, as if released.
+   shows a countdown for the last 15 s (from 1:45 with the default); at the cap Jisuno stops and transcribes, as if released.
 10. Settings → Audio has a mic picker (default: system input). If the input is Bluetooth, a
     warning explains the quality and latency cost; it also appears once in the HUD. A missing
     device falls back to the system input with a HUD note.
