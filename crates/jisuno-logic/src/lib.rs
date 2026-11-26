@@ -2,6 +2,7 @@
 
 pub mod hold;
 pub mod keybindings;
+pub mod matcher;
 pub mod protocol;
 pub mod settings;
 pub mod vad;
