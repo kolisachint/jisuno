@@ -118,6 +118,17 @@ mod tests {
         assert!(tail.ends_with('\u{FFFD}'), "lossy tail, got {tail:?}");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn live_echo_succeeds_and_exit_code_surfaces() {
+        assert!(run_command("echo jisuno-probe", None).is_ok());
+        assert_eq!(
+            run_command("exit 3", None),
+            Err("shell exited 3".to_string())
+        );
+        assert!(run_command("echo hi", Some("~")).is_ok());
+    }
+
     #[test]
     fn timeout_and_tail_sizes_are_sane() {
         assert_eq!(SHELL_TIMEOUT, Duration::from_secs(60));
