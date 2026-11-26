@@ -65,6 +65,10 @@ pub enum Input {
     TranscriptReady { text: String },
     /// The host transcribed a command utterance and resolved it.
     CommandResolved { needs_confirm: bool, label: String },
+    /// The host is done with this utterance without running anything: no
+    /// match ("Did you mean …"), empty transcript, or a transcription/model
+    /// error. Carries the host's result line to show, if any.
+    Finished { hud: Option<HudState> },
     /// The model finished loading and is warm.
     ModelWarm,
 }
@@ -111,6 +115,9 @@ pub struct Timing {
     pub dictation_limit_s: u64,
     /// Countdown effects start this far before the cap, one per whole second.
     pub countdown_lead_s: u64,
+    /// Safety net: if the host never answers a `Transcribe` (crash, lost
+    /// reply), `tick` recovers to Idle after this.
+    pub transcribe_timeout_ms: u64,
 }
 
 impl Default for Timing {
@@ -120,6 +127,7 @@ impl Default for Timing {
             confirm_timeout_ms: 6000,
             dictation_limit_s: 120,
             countdown_lead_s: 15,
+            transcribe_timeout_ms: 10_000,
         }
     }
 }
@@ -141,9 +149,12 @@ enum State {
     HandsFree {
         since: u64,
     },
-    /// Audio handed to the host for transcription.
+    /// Audio handed to the host for transcription, awaiting its reply.
+    /// `since` is when the handoff happened; the transcribe timeout runs
+    /// from here so a lost reply cannot wedge the machine.
     Transcribing {
         mode: Mode,
+        since: u64,
     },
     /// Command awaiting Return / Esc / timeout.
     Confirming {
@@ -210,12 +221,13 @@ impl HoldMachine {
             Input::HandsFreeToggle => self.on_hands_free_toggle(now_ms),
             Input::Cancel => self.on_cancel(),
             Input::Confirm => self.on_confirm(),
-            Input::SilenceDetected => self.on_silence(),
+            Input::SilenceDetected => self.on_silence(now_ms),
             Input::TranscriptReady { .. } => self.on_transcript_ready(),
             Input::CommandResolved {
                 needs_confirm,
                 label,
             } => self.on_command_resolved(needs_confirm, label, now_ms),
+            Input::Finished { hud } => self.on_finished(hud),
             Input::ModelWarm => {
                 self.set_model_warm(true);
                 Vec::new()
@@ -247,7 +259,15 @@ impl HoldMachine {
                     Vec::new()
                 }
             }
-            State::Idle | State::Transcribing { .. } => Vec::new(),
+            State::Transcribing { since, .. } => {
+                if elapsed(now_ms, since) >= self.timing.transcribe_timeout_ms {
+                    self.state = State::Idle;
+                    vec![Effect::HideHud]
+                } else {
+                    Vec::new()
+                }
+            }
+            State::Idle => Vec::new(),
         }
     }
 
@@ -295,7 +315,10 @@ impl HoldMachine {
         } else {
             // Release at or past the minimum: stop and transcribe. A load
             // still in flight is left running for the transcription.
-            self.state = State::Transcribing { mode: kind.into() };
+            self.state = State::Transcribing {
+                mode: kind.into(),
+                since: now_ms,
+            };
             self.load_started = false;
             vec![
                 Effect::CloseMic { discard: false },
@@ -342,6 +365,7 @@ impl HoldMachine {
                 // Toggle again ends the session: stop and transcribe.
                 self.state = State::Transcribing {
                     mode: Mode::Dictate,
+                    since: now_ms,
                 };
                 self.load_started = false;
                 vec![
@@ -385,11 +409,12 @@ impl HoldMachine {
         }
     }
 
-    fn on_silence(&mut self) -> Vec<Effect> {
+    fn on_silence(&mut self, now_ms: u64) -> Vec<Effect> {
         match self.state {
             State::HandsFree { .. } => {
                 self.state = State::Transcribing {
                     mode: Mode::Dictate,
+                    since: now_ms,
                 };
                 self.load_started = false;
                 vec![
@@ -405,6 +430,7 @@ impl HoldMachine {
         match self.state {
             State::Transcribing {
                 mode: Mode::Dictate,
+                ..
             } => {
                 self.state = State::Idle;
                 vec![Effect::HideHud]
@@ -422,6 +448,7 @@ impl HoldMachine {
         match self.state {
             State::Transcribing {
                 mode: Mode::Command,
+                ..
             } => {
                 if needs_confirm {
                     self.state = State::Confirming { since: now_ms };
@@ -435,13 +462,29 @@ impl HoldMachine {
         }
     }
 
+    fn on_finished(&mut self, hud: Option<HudState>) -> Vec<Effect> {
+        match self.state {
+            State::Transcribing { .. } => {
+                self.state = State::Idle;
+                match hud {
+                    Some(h) => vec![Effect::ShowHud(h)],
+                    None => vec![Effect::HideHud],
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Countdown seconds then cap stop for a live session started at `since`.
     fn check_cap(&mut self, now_ms: u64, mode: Mode, since: u64) -> Vec<Effect> {
         let limit_ms = self.timing.dictation_limit_s.saturating_mul(1000);
         let lead_ms = self.timing.countdown_lead_s.saturating_mul(1000);
         let remaining = limit_ms.saturating_sub(elapsed(now_ms, since));
         if remaining == 0 {
-            self.state = State::Transcribing { mode };
+            self.state = State::Transcribing {
+                mode,
+                since: now_ms,
+            };
             self.load_started = false;
             return vec![
                 Effect::CloseMic { discard: false },
@@ -852,6 +895,112 @@ mod tests {
                 600
             ),
             vec![Effect::RunCommand]
+        );
+    }
+
+    #[test]
+    fn command_no_match_finishes_and_new_hold_works() {
+        // Liveness: "Did you mean …" / no match ends the utterance via
+        // Finished; the machine is Idle and the next hold works.
+        let mut m = warm();
+        m.handle(Input::HoldDown(HoldKind::Command), 0);
+        m.handle(Input::HoldUp(HoldKind::Command), 500);
+        assert_eq!(
+            m.handle(Input::Finished { hud: None }, 900),
+            vec![Effect::HideHud]
+        );
+        assert!(!m.captures(CapturedKey::Escape));
+        assert_eq!(
+            m.handle(Input::HoldDown(HoldKind::Dictate), 1000),
+            vec![Effect::OpenMic]
+        );
+    }
+
+    #[test]
+    fn finished_with_result_line_shows_it() {
+        // The host's result line (e.g. "Did you mean …") replaces the HUD.
+        let mut m = warm();
+        m.handle(Input::HoldDown(HoldKind::Command), 0);
+        m.handle(Input::HoldUp(HoldKind::Command), 500);
+        let hud = HudState::Listening(Mode::Command);
+        assert_eq!(
+            m.handle(Input::Finished { hud: Some(hud) }, 900),
+            vec![Effect::ShowHud(hud)]
+        );
+        // Finished outside Transcribing is ignored.
+        assert!(m.handle(Input::Finished { hud: None }, 950).is_empty());
+    }
+
+    #[test]
+    fn dictate_error_finishes_and_new_hold_works() {
+        // Transcription/model error on the dictate path: hide, Idle, live.
+        let mut m = warm();
+        m.handle(Input::HoldDown(HoldKind::Dictate), 0);
+        m.tick(200);
+        m.handle(Input::HoldUp(HoldKind::Dictate), 300);
+        assert_eq!(
+            m.handle(Input::Finished { hud: None }, 1200),
+            vec![Effect::HideHud]
+        );
+        assert_eq!(
+            m.handle(Input::HoldDown(HoldKind::Dictate), 1300),
+            vec![Effect::OpenMic]
+        );
+    }
+
+    #[test]
+    fn transcribe_timeout_recovers_to_idle() {
+        // Safety net: a lost host reply cannot wedge the machine.
+        let mut m = warm();
+        m.handle(Input::HoldDown(HoldKind::Dictate), 0);
+        m.handle(Input::HoldUp(HoldKind::Dictate), 500);
+        assert!(m.tick(500 + 9999).is_empty());
+        assert_eq!(m.tick(500 + 10_000), vec![Effect::HideHud]);
+        assert!(!m.captures(CapturedKey::Escape));
+        assert_eq!(
+            m.handle(Input::HoldDown(HoldKind::Dictate), 11_000),
+            vec![Effect::OpenMic]
+        );
+    }
+
+    #[test]
+    fn run_command_leaves_machine_idle() {
+        // Confirm -> RunCommand must leave Idle so the next hold works.
+        let mut m = warm();
+        m.handle(Input::HoldDown(HoldKind::Command), 0);
+        m.handle(Input::HoldUp(HoldKind::Command), 500);
+        m.handle(
+            Input::CommandResolved {
+                needs_confirm: true,
+                label: "clean build".to_string(),
+            },
+            600,
+        );
+        assert_eq!(m.handle(Input::Confirm, 700), vec![Effect::RunCommand]);
+        assert!(!m.captures(CapturedKey::Escape));
+        assert!(!m.captures(CapturedKey::Return));
+        assert_eq!(
+            m.handle(Input::HoldDown(HoldKind::Dictate), 800),
+            vec![Effect::OpenMic]
+        );
+
+        // Direct-run path is Idle too.
+        let mut m = warm();
+        m.handle(Input::HoldDown(HoldKind::Command), 0);
+        m.handle(Input::HoldUp(HoldKind::Command), 500);
+        assert_eq!(
+            m.handle(
+                Input::CommandResolved {
+                    needs_confirm: false,
+                    label: String::new(),
+                },
+                600
+            ),
+            vec![Effect::RunCommand]
+        );
+        assert_eq!(
+            m.handle(Input::HoldDown(HoldKind::Dictate), 700),
+            vec![Effect::OpenMic]
         );
     }
 
