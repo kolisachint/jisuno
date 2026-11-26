@@ -11,11 +11,11 @@ from the budget in `../jisuno.md` §5, the desktop and its windows are fakes.
 |--|--|--|--|
 | v1 | 2026-11-26 | `v1.html` | superseded by v2 |
 | v2 | 2026-11-26 | `v2.html` | superseded by v3 |
-| v3 | 2026-11-26 | `v3.html` | current; spec in `../app-ui.md` (draft) |
+| v3 | 2026-11-26 | `v3.html` | current, signed off 2026-11-26; spec in `../app-ui.md` |
 
 ## v3: app UI spec and full clickable flow (2026-11-26)
 
-Changes from v2, following `../app-ui.md` (draft, waiting for owner sign-off):
+Changes from v2, following `../app-ui.md` (signed off 2026-11-26; fonts changed to SF Pro / SF Mono):
 
 - Tokens: inkuno Quiet Light and Dark (`crates/inkuno-ui/src/theme.rs`), Jisuno's two accents with
   legible text variants, and a fixed dark HUD palette. HUD colours changed from v2.
