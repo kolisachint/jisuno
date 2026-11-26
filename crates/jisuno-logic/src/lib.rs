@@ -6,3 +6,4 @@ pub mod matcher;
 pub mod protocol;
 pub mod settings;
 pub mod vad;
+pub mod voice_control;
