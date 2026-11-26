@@ -387,7 +387,7 @@ pub struct StreamConfig {
 impl Default for StreamConfig {
     fn default() -> Self {
         Self {
-            pause_secs: 0.3,
+            pause_secs: 0.2,
             min_speech_secs: 1.0,
             max_segment_secs: 8.0,
             pad_secs: 0.1,
@@ -946,7 +946,7 @@ mod tests {
     fn stream_config_resolves_to_whole_frames() {
         let plan = StreamConfig::default().resolve().expect("defaults resolve");
         assert_eq!(plan.frame, 320);
-        assert_eq!(plan.pause_frames, 15);
+        assert_eq!(plan.pause_frames, 10);
         assert_eq!(plan.min_speech_frames, 50);
         assert_eq!(plan.max_segment_frames, 400);
         assert_eq!(plan.search_frames, 100);
@@ -1043,10 +1043,10 @@ mod tests {
     fn splitter_cuts_at_middle_of_pause() {
         let mut s = default_splitter();
         // 1.5 s speech, 0.5 s pause, 1.5 s speech. The pause spans frames
-        // 75..100; the run hits 15 silent frames at frame 90, so the cut
-        // lands at frame 82 + half a frame = sample 26400.
+        // 75..100 (10-frame pause = 0.2 s); the run hits 10 silent frames at
+        // frame 85, so the cut lands at frame 80 + half a frame.
         let pcm = concat(&[loud(1.5), quiet(0.5), loud(1.5)]);
-        assert_eq!(feed_all(&mut s, &pcm), vec![26400]);
+        assert_eq!(feed_all(&mut s, &pcm), vec![25760]);
     }
 
     #[test]
@@ -1055,7 +1055,7 @@ mod tests {
         // 0.5 s of speech is not enough to cut (needs 1.0 s): the first
         // pause passes silently, and the cut lands in the trailing pause.
         let pcm = concat(&[loud(0.5), quiet(0.5), loud(1.5), quiet(0.5)]);
-        assert_eq!(feed_all(&mut s, &pcm), vec![42400]);
+        assert_eq!(feed_all(&mut s, &pcm), vec![41760]);
     }
 
     #[test]
@@ -1065,7 +1065,7 @@ mod tests {
         // thresholds) must not break the speech run: without hysteresis it
         // would count as 20 silent frames and cut here.
         let pcm = concat(&[loud(1.5), mid_level(0.4), loud(1.5), quiet(0.4)]);
-        assert_eq!(feed_all(&mut s, &pcm), vec![56800]);
+        assert_eq!(feed_all(&mut s, &pcm), vec![56160]);
     }
 
     #[test]
@@ -1101,7 +1101,7 @@ mod tests {
     fn splitter_cuts_each_pause() {
         let mut s = default_splitter();
         let pcm = concat(&[loud(2.0), quiet(0.5), loud(2.0), quiet(0.5), loud(2.0)]);
-        assert_eq!(feed_all(&mut s, &pcm), vec![34400, 74400]);
+        assert_eq!(feed_all(&mut s, &pcm), vec![33760, 73760]);
     }
 
     #[test]
