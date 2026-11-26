@@ -782,6 +782,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "jisuno-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "jisuno-asr",
+ "jisuno-audio",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jisuno-logic"
 version = "0.1.0"
 dependencies = [
