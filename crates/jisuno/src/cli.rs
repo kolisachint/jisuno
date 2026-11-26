@@ -30,7 +30,7 @@ struct Cli {
 enum Command {
     /// First-run setup: download a model.
     Setup {
-        #[arg(long, default_value = "parakeet-v3")]
+        #[arg(long, default_value = "parakeet-tdt-0.6b-v3-int8")]
         model: String,
         /// Extra CA certificate (PEM) to trust, in addition to the OS store.
         /// Repeatable.
@@ -52,25 +52,33 @@ enum Command {
 
 #[derive(Args, Clone)]
 struct ServeArgs {
-    /// Model to use (parakeet-v3, parakeet-v2).
-    #[arg(long, env = "VOICETOOLS_MODEL", default_value = "parakeet-v3")]
+    /// Model to use (parakeet-tdt-0.6b-v3-int8, parakeet-tdt-0.6b-v2-int8).
+    #[arg(
+        long,
+        env = "JISUNO_MODEL",
+        default_value = "parakeet-tdt-0.6b-v3-int8"
+    )]
     model: String,
     /// Trailing-silence timeout, in milliseconds, before auto-stop.
-    #[arg(long, env = "VOICE_SILENCE_MS", default_value_t = 600)]
+    #[arg(long, env = "JISUNO_SILENCE_MS", default_value_t = 600)]
     silence_ms: u64,
     /// Minimum gap between live PARTIAL transcripts while listening, in
     /// milliseconds. Set to 0 to disable partials (emit only the final).
-    #[arg(long, env = "VOICE_PARTIAL_MS", default_value_t = 400)]
+    #[arg(long, env = "JISUNO_PARTIAL_MS", default_value_t = 400)]
     partial_ms: u64,
 }
 
 #[derive(Args, Clone)]
 struct TranscribeArgs {
-    /// Model to use (parakeet-v3, parakeet-v2).
-    #[arg(long, env = "VOICETOOLS_MODEL", default_value = "parakeet-v3")]
+    /// Model to use (parakeet-tdt-0.6b-v3-int8, parakeet-tdt-0.6b-v2-int8).
+    #[arg(
+        long,
+        env = "JISUNO_MODEL",
+        default_value = "parakeet-tdt-0.6b-v3-int8"
+    )]
     model: String,
     /// Trailing-silence timeout, in milliseconds, before auto-stop.
-    #[arg(long, env = "VOICE_SILENCE_MS", default_value_t = 600)]
+    #[arg(long, env = "JISUNO_SILENCE_MS", default_value_t = 600)]
     silence_ms: u64,
     /// Transcribe this WAV file instead of capturing from the mic.
     #[arg(long)]
@@ -81,8 +89,9 @@ impl TranscribeArgs {
     /// Defaults used when `transcribe` runs as the implicit command, honoring
     /// the same env vars clap would.
     fn from_env() -> Self {
-        let model = std::env::var("VOICETOOLS_MODEL").unwrap_or_else(|_| "parakeet-v3".into());
-        let silence_ms = std::env::var("VOICE_SILENCE_MS")
+        let model =
+            std::env::var("JISUNO_MODEL").unwrap_or_else(|_| "parakeet-tdt-0.6b-v3-int8".into());
+        let silence_ms = std::env::var("JISUNO_SILENCE_MS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(600);

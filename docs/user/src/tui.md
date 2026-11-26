@@ -8,8 +8,7 @@ not wait for a model load after the first `READY`.
 the end. The app can show the text as it builds, then insert only the final text.
 
 The reference integration is for hoocode, a terminal coding agent. It wires push-to-talk to `ctrl+r`.
-Copy the files below into hoocode. The code in this section is adapted from the reference recipe in
-`docs/hoocode-integration/README.md` in the Jisuno repo.
+Copy the files below into hoocode.
 
 ## serve: stdin and stdout
 
@@ -21,7 +20,7 @@ jisuno serve
 
 Flags (defaults shown):
 
-- `--model`: the model to use. Default `parakeet-v3`.
+- `--model`: the model to use. Default `parakeet-tdt-0.6b-v3-int8`.
 - `--silence-ms 600`: trailing silence in milliseconds that ends a capture.
 - `--partial-ms 400`: minimum gap between `PARTIAL` lines. `0` turns partials off, so you get only
   `FINAL`.
@@ -64,8 +63,8 @@ The integration has four parts.
 
 ### 1. `packages/tui/src/voice-transcribe.ts` (new file)
 
-Copy [`voice-transcribe.ts`](https://github.com/kolisachint/jisuno/blob/main/docs/hoocode-integration/voice-transcribe.ts)
-into `packages/tui/src/`. It exports:
+Copy [`voice-transcribe.ts`](https://github.com/kolisachint/jisuno/blob/main/docs/user/src/tui/voice-transcribe.ts)
+into `packages/tui/src/` (also in this repo at `docs/user/src/tui/voice-transcribe.ts`). It exports:
 
 - `VoiceDaemon`. Starts `jisuno serve` once and keeps it running across presses. Restarts it if it
   crashes. Writes `START` and `CANCEL` to its stdin. It checks support with `jisuno serve --help`

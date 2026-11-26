@@ -83,7 +83,7 @@ pub fn build_agent(opts: &TlsOptions) -> Result<ureq::Agent> {
 
     Ok(ureq::AgentBuilder::new()
         .tls_config(Arc::new(tls_config))
-        .user_agent("voicetools/0.1")
+        .user_agent(&format!("jisuno/{}", env!("CARGO_PKG_VERSION")))
         .build())
 }
 

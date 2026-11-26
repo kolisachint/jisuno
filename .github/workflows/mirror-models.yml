@@ -34,9 +34,6 @@ jobs:
           curl -fL --retry 3 -o mirror/parakeet-v2-vocab.txt \
             https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/vocab.txt
 
-          curl -fL --retry 3 -o mirror/whisper-small-en-ggml-small.en.bin \
-            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
-
           ls -lh mirror/
 
       - name: Create release and upload assets

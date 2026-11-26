@@ -90,19 +90,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install ALSA
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Publish jisuno
+      - name: Publish crates in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
-          cargo publish -p jisuno 2>&1 | tee /tmp/publish.log || {
-            status=${PIPESTATUS[0]}
-            if grep -q "already exists on crates.io" /tmp/publish.log; then
-              echo "jisuno already published — skipping"
-              exit 0
-            fi
-            exit "$status"
-          }
+          for crate in jisuno-logic jisuno-audio jisuno-asr jisuno; do
+            cargo publish -p "$crate" 2>&1 | tee /tmp/publish.log || {
+              status=${PIPESTATUS[0]}
+              if grep -q "already exists on crates.io" /tmp/publish.log; then
+                echo "$crate already published — skipping"
+              else
+                exit "$status"
+              fi
+            }
+          done
 
   # ── 3. Create the GitHub release (runs in parallel with publish) ──────
   create-release:

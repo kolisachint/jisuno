@@ -17,7 +17,7 @@ On the command line:
 
 ```sh
 jisuno setup                          # download the default model (v3)
-jisuno setup --model parakeet-v2      # download the English model
+jisuno setup --model parakeet-tdt-0.6b-v2-int8      # download the English model
 jisuno models                         # list the models and whether they are installed
 ```
 

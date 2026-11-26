@@ -9,8 +9,6 @@ Jisuno is a voice tool for macOS. It lives in the menu bar and is one key away.
 A small HUD near the notch (or by the cursor, or off) shows the mode, the mic level, live
 partial text, model loading, and a one-line result. Short tones mark start, stop and cancel.
 
-Jisuno was formerly `voicetools`.
-
 ## Local and offline
 
 Speech recognition runs on your Mac with the Parakeet TDT 0.6B model (ONNX). Audio is not sent

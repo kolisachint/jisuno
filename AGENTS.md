@@ -10,7 +10,7 @@ Docs (keep these current when behavior changes):
 
 - `README.md` — features, install, usage, output protocol, architecture
 - `ci/README.md` — CI/release workflow reference
-- `docs/hoocode-integration/` — TUI push-to-talk wiring reference
+- `docs/user/src/tui.md` + `docs/user/src/tui/voice-transcribe.ts` — TUI push-to-talk wiring reference
 
 Code:
 
@@ -107,7 +107,8 @@ a skipped version number). Leave the version untouched and just apply the label.
 2. On merge, `release.yml` derives the next version from the latest `v*` tag,
    bumps `Cargo.toml`, updates `Cargo.lock`, commits `release: v<version>`,
    tags `v<version>`, and pushes `main`.
-3. The same workflow then publishes `voicetools` to crates.io (skipping a
+3. The same workflow then publishes `jisuno-logic`, `jisuno-audio`, `jisuno-asr`,
+   `jisuno` to crates.io in dependency order (skipping a
    version already on the index) and builds + attaches binaries for macOS
    (Apple silicon + Intel), Linux (`x86_64-unknown-linux-gnu`), and Windows to
    the GitHub release.
