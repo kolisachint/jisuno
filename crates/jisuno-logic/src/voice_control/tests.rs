@@ -238,7 +238,18 @@ fn row_12_slot_in_steps_missing_from_phrases() {
     assert_eq!(diags.len(), 1);
     assert_eq!(
         diags[0].message,
-        "command \"move\": slot \"{window}\" used in steps but not in any phrase"
+        "command \"move\": slot \"{window}\" used in steps but not in phrase \"move it\""
+    );
+
+    // Per phrase: a slot missing from one of two phrases is still an error.
+    let text = doc(
+        r#"{"id": "focus", "say": ["focus {window}", "focus it"], "steps": [{"do": "window.focus", "window": "{window}"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"focus\": slot \"{window}\" used in steps but not in phrase \"focus it\""
     );
 }
 
@@ -488,4 +499,183 @@ fn remove_command_reports_presence() {
     let (again, warnings) = ok(&config.to_pretty_json());
     assert!(warnings.is_empty());
     assert_eq!(again, config);
+}
+
+#[test]
+fn non_ascii_keys_map_to_the_right_line() {
+    let text = "{\n\"version\": 1,\n\"workspaces\": {\"caf\u{e9}\": [\n{\"id\": \"t\", \"app\": \"Rex\", \"place\": \"left-half\", \"zoom\": 1}\n]},\n\"commands\": []}";
+    let diags = errors(text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].line, 4);
+    assert_eq!(
+        diags[0].message,
+        "unknown key \"zoom\" in workspace \"caf\u{e9}\" window \"t\""
+    );
+}
+
+#[test]
+fn hyphen_and_punctuation_normalize_before_phrase_checks() {
+    assert_eq!(normalize("right-half"), vec!["right", "half"]);
+    assert_eq!(
+        normalize("open note {name}."),
+        vec!["open", "note", "{name}"]
+    );
+
+    let text = format!(
+        "{{\"version\": 1, \"commands\": [\n{}\n,\n{}\n]}}",
+        menu_command("settings", "open-settings"),
+        menu_command("setup", "open settings")
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "duplicate phrase \"open settings\" (commands \"settings\" and \"setup\")"
+    );
+
+    let text = doc(
+        r#"{"id": "note", "say": ["open note {name}."], "steps": [{"do": "app.open", "app": "Inkuno", "arg": "{name}.md"}]}"#,
+    );
+    let (_, warnings) = ok(&text);
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn row_07_later_phrase_holder_is_checked_against_all_earlier() {
+    // The first two share a phrase but have disjoint `when` lists (allowed).
+    // The third has no `when`, so it collides with both.
+    let text = format!(
+        "{{\"version\": 1, \"commands\": [\n{},\n{},\n{}\n]}}",
+        r#"{"id": "mail", "say": ["open safari"], "when": {"app": ["a.A"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+        r#"{"id": "safari", "say": ["open safari"], "when": {"app": ["b.B"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+        r#"{"id": "safari2", "say": ["open safari"], "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&text);
+    let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "duplicate phrase \"open safari\" (commands \"mail\" and \"safari2\")",
+            "duplicate phrase \"open safari\" (commands \"safari\" and \"safari2\")",
+        ]
+    );
+    assert!(diags.iter().all(|d| d.line == 4));
+}
+
+#[test]
+fn row_22_declared_slot_cannot_use_a_built_in_name() {
+    let text = doc(
+        r#"{"id": "x", "say": ["x"], "slots": {"app": ["a"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"x\": slot \"app\" is built in and cannot be declared"
+    );
+}
+
+#[test]
+fn row_23_slot_names_follow_the_rule() {
+    let text = doc(
+        r#"{"id": "x", "say": ["x"], "slots": {"Project": ["a"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].message, "command \"x\": bad slot name \"Project\"");
+
+    let text = doc(
+        r#"{"id": "x", "say": ["x"], "steps": [{"do": "app.open", "app": "Zed", "arg": "{Project}"}]}"#,
+    );
+    let diags = errors(&text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].message, "command \"x\": bad slot name \"Project\"");
+
+    let text = doc(r#"{"id": "x", "say": ["open {Project}"], "steps": [{"do": "jisuno.menu"}]}"#);
+    let diags = errors(&text);
+    assert!(diags
+        .iter()
+        .any(|d| d.message == "command \"x\": bad slot name \"Project\""));
+}
+
+#[test]
+fn row_25_malformed_declarations_are_errors_even_when_unused() {
+    let cases = [
+        (r#"{"project": []}"#, "bad declaration for slot \"project\""),
+        (
+            r#"{"project": ["a", ""]}"#,
+            "bad declaration for slot \"project\"",
+        ),
+        (r#"{"project": 3}"#, "bad declaration for slot \"project\""),
+        (
+            r#"{"project": "fixed"}"#,
+            "bad declaration for slot \"project\"",
+        ),
+        (
+            r#"{"project": ["  "]}"#,
+            "slot \"project\" has an empty value",
+        ),
+    ];
+    for (slots, expected) in cases {
+        let text = doc(&format!(
+            "{{\"id\": \"x\", \"say\": [\"x\"], \"slots\": {slots}, \"steps\": [{{\"do\": \"jisuno.menu\"}}]}}"
+        ));
+        let diags = errors(&text);
+        assert_eq!(diags.len(), 1, "{slots}: {diags:?}");
+        assert_eq!(diags[0].message, format!("command \"x\": {expected}"));
+    }
+}
+
+#[test]
+fn row_24_slot_used_as_place_must_be_a_place_list() {
+    let good = doc(
+        r#"{"id": "tile", "say": ["tile {window} to {spot}"], "slots": {"spot": ["left half", "right-top"]}, "steps": [{"do": "window.tile", "window": "{window}", "place": "{spot}"}]}"#,
+    );
+    ok(&good);
+
+    let bad = doc(
+        r#"{"id": "tile", "say": ["tile {window} to {spot}"], "slots": {"spot": ["left half", "nowhere"]}, "steps": [{"do": "window.tile", "window": "{window}", "place": "{spot}"}]}"#,
+    );
+    let diags = errors(&bad);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"tile\": slot \"{spot}\" used as place must be {place} or a list of places"
+    );
+
+    let free = doc(
+        r#"{"id": "tile", "say": ["tile {window} to {note}"], "slots": {"note": "free"}, "steps": [{"do": "window.tile", "window": "{window}", "place": "{note}"}]}"#,
+    );
+    let diags = errors(&free);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"tile\": slot \"{note}\" used as place must be {place} or a list of places"
+    );
+}
+
+#[test]
+fn row_slot_refs_ignore_shell_braces_and_dollar_vars() {
+    let text = doc(
+        r#"{"id": "mk", "say": ["make dirs"], "confirm": true, "steps": [{"do": "shell.run", "cmd": "mkdir -p x/{src,test} && echo ${home}"}]}"#,
+    );
+    ok(&text);
+}
+
+#[test]
+fn bundle_ids_match_the_schema_pattern() {
+    let ok_text = doc(
+        r#"{"id": "pw", "say": ["fill"], "when": {"app": ["com.1password.mac", "com.apple.mail"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    ok(&ok_text);
+
+    let bad_text = doc(
+        r#"{"id": "pw", "say": ["fill"], "when": {"app": ["1password.mac"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&bad_text);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message,
+        "command \"pw\": bad bundle id \"1password.mac\""
+    );
 }

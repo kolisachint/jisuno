@@ -1,5 +1,10 @@
 name: Mirror models
 
+# One-off: fetches the pre-exported ONNX model files from HuggingFace
+# and republishes them as assets on the `models-v1` GitHub release, so
+# `jisuno setup` has a fallback source for networks that can't reach
+# huggingface.co (e.g. behind a corporate proxy). Not kept in sync with
+# upstream automatically — re-run manually if the upstream files change.
 on:
   workflow_dispatch:
 

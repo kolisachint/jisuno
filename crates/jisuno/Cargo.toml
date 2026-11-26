@@ -30,8 +30,8 @@ serde_json = { workspace = true }
 cpal = { workspace = true, optional = true }
 gpui = { package = "gpui-pre", version = "=0.3.14", optional = true }
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.14", features = ["font-kit"], optional = true }
-jisuno-platform = { path = "../jisuno-platform", version = "0.1.0", optional = true }
-jisuno-ui = { path = "../jisuno-ui", version = "0.1.0", optional = true }
+jisuno-platform = { workspace = true, optional = true }
+jisuno-ui = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
