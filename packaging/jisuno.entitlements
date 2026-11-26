@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entitlements for the hardened-runtime signature (codesign --options runtime).
+  Used by packaging/sign-notarize.sh on the app bundle.
+
+  Granted:
+    com.apple.security.device.audio-input
+      Microphone capture (cpal) while a hold key is down. Without it the
+      hardened runtime blocks the mic even after the user approves the TCC prompt.
+
+  Deliberately not granted:
+    App Sandbox: Jisuno needs Accessibility (AX actions, window placement), a
+      session event tap (hotkeys), launching apps and running shell.run. None of
+      these work inside the sandbox.
+    com.apple.security.cs.disable-library-validation: bundled libonnxruntime
+      (if any) is signed by the same Developer ID in the same pass, so library
+      validation accepts it. Add only if a third-party dylib is loaded.
+    com.apple.security.cs.allow-jit and
+    com.apple.security.cs.allow-unsigned-executable-memory: not required by the
+      ONNX Runtime CPU/CoreML providers as far as known. Verify on a signed build
+      before adding.
+    com.apple.security.network.client: only enforced under the sandbox. The model
+      download (ureq) works under hardened runtime without it.
+    com.apple.security.automation.apple-events: not needed while no Apple Events
+      are sent (see Info.plist).
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>
