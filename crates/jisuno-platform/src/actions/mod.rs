@@ -18,7 +18,6 @@
 
 pub mod app;
 pub mod ax;
-pub mod delegated;
 pub mod geom;
 pub mod keys_send;
 pub mod shell;
@@ -254,22 +253,18 @@ mod tests {
     fn delegated_steps_pass_reasons_through() {
         let mut actions = MacActions::new(StubHooks { theme_error: None });
         let workspaces = BTreeMap::new();
-        assert!(
-            actions
-                .run(&ResolvedStep::ThemeSet { theme: "x".into() }, &workspaces)
-                .is_ok()
-        );
+        assert!(actions
+            .run(&ResolvedStep::ThemeSet { theme: "x".into() }, &workspaces)
+            .is_ok());
         assert_eq!(
             actions.run(&ResolvedStep::ModelWarm, &workspaces),
             Err("model not installed".to_string())
         );
         assert!(actions.run(&ResolvedStep::ModelUnload, &workspaces).is_ok());
         assert!(actions.run(&ResolvedStep::JisunoMenu, &workspaces).is_ok());
-        assert!(
-            actions
-                .run(&ResolvedStep::JisunoSettings, &workspaces)
-                .is_ok()
-        );
+        assert!(actions
+            .run(&ResolvedStep::JisunoSettings, &workspaces)
+            .is_ok());
 
         let mut failing = MacActions::new(StubHooks {
             theme_error: Some("unknown theme \"quiet-blue\"".to_string()),

@@ -26,11 +26,11 @@ pub(crate) fn applications_dirs() -> Vec<String> {
 /// Find `<name>.app` under `dirs` (case-insensitive). Pure over the dir
 /// list: unit-tested on all OSes with temp dirs.
 pub(crate) fn find_app_bundle(name: &str, dirs: &[String]) -> Option<String> {
-    let want = format!("{name}.app").toLowerCase();
+    let want = format!("{name}.app").to_lowercase();
     for dir in dirs {
         let entries = std::fs::read_dir(dir).ok()?;
         for entry in entries.flatten() {
-            let file_name = entry.file_name().to_string_lossy().toLowerCase();
+            let file_name = entry.file_name().to_string_lossy().to_lowercase();
             if file_name == want {
                 return Some(entry.path().to_string_lossy().into_owned());
             }
@@ -84,7 +84,9 @@ mod macos {
             let id = NSString::from_str(app);
             if let Some(url) = workspace.URLForApplicationWithBundleIdentifier(&id) {
                 return Ok(url.path().map(|p| p.to_string()).unwrap_or_else(|| {
-                    url.absoluteString().map(|s| s.to_string()).unwrap_or_default()
+                    url.absoluteString()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default()
                 }));
             }
         }
@@ -145,10 +147,7 @@ mod tests {
 
     #[test]
     fn find_app_bundle_matches_case_insensitively() {
-        let root = std::env::temp_dir().join(format!(
-            "jisuno-actions-test-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("jisuno-actions-test-{}", std::process::id()));
         let apps = root.join("Applications");
         std::fs::create_dir_all(apps.join("Zed.app")).expect("fixture Zed.app");
         std::fs::create_dir_all(apps.join("Safari.app")).expect("fixture Safari.app");

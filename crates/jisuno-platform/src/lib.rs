@@ -8,6 +8,7 @@
 //! Pure helpers (flag-bit decoding, chord translation, UTF-16 chunking, the
 //! settings-pane URLs) are framework-free and unit-tested on all OSes.
 
+pub mod actions;
 pub mod frontmost;
 pub mod insert;
 pub mod keys;
