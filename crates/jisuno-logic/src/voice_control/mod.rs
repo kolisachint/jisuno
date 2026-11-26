@@ -544,23 +544,11 @@ pub struct WindowDef {
     pub place: Place,
 }
 
-/// Normalize a phrase the way the matcher does (§5): lowercase, strip
-/// punctuation, split into words. `{slot}` tokens keep their spelling
-/// (lowercased) so slots still resolve after normalization.
+/// Normalize a phrase with the canonical matcher tokenizer (§5): lowercase,
+/// split on whitespace and punctuation, keep `{slot}` tokens. Validation and
+/// matching share this one tokenizer, so both see the same words.
 pub fn normalize(phrase: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    for token in phrase.split_whitespace() {
-        let lower = token.to_lowercase();
-        if is_slot_token(&lower) {
-            words.push(lower);
-            continue;
-        }
-        let stripped: String = lower.chars().filter(|c| c.is_alphanumeric()).collect();
-        if !stripped.is_empty() {
-            words.push(stripped);
-        }
-    }
-    words
+    crate::matcher::normalize(phrase)
 }
 
 /// A full `{name}`-style token (no surrounding text).
