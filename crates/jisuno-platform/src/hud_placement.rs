@@ -49,7 +49,8 @@ pub fn hud_origin(
         )),
         Hud::Cursor => {
             let (mx, my) = mouse?;
-            let x = (mx - hud_size.width / 2.0).clamp(0.0, (screen.width - hud_size.width).max(0.0));
+            let x =
+                (mx - hud_size.width / 2.0).clamp(0.0, (screen.width - hud_size.width).max(0.0));
             let y = (my + CURSOR_GAP).clamp(0.0, (screen.height - hud_size.height).max(0.0));
             Some((x, y))
         }
@@ -127,7 +128,10 @@ mod tests {
 
     #[test]
     fn off_and_unknown_mouse_draw_nothing() {
-        assert_eq!(hud_origin(Hud::Off, screen(), size(), Some((1.0, 1.0))), None);
+        assert_eq!(
+            hud_origin(Hud::Off, screen(), size(), Some((1.0, 1.0))),
+            None
+        );
         assert_eq!(hud_origin(Hud::Cursor, screen(), size(), None), None);
     }
 

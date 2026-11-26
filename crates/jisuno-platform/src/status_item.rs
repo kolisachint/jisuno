@@ -32,7 +32,9 @@ pub enum MenuAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IconState {
     /// Nothing running. Dimmed while the model is not in memory.
-    Idle { model_warm: bool },
+    Idle {
+        model_warm: bool,
+    },
     ListeningDictate,
     ListeningCommand,
     Loading,
@@ -117,8 +119,7 @@ impl StatusItem {
                 Pane::InputMonitoring => "Input Monitoring",
             };
             let state = if granted { "Allowed" } else { "Not allowed" };
-            self.inner
-                .set_item_title(tag, &format!("{name} — {state}"));
+            self.inner.set_item_title(tag, &format!("{name} — {state}"));
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -135,7 +136,7 @@ mod macos_impl {
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{define_class, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSImage, NSMenu, NSMenuItem, NSEventModifierFlags, NSStatusBar, NSStatusItem,
+        NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
     };
     use objc2_foundation::NSString;
 
@@ -296,7 +297,12 @@ mod macos_impl {
                 NSEventModifierFlags::empty(),
             );
             menu.addItem(&NSMenuItem::separatorItem(mtm));
-            add("Microphone — …", ITEM_MIC, "", NSEventModifierFlags::empty());
+            add(
+                "Microphone — …",
+                ITEM_MIC,
+                "",
+                NSEventModifierFlags::empty(),
+            );
             add(
                 "Accessibility — …",
                 ITEM_AX,
