@@ -730,31 +730,29 @@ pub fn validate(root: &Value, map: &LineMap) -> (Vec<Diagnostic>, Vec<Diagnostic
     {
         let usable =
             |when: &Option<HashSet<String>>| when.as_ref().filter(|set| !set.is_empty()).cloned();
-        let mut seen: HashMap<String, (String, Option<HashSet<String>>)> = HashMap::new();
+        // Every earlier holder of a phrase is compared, not just the first.
+        let mut seen: HashMap<String, Vec<(String, Option<HashSet<String>>)>> = HashMap::new();
         for fact in &facts {
             let Some(id) = &fact.id else { continue };
             let current = usable(&fact.when);
             for (_, words) in &fact.phrases {
                 let key = words.join(" ");
-                match seen.get(&key) {
-                    Some((first_id, first_when)) => {
-                        let exempt = match (usable(first_when), current.clone()) {
-                            (Some(a), Some(b)) => a.is_disjoint(&b),
-                            _ => false,
-                        };
-                        if !exempt {
-                            errors.push(error(
-                                fact.line,
-                                format!(
-                                    "duplicate phrase \"{key}\" (commands \"{first_id}\" and \"{id}\")"
-                                ),
-                            ));
-                        }
-                    }
-                    None => {
-                        seen.insert(key, (id.clone(), current.clone()));
+                let holders = seen.entry(key.clone()).or_default();
+                for (earlier_id, earlier_when) in holders.iter() {
+                    let exempt = match (usable(earlier_when), current.clone()) {
+                        (Some(a), Some(b)) => a.is_disjoint(&b),
+                        _ => false,
+                    };
+                    if !exempt {
+                        errors.push(error(
+                            fact.line,
+                            format!(
+                                "duplicate phrase \"{key}\" (commands \"{earlier_id}\" and \"{id}\")"
+                            ),
+                        ));
                     }
                 }
+                holders.push((id.clone(), current.clone()));
             }
         }
     }

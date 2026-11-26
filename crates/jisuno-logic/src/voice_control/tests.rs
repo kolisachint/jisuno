@@ -525,3 +525,25 @@ fn hyphen_and_punctuation_normalize_before_phrase_checks() {
     let (_, warnings) = ok(&text);
     assert!(warnings.is_empty());
 }
+
+#[test]
+fn row_07_later_phrase_holder_is_checked_against_all_earlier() {
+    // The first two share a phrase but have disjoint `when` lists (allowed).
+    // The third has no `when`, so it collides with both.
+    let text = format!(
+        "{{\"version\": 1, \"commands\": [\n{},\n{},\n{}\n]}}",
+        r#"{"id": "mail", "say": ["open safari"], "when": {"app": ["a.A"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+        r#"{"id": "safari", "say": ["open safari"], "when": {"app": ["b.B"]}, "steps": [{"do": "jisuno.menu"}]}"#,
+        r#"{"id": "safari2", "say": ["open safari"], "steps": [{"do": "jisuno.menu"}]}"#,
+    );
+    let diags = errors(&text);
+    let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "duplicate phrase \"open safari\" (commands \"mail\" and \"safari2\")",
+            "duplicate phrase \"open safari\" (commands \"safari\" and \"safari2\")",
+        ]
+    );
+    assert!(diags.iter().all(|d| d.line == 4));
+}
