@@ -5,6 +5,7 @@
 use jisuno_platform::{permissions::Pane, status_item::IconState};
 
 use super::model::ModelState;
+use super::socket::state_name;
 use super::state::AppState;
 
 // --- Menu bar chrome ---
@@ -13,6 +14,7 @@ impl AppState {
     // --- Menu bar chrome ---
 
     pub(crate) fn refresh_chrome(&mut self) {
+        self.refresh_socket_snapshot();
         let warning = self.warning_active();
         let state = if warning {
             IconState::Error
@@ -67,6 +69,16 @@ impl AppState {
             if text != self.perm_line[i] {
                 self.perm_line[i] = text;
                 self.status.set_permission(pane, granted);
+            }
+        }
+    }
+
+    pub(crate) fn refresh_socket_snapshot(&mut self) {
+        let state = state_name(&self.model_state).to_string();
+        if let Ok(mut snapshot) = self.socket_snapshot.lock() {
+            if snapshot.state != state || snapshot.model != self.model_name {
+                snapshot.state = state;
+                snapshot.model.clone_from(&self.model_name);
             }
         }
     }

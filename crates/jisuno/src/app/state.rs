@@ -26,6 +26,7 @@ use jisuno_ui::tokens::ThemeJson;
 
 use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
+use super::socket::SocketSnapshot;
 use super::worker::{FromWorker, ToWorker};
 
 /// Last-good holder with show-once errors, keyed by message. `LastGood` in
@@ -143,6 +144,7 @@ pub(crate) struct AppState {
     pub(crate) voice_good: LastGood<Config>,
     pub(crate) theme_good: LastGood<ThemeJson>,
     pub(crate) watch_rx: mpsc::Receiver<PathBuf>,
+    pub(crate) socket_snapshot: Arc<Mutex<SocketSnapshot>>,
 }
 
 impl AppState {

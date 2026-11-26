@@ -25,6 +25,7 @@ pub(crate) mod config;
 pub(crate) mod hud;
 pub(crate) mod model;
 pub(crate) mod pipeline;
+pub(crate) mod socket;
 pub(crate) mod state;
 pub(crate) mod status;
 pub(crate) mod worker;
@@ -261,6 +262,25 @@ pub fn run(opts: AppOptions) {
     let (worker_tx, from_worker) = mpsc::channel();
     std::thread::spawn(move || worker_main(worker_rx, worker_tx));
 
+    let socket_snapshot = Arc::new(Mutex::new(socket::SocketSnapshot {
+        model: model_id(&settings_holder.current),
+        state: "unloaded".to_string(),
+    }));
+    let socket_path = match socket::start(socket_snapshot.clone(), hook_tx.clone()) {
+        Ok(path) => Some(path),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!("jisuno app: already running");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            stamp(
+                start,
+                &format!("control socket: {e:#} (continuing without it)"),
+            );
+            None
+        }
+    };
+
     let debug_hold = opts.debug_hold_ms.map(|ms| {
         let down = Instant::now() + Duration::from_millis(1000);
         (down, down + Duration::from_millis(ms), false)
@@ -379,6 +399,7 @@ pub fn run(opts: AppOptions) {
             bindings_good: LastGood::new(bindings_holder.current.clone()),
             voice_good: LastGood::new(voice_config.clone()),
             theme_good: LastGood::new(theme_holder.current.clone()),
+            socket_snapshot,
             watch_rx: crate::watch::spawn_watcher(
                 vec![
                     dir.settings_path(),
@@ -408,6 +429,9 @@ pub fn run(opts: AppOptions) {
         })
         .detach();
     });
+    if let Some(path) = socket_path {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 pub(crate) fn tap_config_for(bindings: &Keybindings) -> TapConfig {

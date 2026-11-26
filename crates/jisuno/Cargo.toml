@@ -21,9 +21,11 @@ app = [
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+libc = { workspace = true }
 jisuno-asr = { workspace = true }
 jisuno-audio = { workspace = true }
 jisuno-logic = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
