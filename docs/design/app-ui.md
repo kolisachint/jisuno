@@ -1,9 +1,9 @@
 # Jisuno: app UI (visual and behavior spec)
 
-Status: draft, waiting for owner sign-off.
-Last update: 2026-11-26. Prototype: `prototypes/v3.html` (clickable picture of this spec).
+Status: signed off 2026-11-26 (round 6, `jisuno.md` §10). Prototype `prototypes/v3.html` signed off with it.
+Last update: 2026-11-26 (round 6). Prototype: `prototypes/v3.html` (clickable picture of this spec).
 Sources: `jisuno.md`, `keybindings.md`, `voice-control.md` (signed off 2026-11-26). Where this doc
-and a signed-off doc differ, the signed-off doc wins; the differences are listed in §11.
+and a signed-off doc differ, the signed-off doc wins; the differences were listed in §11 and are resolved there.
 
 ## 0. Principles
 
@@ -72,8 +72,8 @@ HUD, always dark whatever the palette (like the notch):
 
 ### 1.2 Type
 
-Inter and JetBrains Mono, bundled as in inkuno (`crates/inkuno-ui/src/assets.rs`); system
-font as fallback. Decision for sign-off (§12).
+macOS system fonts, nothing bundled (round 6). SF Pro for UI text (`-apple-system`, `SF Pro Text`),
+SF Mono for code, paths and key caps (`ui-monospace`, `SF Mono`). No font files ship with the app.
 
 | Role | Size / line | Weight | Used for |
 |--|--|--|--|
@@ -181,7 +181,7 @@ The layout is one row (mode, bars, meta) plus an optional line. Meta is `micro` 
 | H17 | Missing device | `input_device` names a device not connected | note `Mic "<name>" not found · using system input` | each utterance until fixed |
 | H18 | Model ready | load finished with no hold running | chip `Model ready` | 0.9 s |
 
-Copy marked *new* in §7, and H16 and H17, is not in a signed-off doc. Owner to approve.
+Copy marked *new* in §7, and H16 and H17, approved in round 6.
 
 ## 4. Popover
 
@@ -209,12 +209,12 @@ file at once (atomic write, hot reload, `keybindings.md` §9); an error shows th
 
 | Pane | File | Controls (key) | Notes |
 |--|--|--|--|
-| General | `settings.json` | Listening cue (`hud`: Notch, Cursor, Off); Sounds (`sounds`); Insert text by (`insert`: Paste, Type); Apps that take typing (`insert_type_apps`, bundle ids); Restore clipboard (`restore_clipboard`); Dictation limit (`dictation_limit_s`, 120); Hands-free stops after silence (`hands_free_silence_ms`, 500); Launch at login (`launch_at_login`) | hold keys ignore the silence value |
+| General | `settings.json` | Listening cue (`hud`: Notch, Cursor, Off); Sounds (`sounds`); Live partial text (`partials`); Insert text by (`insert`: Paste, Type); Apps that take typing (`insert_type_apps`, bundle ids); Restore clipboard (`restore_clipboard`); Dictation limit (`dictation_limit_s`, 120); Hands-free stops after silence (`hands_free_silence_ms`, 500); Launch at login (`login_item`) | hold keys ignore the silence value |
 | Audio | `settings.json` | Input device (`input_device`: System input by default, then the connected devices); Test the microphone (level meter, nothing recorded) | Bluetooth input shows the warning below; a missing device shows the note under H17 |
-| Model | `settings.json` | Model (`model`): v3 default, v2 optional; state line; Download / Warm now / Unload now; Load (`model_load`: On demand, At login); Unload after idle (`unload_after_idle_min`, 10, 0 = never); Language (`language`); Live partial text (`partials`) | one model is in memory at a time; switching unloads the current one |
+| Model | `settings.json` | Model (`model`): v3 default, v2 optional; state line; Download / Warm now / Unload now; Load (`model_load`: On demand, At login); Unload after idle (`unload_after_idle_min`, 10, 0 = never); Language (`language`) | one model is in memory at a time; switching unloads the current one |
 | Keybindings | `keybindings.json` | the nine commands of `keybindings.md` §10: key, when, hold, `Set to default` | §5.1 |
 | Commands | `voice-control-config.json` | built-in commands; commands added by agents (`"agent": true`) under their own heading; workspaces | read-only: edit the file or use `jisuno control` |
-| Appearance | `theme.json` | Palette (`name`: `quiet-light`, `quiet-dark`); Appearance (`appearance`: `system`, `fixed`); Dictate accent, Command accent (`#rrggbb`); HUD style (`hud.style`, `island`); Show partials (`hud.show_partials`); Show latency (`hud.show_latency`) | §12 on `appearance` |
+| Appearance | `theme.json` | Palette (`name`: `quiet-light`, `quiet-dark`); Appearance (`appearance`: `system`, `fixed`); Dictate accent (`accent_dictate`), Command accent (`accent_command`), both `#rrggbb`; HUD style (`hud.style`, `island`, the only value in v1); Show latency (`hud.show_latency`) | key table in `docs/user/src/config-files.md`; `appearance` as §12 |
 | Performance | none (reads `jisuno bench`) | table in §5.2 | `Run benchmark` runs `jisuno bench` |
 | Files | all four | one row per file: name, path under `~/.config/jisuno/`, `OK` or `Error`, `Open file`, `Copy error` (enabled on error); `schemas/` folder row | the error copy is the §8 message |
 
@@ -243,8 +243,9 @@ Warning text, Bluetooth (Audio pane), new copy: `Bluetooth input: audio is compr
 | Insert (paste + clipboard restore) | ≤ 10 ms | not measured |
 | Key-up → text, cold | no target set | not measured |
 | Warm decode, 2 s and 15 s clips | no target set | not measured |
-| Cold load | no target set | not measured |
-| Memory, warm / unloaded | ~0.9 GB warm (§6); no target set | not measured |
+| Cold load | ≤ 1.5 s | not measured |
+| Memory, warm | < 1 GB | not measured |
+| Memory, unloaded | < 60 MB | not measured |
 | Idle CPU | no target set | not measured |
 | WER, LibriSpeech test-clean / owner set | no target set | not measured |
 
@@ -282,7 +283,7 @@ Icon: `badge` = the warning badge (§2); `lock` = the lock badge.
 | Model missing | HUD on hold, 4 s (no mic opened); popover `Not downloaded`; Model pane | `Model not downloaded · open Settings → Model` (new) | warning | `Download` in Settings → Model or popover |
 | Model downloading | HUD on hold, persists while downloading (no mic opened) | `Model downloading · 42%` (new) | warning | wait |
 | Invalid config | HUD once on reload, 6 s; Files pane `Error` and `Copy error` | `<file>:<line>: <message> · using last good config` (signed) | warning | fix the file; the last good config stays live; the badge clears on the next valid reload |
-| Secure input on | HUD once per app per session, 3 s; popover row; lock badge | `Secure input on (<app>) · keys paused` (signed in `keybindings.md` §8; §11) | lock | leave the password field or the app holding it; keys resume |
+| Secure input on | HUD once per app per session, 3 s; popover row; lock badge | `Secure input on (<app>) · keys paused` (`keybindings.md` §8) | lock | leave the password field or the app holding it; keys resume |
 | Focus lost | HUD, 4 s; Recent row | `Focus lost: text in Recent` (signed) | none | copy from Recent |
 | Missing device | HUD note on each utterance (H17); Audio pane note | `Mic "<name>" not found · using system input` (new) | none | reconnect, or pick another device in Audio |
 | Step failed | HUD, 4 s; Recent row `failed` | `Step 2 of 3 failed: window.tile · no window "terminal"` (signed) | none | fix the phrase or open the window; earlier steps stay done |
@@ -318,23 +319,24 @@ desktop and its windows.
 
 ## 11. Conflicts and gaps in the signed-off docs
 
-| # | Topic | Source A | Source B | This doc |
+| # | Topic | Source A | Source B | Resolution (round 6) |
 |--|--|--|--|--|
-| 1 | Secure input copy | `jisuno.md` §10.7: `Secure input on: keys paused` | `keybindings.md` §8: `Secure input on (<app>) · keys paused` | the `keybindings.md` text (names the app); owner to pick one |
-| 2 | Esc while confirming | `keybindings.md` §3: `voice.cancel` when `listening` only | `keybindings.md` §4 and §5: Esc cancels the confirm prompt | Esc cancels a confirm; §3 needs its `when` widened |
-| 3 | Theme names | `voice-control.md` §2 examples: `quiet-dark`, `quiet-light` | inkuno: `Dark`, `Light` (and `Quiet Dark` legacy) | `quiet-dark`, `quiet-light` |
-| 4 | Whisper | prototypes v1, v2 list `whisper-small-en` | `jisuno.md` §10.2: whisper dropped | dropped |
-| 5 | `partial_interval_ms` | v2 prototype | not in `jisuno.md` §4 | not shown; not in the file list |
-| 6 | `launch_at_login` | `jisuno.md` §4: "login item" | (no key name) | the key name `launch_at_login` (decision) |
-| 7 | Performance targets | v2 prototype: cold load ≤ 1.5 s; memory warm < 1 GB, unloaded < 60 MB | `jisuno.md` §6, §6.1: no such targets | shown as `no target set` |
-| 8 | `language` values | `jisuno.md` §4: key only | none | `auto` only; owner to list values |
-| 9 | Bluetooth and missing-device copy | `jisuno.md` §10.10: "explains", "a HUD note" | none | new copy (§3.3, §5, §7) |
-| 10 | Model download failure, v2 size | `jisuno.md` §9: ~650 MB (v3 only) | none | not specified; v2 size shown as `optional download` |
-| 11 | `show_latency` | v1 and v2 prototypes show latency | signed docs: one-line result | off by default |
+| 1 | Secure input copy | `jisuno.md` §10.7: `Secure input on: keys paused` | `keybindings.md` §8: `Secure input on (<app>) · keys paused` | Resolved: `Secure input on (<app>) · keys paused` everywhere (round 6, item 5) |
+| 2 | `partial_interval_ms` | v2 prototype | not in `jisuno.md` §4 | Resolved: not shown; not in the file list (round 6, item 9) |
+| 3 | Theme names | `voice-control.md` §2 examples: `quiet-dark`, `quiet-light` | inkuno: `Dark`, `Light` (and `Quiet Dark` legacy) | Resolved: `quiet-dark`, `quiet-light` (round 6, item 9) |
+| 4 | Whisper | prototypes v1, v2 list `whisper-small-en` | `jisuno.md` §10.2: whisper dropped | Resolved: dropped (round 6, item 9) |
+| 5 | `launch_at_login` | `jisuno.md` §4: "login item" | (no key name) | Resolved: `login_item`, as in `settings.schema.json` (round 6, item 6) |
+| 6 | Performance targets | v2 prototype: cold load ≤ 1.5 s; memory warm < 1 GB, unloaded < 60 MB | `jisuno.md` §6, §6.1: no such targets | Resolved: targets added to `jisuno.md` §6.1 and §5.2 here (round 6, item 3) |
+| 7 | `language` values | `jisuno.md` §4: key only | none | Resolved: `auto` only (round 6, item 9) |
+| 8 | Bluetooth and missing-device copy | `jisuno.md` §10.10: "explains", "a HUD note" | none | Resolved: new copy approved (round 6, item 9) |
+| 9 | Model download failure, v2 size | `jisuno.md` §9: ~650 MB (v3 only) | none | Resolved: v2 size shown as `optional download` (round 6, item 9) |
+| 10 | `show_latency` | v1 and v2 prototypes show latency | signed docs: one-line result | Resolved: off by default (round 6, item 9) |
 
-## 12. Decisions for owner sign-off
+## 12. Decisions (signed off in round 6)
 
-- Fonts: Inter and JetBrains Mono bundled, as inkuno (system font as fallback). The prototype uses the system stack (no external fonts).
+All accepted as written (round 6, item 9), except fonts (round 6, item 2).
+
+- Fonts: macOS system fonts, nothing bundled (§1.2).
 - `cursor` HUD position is the mouse pointer, not the text caret.
 - First run is detected by a missing `~/.config/jisuno/settings.json`.
 - Mic does not open when the model is missing or no mic is present; the HUD says so after the 150 ms hold.
@@ -347,6 +349,6 @@ desktop and its windows.
 - Pane deep links (`Privacy_Microphone`, `Privacy_Accessibility`, `Privacy_ListenEvent`) are unverified on macOS 27.3; check before the Welcome window is built.
 - Tones: the v2 frequencies, not measured.
 - Notch HUD on a Mac without a notch: under the menu bar, centred (the same as the notch placement).
-- Popover footer caption `Recent is kept in memory until you quit` is new copy (§12).
+- Popover footer caption `Recent is kept in memory until you quit` is new copy, approved in round 6.
 - Menu bar icon: listening colours on a non-template image (macOS draws template icons in the menu bar ink). Check on the reference Mac.
-- New copy needs approval: the *new* strings in §7, H16, H17, the Bluetooth warning, the popover footer caption, and the Welcome captions (`Checked live…`, `Written to ~/.config/jisuno/`).
+- New copy approved in round 6: the *new* strings in §7, H16, H17, the Bluetooth warning, the popover footer caption, and the Welcome captions (`Checked live…`, `Written to ~/.config/jisuno/`).

@@ -92,4 +92,27 @@ rules are described in [Voice commands](commands.md). Agents change it through `
 
 ## theme.json
 
-Documented with the UI spec.
+```json
+{
+  "$schema": "./schemas/theme.schema.json",
+  "name": "quiet-light",
+  "appearance": "system",
+  "accent_dictate": "#3a85f7",
+  "accent_command": "#e39b17",
+  "hud": {"style": "island", "show_latency": false}
+}
+```
+
+| Key | Type | Default | Values and meaning |
+|---|---|---|---|
+| `$schema` | string | none | Path to the local schema. Keep it. |
+| `name` | enum | `quiet-light` | `quiet-light` or `quiet-dark`. The palette, used when `appearance` is `fixed`. |
+| `appearance` | enum | `system` | `system` follows macOS light and dark. `fixed` always uses `name`. |
+| `accent_dictate` | string, `#rrggbb` | `#3a85f7` | Dictation accent, lowercase hex, for example `#3a85f7`. |
+| `accent_command` | string, `#rrggbb` | `#e39b17` | Command accent, lowercase hex, for example `#e39b17`. |
+| `hud.style` | enum | `island` | HUD style. `island` is the only value. |
+| `hud.show_latency` | boolean | `false` | Show the time in milliseconds after the Inserted line. |
+
+Every key is optional. A key you leave out uses its default. An invalid value is rejected like any other
+invalid file: the last good theme stays live. Where the HUD appears is set in `settings.json` (`hud`), and
+live partial text is set in `settings.json` (`partials`).

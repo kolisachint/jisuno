@@ -15,7 +15,7 @@
   --bar:rgba(250,250,250,.82);--wall1:#dfe2e6;--wall2:#c9ced6;
   --menu:0 1px 3px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.10);--win:0 12px 40px rgba(0,0,0,.22),0 0 0 .5px rgba(0,0,0,.18);
   --hud-bg:#0b0b0c;--hud-text:#f2f2f3;--hud-soft:#8b8d91;--hud-chip:#26272b;--hud-dictate:#7faffa;--hud-command:#e8a01c;--hud-ok:#58c48a;--hud-err:#ff7b72;
-  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;--mono:ui-monospace,"SF Mono",Menlo,monospace;
 }
 body.dark{
   --bg:#1c1c1e;--panel:#2c2c2e;--ground:#141517;--code:#232325;--popover:#2a2a2c;--border:#38393b;
@@ -267,7 +267,7 @@ const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'
 
 /* ---------- files (the four config files, with the defaults of the signed docs) ---------- */
 const cfg={
-  settings:{hud:'notch',sounds:true,insert:'paste',insert_type_apps:[],restore_clipboard:true,dictation_limit_s:120,hands_free_silence_ms:500,partials:true,model:'parakeet-tdt-0.6b-v3-int8',language:'auto',model_load:'on_demand',unload_after_idle_min:10,input_device:'System input',launch_at_login:true},
+  settings:{hud:'notch',sounds:true,insert:'paste',insert_type_apps:[],restore_clipboard:true,dictation_limit_s:120,hands_free_silence_ms:500,partials:true,model:'parakeet-tdt-0.6b-v3-int8',language:'auto',model_load:'on_demand',unload_after_idle_min:10,input_device:'System input',login_item:false},
   keybindings:[
     {key:'right_option',hold:true,command:'voice.dictate'},
     {key:'right_cmd',hold:true,command:'voice.command'},
@@ -276,7 +276,7 @@ const cfg={
     {key:'escape',when:'listening',command:'voice.cancel'},
     {key:'return',when:'confirming',command:'voice.confirm'},
     {key:'ctrl+option+,',command:'jisuno.settings'}],
-  theme:{name:'quiet-light',appearance:'system',accent_dictate:'#3a85f7',accent_command:'#e39b17',hud:{style:'island',show_partials:true,show_latency:false}},
+  theme:{name:'quiet-light',appearance:'system',accent_dictate:'#3a85f7',accent_command:'#e39b17',hud:{style:'island',show_latency:false}},
   vc:{version:1,commands:[
     {id:'menu',say:['open jisuno'],steps:[{do:'jisuno.menu'}]},
     {id:'settings',say:['open settings'],steps:[{do:'jisuno.settings'}]},
@@ -382,7 +382,7 @@ function tick(){
   const c=D.cap;if(!c)return;const el=performance.now()-c.t0;
   if(st.model==='warm'){const r=$('#lrow');if(r)r.remove()}
   const lb=$('#lb');if(lb)lb.style.width=Math.min(100,100*(1-Math.max(0,st.loadEnd-performance.now())/LOAD_MS))+'%';
-  if(st.model==='warm'&&cfg.settings.partials&&cfg.theme.hud.show_partials){
+  if(st.model==='warm'&&cfg.settings.partials){
     const n=Math.min(c.words.length,Math.floor(el/170));
     if(n!==c.shown){c.shown=n;const t=$('#htxt');if(t)t.innerHTML=esc(c.words.slice(0,n).join(' '))+' <span class="tail">▍</span>'}
   }
@@ -603,12 +603,13 @@ const PANE={
 General:()=>{const s=cfg.settings;return `<h3>General</h3><p class="cap">settings.json. Each change is written at once and hot-reloaded.</p>
   ${fld('Listening cue','Where the HUD appears. Off hides it; failures still show in the popover and icon.',sel('settings','hud',[['notch','Notch'],['cursor','Cursor'],['off','Off']],s.hud))}
   ${fld('Sounds','Short tone on start, stop and cancel.',tog('settings','sounds',s.sounds))}
+  ${fld('Live partial text','partials · shown once the model is warm',tog('settings','partials',s.partials))}
   ${fld('Insert text by','Paste keeps the clipboard; type is used for apps in insert_type_apps and when paste fails.',sel('settings','insert',[['paste','Paste'],['type','Type']],s.insert))}
   ${fld('Apps that take typing','insert_type_apps (bundle ids)',`<span class="cap mono">${s.insert_type_apps.length?esc(s.insert_type_apps.join(', ')):'none'}</span>`)}
   ${fld('Restore clipboard after paste','restore_clipboard',tog('settings','restore_clipboard',s.restore_clipboard))}
   ${fld('Dictation limit','dictation_limit_s · seconds. The HUD counts down the last 15 s.',num('settings','dictation_limit_s',s.dictation_limit_s))}
   ${fld('Hands-free stops after silence','hands_free_silence_ms · hold keys ignore this: key-up ends the utterance',num('settings','hands_free_silence_ms',s.hands_free_silence_ms))}
-  ${fld('Launch at login','launch_at_login',tog('settings','launch_at_login',s.launch_at_login))}`},
+  ${fld('Launch at login','login_item',tog('settings','login_item',s.login_item))}`},
 Audio:()=>{const s=cfg.settings;const dev=s.input_device;
   return `<h3>Audio</h3><p class="cap">Mic picker. Default is the system input.</p>
   ${fld('Input device','input_device',sel('settings','input_device',DEVICES.map(d=>[d,d]),dev))}
@@ -630,8 +631,7 @@ Model:()=>{const s=cfg.settings;const dlLine=st.dl!=null?`Downloading ${st.dl}% 
   </div>
   ${fld('Load','model_load',sel('settings','model_load',[['on_demand','On demand'],['at_login','At login']],s.model_load))}
   ${fld('Unload after idle (min)','unload_after_idle_min · 0 = never',num('settings','unload_after_idle_min',s.unload_after_idle_min))}
-  ${fld('Language','language · auto = the model detects',sel('settings','language',[['auto','auto']],s.language))}
-  ${fld('Live partial text','partials · shown once the model is warm',tog('settings','partials',s.partials))}`},
+  ${fld('Language','language · auto = the model detects',sel('settings','language',[['auto','auto']],s.language))}`},
 Keybindings:()=>{
   const rows=CMDS.map(cmd=>{const b=bindingOf(cmd);const recOn=st.rec&&st.rec.cmd===cmd;
     const when=b?(b.when||'global'):(WHEN[cmd]||'-');
@@ -657,7 +657,6 @@ Appearance:()=>{const t=cfg.theme;return `<h3>Appearance</h3><p class="cap">them
   ${fld('Dictate accent','accent_dictate · hex',txt('theme','accent_dictate',t.accent_dictate))}
   ${fld('Command accent','accent_command · hex',txt('theme','accent_command',t.accent_command))}
   ${fld('HUD style','hud.style · the only value in v1',`<span class="mono">${t.hud.style}</span>`)}
-  ${fld('Show partials in HUD','hud.show_partials',tog('theme','hud.show_partials',t.hud.show_partials))}
   ${fld('Show latency in HUD','hud.show_latency · ms after the result line',tog('theme','hud.show_latency',t.hud.show_latency))}`},
 Performance:()=>`<h3>Performance</h3><p class="cap">Targets from jisuno.md §6 and §6.1. Measured values come from jisuno bench on the reference Mac.</p>
   <table class="bench" style="margin-top:8px"><tr><th>Metric</th><th>Target</th><th>Measured</th></tr>
@@ -668,14 +667,15 @@ Performance:()=>`<h3>Performance</h3><p class="cap">Targets from jisuno.md §6 a
   <tr><td>Insert (paste + clipboard restore)</td><td class="num">≤ 10 ms</td><td class="num">not measured</td></tr>
   <tr><td>Key-up → text, cold</td><td class="num">no target set</td><td class="num">not measured</td></tr>
   <tr><td>Warm decode, 2 s / 15 s clip</td><td class="num">no target set</td><td class="num">not measured</td></tr>
-  <tr><td>Cold load</td><td class="num">no target set</td><td class="num">not measured</td></tr>
-  <tr><td>Memory, warm / unloaded</td><td class="num">~0.9 GB warm</td><td class="num">not measured</td></tr>
+  <tr><td>Cold load</td><td class="num">≤ 1.5 s</td><td class="num">not measured</td></tr>
+  <tr><td>Memory, warm</td><td class="num">&lt; 1 GB</td><td class="num">not measured</td></tr>
+  <tr><td>Memory, unloaded</td><td class="num">&lt; 60 MB</td><td class="num">not measured</td></tr>
   <tr><td>Idle CPU</td><td class="num">no target set</td><td class="num">not measured</td></tr>
   <tr><td>WER, LibriSpeech test-clean / own set</td><td class="num">no target set</td><td class="num">not measured</td></tr></table>
-  <p class="cap" style="margin-top:8px">Reference machine: MacBook Air M1, 8 GB, macOS 27.3. Numbers are recorded, not gated, on shared runners.</p>
+  <p class="cap" style="margin-top:8px">Reference machine: MacBook Air M1, 8 GB, macOS 27.3. Numbers are recorded, not gated.</p>
   <div class="btns" style="display:flex;gap:6px;margin-top:6px"><button class="btn" data-act="bench">Run benchmark</button></div>`,
 Files:()=>{
-  const files={'settings.json':cfg.settings,'keybindings.json':{$schema:'./schemas/keybindings.schema.json',bindings:cfg.keybindings},'theme.json':cfg.theme,'voice-control-config.json':{$schema:'./schemas/voice-control-config.schema.json',...cfg.vc}};
+  const files={'settings.json':cfg.settings,'keybindings.json':{$schema:'./schemas/keybindings.schema.json',bindings:cfg.keybindings},'theme.json':{$schema:'./schemas/theme.schema.json',...cfg.theme},'voice-control-config.json':{$schema:'./schemas/voice-control-config.schema.json',...cfg.vc}};
   const errs={'keybindings.json':st.cfgError};
   return `<h3>Files</h3><p class="cap">Files are the settings. Open one in your editor, or copy its last error. Folder: <span class="mono">~/.config/jisuno/</span></p>
   <table style="margin-top:8px"><tr><th>File</th><th>Status</th><th></th></tr>
