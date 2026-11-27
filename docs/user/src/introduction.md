@@ -28,4 +28,4 @@ default. See [Models](models.md).
 - No spoken punctuation and no voice editing ("delete that"). The model's own punctuation and
   casing are used as they come.
 
-Next: [Install](install.md), then [Permissions](permissions.md).
+Next: [Install](install.md), then [Permissions](permissions.md). Questions about privacy, memory and keys: [FAQ](faq.md).

@@ -7,6 +7,10 @@ step (a temporary file, then a rename), and Jisuno reloads it.
 The file is still plain JSON. You can edit it by hand as well. See [Voice commands](commands.md) for
 the format.
 
+`jisuno control` edits `~/.config/jisuno/voice-control-config.json`, or the folder in `JISUNO_CONFIG_DIR`.
+The file must exist. The app writes it on first run. Until then every `control` command exits `1` with
+`no voice-control-config.json at <path> (run the app once or create it)`.
+
 ## Commands
 
 ```

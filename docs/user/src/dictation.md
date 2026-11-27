@@ -80,15 +80,28 @@ hold starts.
 
 ## Live partials
 
-With `partials` set to `true` (default), the HUD shows the text as you speak, once the model is warm.
-This text is only a preview. It is replaced as Jisuno hears more, and only the final text is
-inserted. Set `partials` to `false` in **Settings → General** to see only the level and the final
-result.
+With `partials` set to `true` (default), the HUD shows text once a phrase is finished. A phrase ends at a
+pause of about 0.2 s after at least 1 s of speech. Partial text therefore appears at pauses, not word by word.
+Speech with no pause for 8 s is cut anyway, so text still appears during a long burst. Partials need a warm
+model. The partial text is only a preview. Only the final text is inserted, when you release the key.
+Set `partials` to `false` in **Settings → General** to see only the level and the final result.
+
+## Spacing between dictations
+
+Dictations into the same app read as one text. Jisuno adds one space before a dictation when:
+
+- the previous dictation went to the same app less than 60 seconds ago,
+- that text did not end in a space or line break, and
+- the new text does not start with `.`, `,`, `;`, `:`, `!`, `?`, `)`, `'` or `"`.
 
 ## HUD and sounds
 
 - Where the HUD appears is set by `hud`: `notch` (default), `cursor` or `off`. Set it in **Settings →
   General**.
+  - `notch`: hangs from the notch on a Mac that has one. On a Mac without a notch it sits under the menu
+    bar, centred.
+  - `cursor`: 24 points below the mouse pointer, centred. It follows the pointer, not the text caret.
+  - The HUD does not take clicks. A click on the area under it reaches the window below.
 - Short tones play on start, stop and cancel when `sounds` is `true` (default). Dictation and command
   mode use different tones.
 

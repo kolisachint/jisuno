@@ -34,6 +34,9 @@ keybindings.json:12: unknown key "hald" · using last good config
 Keys you leave out of `settings.json` use their defaults. A key Jisuno does not know is an error: the file
 is rejected, and the last good version stays live.
 
+`language` was removed in this version. Parakeet v3 detects the language of each utterance, and v2 is English
+only. A `settings.json` that still has `language` is rejected. Delete the key.
+
 ## settings.json
 
 | Key | Type | Default | Values and meaning |
@@ -51,7 +54,7 @@ is rejected, and the last good version stays live.
 | `restore_clipboard` | boolean | `true` | Restore the clipboard after a paste. |
 | `sounds` | boolean | `true` | Short tones on start, stop and cancel. |
 | `hud` | enum | `notch` | Where the HUD appears: `notch`, `cursor` or `off`. |
-| `login_item` | boolean | `false` | Launch at login. `true` registers Jisuno as a login item (macOS 13 or later), `false` removes it. Also in Settings → General as **Launch at login**. Works only in the installed app; a development run logs a note instead. |
+| `login_item` | boolean | `false` | Launch at login. `true` registers Jisuno as a login item (macOS 13 or later), `false` removes it. Also in Settings → General as **Launch at login**. Registers only from the bundled app (`Jisuno.app`), and the app must be signed. A development run logs a note and changes nothing. |
 
 ## keybindings.json
 
@@ -86,9 +89,9 @@ Uppercase is rejected. Write `ctrl+option+w`, not `Ctrl+Option+W`.
 
 ## voice-control-config.json
 
-This file holds the `commands` list and the `workspaces` layouts. Its format and the voice command
-rules are described in [Voice commands](commands.md). Agents change it through `jisuno control`. See
-[Agents](agents.md).
+This file holds the `commands` list and the `workspaces` layouts. It needs `"version": 1` and a `commands`
+list. Its format and the voice command rules are described in [Voice commands](commands.md). Agents change it
+through `jisuno control`. See [Agents](agents.md).
 
 ## theme.json
 
@@ -116,3 +119,21 @@ rules are described in [Voice commands](commands.md). Agents change it through `
 Every key is optional. A key you leave out uses its default. An invalid value is rejected like any other
 invalid file: the last good theme stays live. Where the HUD appears is set in `settings.json` (`hud`), and
 live partial text is set in `settings.json` (`partials`).
+
+## Environment variables
+
+Flags override their variables. `transcribe` and `serve` also read the model and timing variables.
+
+| Variable | Used by | Meaning |
+|---|---|---|
+| `JISUNO_CONFIG_DIR` | app, `control` | Config folder. Default `~/.config/jisuno`. |
+| `JISUNO_MODELS_DIR` | all | Model folder. Default `~/Library/Application Support/jisuno/models` on macOS. |
+| `JISUNO_MODEL` | `transcribe`, `serve` | Model id. Default `parakeet-tdt-0.6b-v3-int8`. |
+| `JISUNO_SILENCE_MS` | `transcribe`, `serve` | Trailing silence before the capture ends, in ms. Default `600`. |
+| `JISUNO_PARTIAL_MS` | `serve` | Minimum gap between `PARTIAL` lines, in ms. Default `400`. `0` turns partials off. |
+| `JISUNO_LOG_TEXT` | app | `1` puts dictated and partial text in the logs. Default: counts only. |
+| `SSL_CERT_FILE` | downloads | PEM bundle of extra trusted CA certificates. |
+| `JISUNO_BIN` | hoocode TUI | Path to the `jisuno` binary that the TUI starts. See [Use from a TUI](tui.md). |
+
+Developer variables (`JISUNO_PROFILE`, `JISUNO_FAKE_WORKER`, the `JISUNO_DEBUG_*` hooks in `dev` builds, and the
+test fixture variables) are in the [developer guide](../../dev/src/building.md).

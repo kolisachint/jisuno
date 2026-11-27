@@ -85,11 +85,28 @@ ran and are not undone. The reason names the cause. Common reasons are listed in
 good version. Fix the line and save the file. `jisuno control validate` prints the same errors.
 
 **A setting has no effect.** Check the key name and value in [Config files](config-files.md). Unknown
-keys are rejected, so the whole file falls back to the last good version.
+keys are rejected, so the whole file falls back to the last good version. A `settings.json` that still
+has `language` is rejected for this reason. Delete the key.
+
+## Display
+
+**No HUD appears.** Check **Settings → General → Listening cue**. `Off` hides the HUD. Failures still show in
+the popover and on the menu bar icon. With `Notch`, the HUD sits under the menu bar, centred, on a Mac without
+a notch. It does not take clicks, so a click on that area reaches the window below.
+
+## Command-line tools
+
+**`no voice-control-config.json at <path> (run the app once or create it)`.** `jisuno control` needs the file.
+Open the app once, which writes the defaults, or check `JISUNO_CONFIG_DIR`.
+
+**`error: busy` from `jisuno model unload`.** Jisuno is recording or transcribing, and unloading now would lose
+the audio. Try again when it is idle.
+
+**`error: model not installed` from `jisuno model warm`.** Download the model first. See [Models](models.md).
 
 ## Logs
 
-Jisuno writes timestamped log lines to stderr. To read them, run the app binary from a terminal:
+Jisuno writes timestamped log lines to stderr. It does not write a log file. To read them, run the app binary from a terminal:
 
 ```sh
 /Applications/Jisuno.app/Contents/MacOS/jisuno

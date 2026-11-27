@@ -1,20 +1,24 @@
 # Install
 
-Jisuno runs on macOS only.
+The menu bar app runs on macOS 13 or later, on Apple silicon and Intel. The `jisuno` command-line tool
+also builds on Linux.
 
 ## GitHub release
 
 1. Open the releases page: <https://github.com/kolisachint/jisuno/releases>.
 2. Download the Jisuno zip from the latest release.
 3. Unzip it and move `Jisuno.app` to `/Applications`.
-4. Open Jisuno. An unsigned build is blocked by Gatekeeper. Release builds are signed and notarized. If
-   macOS blocks a build, open **System Settings → Privacy & Security** and choose **Open Anyway**.
+4. Open Jisuno. Release builds are signed and notarized when the release has its signing keys. An unsigned
+   build is blocked by Gatekeeper. If macOS blocks a build, open **System Settings → Privacy & Security**
+   and choose **Open Anyway**.
 
 ## Homebrew
 
 ```sh
 brew install --cask jisuno
 ```
+
+The cask downloads the release zip from GitHub.
 
 ## Command-line tool only
 
@@ -30,17 +34,18 @@ This gives you the `jisuno` command for [Models](models.md), [Agents](agents.md)
 
 ## Build the app from source
 
-Clone the repository, then build the app with the `app` feature:
+Clone the repository, then bundle the app. `--version` is required and takes `X.Y.Z`:
 
 ```sh
-cargo build --release -p jisuno --features app
-packaging/bundle.sh --arch arm64 --out target/packaging   # Jisuno.app, unsigned
+packaging/bundle.sh --version 0.1.0 --arch arm64 --out target/packaging   # Jisuno.app, unsigned
 ```
 
-`bundle.sh` runs the same `cargo build --features app` for each target, and builds `jisuno-bench` for them
-too; both binaries go into `Jisuno.app/Contents/MacOS/`. Its default is `--arch universal`,
-which needs both Rust Apple targets. `--arch arm64` builds for Apple silicon only. Signing and notarization are in
-`packaging/sign-notarize.sh`. See [`packaging/README.md`](https://github.com/kolisachint/jisuno/blob/main/packaging/README.md).
+`bundle.sh` builds `jisuno` with the `app` feature and `jisuno-bench` for each target, and puts both binaries
+in `Jisuno.app/Contents/MacOS/`. Its default is `--arch universal`, which needs both Rust Apple targets
+(`rustup target add aarch64-apple-darwin x86_64-apple-darwin`). `--arch arm64` builds for Apple silicon only.
+Signing and notarization are in `packaging/sign-notarize.sh`. Build and debug details are in the
+[developer guide](../../dev/src/building.md). See also
+[`packaging/README.md`](https://github.com/kolisachint/jisuno/blob/main/packaging/README.md).
 
 ## Updates
 
