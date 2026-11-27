@@ -28,6 +28,7 @@ pub(crate) mod pipeline;
 pub(crate) mod socket;
 pub(crate) mod state;
 pub(crate) mod status;
+pub(crate) mod windows;
 pub(crate) mod worker;
 
 use std::cell::RefCell;
@@ -338,6 +339,7 @@ pub fn run(opts: AppOptions) {
         };
 
         let settings = settings_holder.current.clone();
+        let (popover_tx, popover_rx) = mpsc::channel();
         let state = Rc::new(RefCell::new(AppState {
             start,
             machine,
@@ -371,6 +373,10 @@ pub fn run(opts: AppOptions) {
             tap_rx,
             tap,
             menu_rx,
+            popover: None,
+            popover_toast: None,
+            popover_tx,
+            popover_rx,
             status,
             model_line: String::new(),
             perm_line: [String::new(), String::new(), String::new()],

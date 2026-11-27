@@ -27,7 +27,9 @@ use jisuno_ui::tokens::ThemeJson;
 use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
 use super::socket::SocketSnapshot;
+use super::windows::PopoverHandle;
 use super::worker::{FromWorker, ToWorker};
+use jisuno_ui::popover_model::PopoverIntent;
 
 /// Last-good holder with show-once errors, keyed by message. `LastGood` in
 /// `jisuno-logic` fixes its error type to the settings diagnostic, so the
@@ -116,6 +118,10 @@ pub(crate) struct AppState {
     pub(crate) tap: Option<KeyTap>,
     pub(crate) menu_rx: mpsc::Receiver<MenuAction>,
     pub(crate) status: StatusItem,
+    pub(crate) popover: Option<PopoverHandle>,
+    pub(crate) popover_toast: Option<(String, Instant)>,
+    pub(crate) popover_tx: mpsc::Sender<PopoverIntent>,
+    pub(crate) popover_rx: mpsc::Receiver<PopoverIntent>,
     pub(crate) model_line: String,
     pub(crate) perm_line: [String; 3],
     pub(crate) recent: VecDeque<RecentEntry>,

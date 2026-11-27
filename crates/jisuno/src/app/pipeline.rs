@@ -34,6 +34,7 @@ impl AppState {
             return true;
         }
         self.drain_menu(cx);
+        self.drain_popover(cx);
         self.drain_tap(cx);
         self.drain_worker(cx);
         self.drain_hook_requests(cx);
@@ -53,6 +54,7 @@ impl AppState {
         self.poll_idle_unload();
         self.refresh_hud_level(cx);
         self.refresh_chrome();
+        self.poll_popover(cx);
         if let Some((down, up, sent)) = self.debug_hold {
             let now = Instant::now();
             if !sent && now >= down {
@@ -87,7 +89,7 @@ impl AppState {
     pub(crate) fn drain_menu(&mut self, cx: &mut App) {
         while let Ok(action) = self.menu_rx.try_recv() {
             match action {
-                MenuAction::TogglePopover => self.log("popover window comes later"),
+                MenuAction::TogglePopover => self.toggle_popover(cx),
                 MenuAction::OpenSettings => self.log("settings window comes later"),
                 MenuAction::WarmModel => self.start_load(cx, "menu"),
                 MenuAction::UnloadModel => self.unload_model("menu"),
@@ -136,6 +138,8 @@ impl AppState {
                             self.esc_cancel = true;
                         }
                         self.input(cx, Input::Cancel, "cancel (esc)");
+                    } else if self.popover.is_some() {
+                        self.close_popover("esc");
                     }
                 }
                 KeyEvent::Return => {
@@ -163,7 +167,7 @@ impl AppState {
             Some(Command::Warm) => self.start_load(cx, "warm key"),
             Some(Command::Unload) => self.unload_model("unload key"),
             Some(Command::Settings) => self.log("settings window comes later"),
-            Some(Command::Menu) => self.log("menu popover comes later"),
+            Some(Command::Menu) => self.toggle_popover(cx),
             Some(command) => self.log(&format!("chord for {command:?} — no app action yet")),
             None => {}
         }
