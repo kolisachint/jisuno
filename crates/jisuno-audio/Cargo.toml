@@ -1,0 +1,17 @@
+[package]
+name = "jisuno-audio"
+description = "Audio helpers and cpal microphone capture for Jisuno"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["mic"]
+mic = ["dep:cpal"]
+
+[dependencies]
+anyhow = { workspace = true }
+cpal = { workspace = true, optional = true }
+hound = { workspace = true }

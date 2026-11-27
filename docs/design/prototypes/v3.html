@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jisuno v3 prototype: menu bar voice control</title>
+<style>
+/* Tokens: inkuno Quiet Light/Dark (crates/inkuno-ui/src/theme.rs, THEMES + fixed_extras); Jisuno accents
+   and the fixed HUD palette: docs/design/app-ui.md section 1. Wallpaper and the prototype panel are not app UI. */
+:root{
+  --bg:#fff;--panel:#fff;--ground:#eff0f1;--code:#fbfbfb;--popover:#fafafa;--border:#eaebeb;
+  --text:#1f2225;--soft:#686a6c;--selected:#d8e7fd;--pill:rgba(31,34,37,.072);--chip:#f6f6f7;--chip-line:#e2e3e3;
+  --caution:#c93a3a;--ok:#2a7b4d;--warning:#9e5f09;
+  --dictate:#3a85f7;--dictate-text:#095ad7;--command:#e39b17;--command-text:#865c0e;--on-primary:#fff;
+  --bar:rgba(250,250,250,.82);--wall1:#dfe2e6;--wall2:#c9ced6;
+  --menu:0 1px 3px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.10);--win:0 12px 40px rgba(0,0,0,.22),0 0 0 .5px rgba(0,0,0,.18);
+  --hud-bg:#0b0b0c;--hud-text:#f2f2f3;--hud-soft:#8b8d91;--hud-chip:#26272b;--hud-dictate:#7faffa;--hud-command:#e8a01c;--hud-ok:#58c48a;--hud-err:#ff7b72;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;--mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+body.dark{
+  --bg:#1c1c1e;--panel:#2c2c2e;--ground:#141517;--code:#232325;--popover:#2a2a2c;--border:#38393b;
+  --text:#e6e6e6;--soft:#959596;--selected:#243654;--pill:rgba(230,230,230,.072);--chip:#262628;--chip-line:#3a3b3e;
+  --caution:#ff7b72;--ok:#58c48a;--warning:#e0a23c;--dictate-text:#7faffa;--command-text:#e8a01c;--on-primary:#1c1c1e;
+  --bar:rgba(42,42,44,.82);--wall1:#2a2f38;--wall2:#1b1f26;
+  --win:0 12px 40px rgba(0,0,0,.6),0 0 0 .5px rgba(255,255,255,.12);
+}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:flex;gap:14px;padding:14px;background:var(--ground);color:var(--text);font:13px/18px var(--sans)}
+button,select,input{font:inherit;color:inherit}
+kbd,.mono{font-family:var(--mono)}
+kbd{font-size:11px;padding:1px 5px;border-radius:4px;border:1px solid var(--border);background:var(--chip)}
+.cap{font-size:12px;line-height:16px;color:var(--soft);margin:0}
+h3{font-size:15px;line-height:22px;margin:0 0 4px;font-weight:600}
+h4{font-size:11px;line-height:14px;margin:12px 0 6px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:var(--soft)}
+
+/* desk and menu bar */
+#desk{position:relative;flex:1;min-width:700px;border-radius:12px;overflow:hidden;background:linear-gradient(160deg,var(--wall1),var(--wall2))}
+#menubar{position:absolute;inset:0 0 auto 0;height:28px;background:var(--bar);backdrop-filter:blur(20px);display:flex;align-items:center;gap:16px;padding:0 10px;z-index:50}
+#menubar .app{font-weight:600}
+#menubar .sp{flex:1}
+#jicon{position:relative;display:flex;align-items:center;gap:6px;padding:2px 6px;border:0;border-radius:5px;background:none;cursor:default}
+#jicon:hover,#jicon[aria-expanded=true]{background:var(--pill)}
+#jicon svg.glyph{width:18px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+#jicon .bdg{position:absolute;right:0;bottom:0;width:9px;height:9px;display:none}
+#jicon.lock .bdg.lk,#jicon.warn .bdg.wn{display:block}
+#jicon.lock.warn .bdg.lk{right:9px}
+.bdg.lk{fill:var(--text)} .bdg.wn{fill:var(--warning)}
+#jicon{color:var(--text)}
+#jicon[data-state=listen-d]{color:var(--dictate-text)}
+#jicon[data-state=listen-c]{color:var(--command-text)}
+#jicon[data-state=loading] svg.glyph{animation:pulse .8s ease-in-out infinite}
+#jicon.unloaded svg.glyph{opacity:.4}
+#jicon .lbl{font-size:12px;color:var(--soft);display:none}
+#jicon[data-state=listen-d] .lbl,#jicon[data-state=listen-c] .lbl{display:inline}
+#notch{position:absolute;left:50%;top:0;transform:translateX(-50%);width:190px;height:28px;background:#000;border-radius:0 0 10px 10px;z-index:51}
+@keyframes pulse{50%{opacity:.35}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* HUD: fixed dark chrome, same in both palettes */
+#hud{position:absolute;left:50%;top:0;transform:translate(-50%,-6px);z-index:52;min-width:190px;max-width:560px;background:var(--hud-bg);color:var(--hud-text);border-radius:0 0 18px 18px;padding:34px 16px 10px;display:flex;flex-direction:column;gap:6px;opacity:0;pointer-events:none;transition:transform .18s ease-out,opacity .18s ease-out;box-shadow:0 6px 20px rgba(0,0,0,.28)}
+#hud.show{opacity:1;transform:translate(-50%,0)}
+#hud.cursor{top:0;border-radius:14px;padding:10px 14px;min-width:0}
+#hud .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#hud .mode{font-size:11px;line-height:14px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+#hud .mode.d{color:var(--hud-dictate)} #hud .mode.c{color:var(--hud-command)}
+#hud .txt{font-size:13px;line-height:18px}
+#hud .tail{color:var(--hud-soft)}
+#hud .meta{font:11px/14px var(--mono);color:var(--hud-soft);margin-left:auto}
+#hud .meta.mono{color:var(--hud-text)}
+#hud .note{font-size:12px;line-height:16px;color:var(--hud-soft)}
+#hud .chip{background:var(--hud-chip);border-radius:6px;padding:2px 8px;font-size:12px;line-height:16px}
+#hud .chip.ok{color:var(--hud-ok)} #hud .chip.err{color:var(--hud-err)}
+#hud .bars{display:flex;gap:2px;align-items:center;height:14px}
+#hud .bars i{width:3px;height:3px;border-radius:2px;background:currentColor;color:var(--hud-dictate)}
+#hud .bars.c i{color:var(--hud-command)}
+#hud .load{flex:1;height:3px;background:var(--hud-chip);border-radius:2px;overflow:hidden}
+#hud .load b{display:block;height:100%;width:0;background:var(--hud-dictate);transition:width .17s linear}
+#hud .spin{width:12px;height:12px;border:2px solid #555;border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+@media (prefers-reduced-motion:reduce){#jicon[data-state=loading] svg.glyph{animation:none;opacity:.6}#hud .spin{animation:none}#hud{transform:none}}
+
+/* popover */
+#popover{position:absolute;top:32px;right:96px;width:310px;background:var(--popover);backdrop-filter:blur(20px);border-radius:12px;box-shadow:var(--menu),0 0 0 .5px var(--border);z-index:60;padding:6px;display:none}
+#popover.show{display:block}
+.pv-h{display:flex;gap:10px;align-items:flex-start;padding:8px 10px 10px;border-bottom:1px solid var(--border)}
+.dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none;background:var(--soft)}
+.pv-h .t{font-weight:600;font-size:15px;line-height:22px}
+.pv-sec{padding:6px 4px;border-bottom:1px solid var(--border)}
+.pv-sec:last-child{border:0}
+.pv-l{font-size:11px;line-height:14px;color:var(--soft);padding:2px 8px;text-transform:uppercase;letter-spacing:.05em}
+.item{display:flex;align-items:center;gap:8px;width:100%;min-height:26px;padding:4px 8px;border:0;border-radius:6px;background:none;text-align:left;cursor:default}
+.item:hover{background:var(--dictate-text);color:var(--on-primary)}
+.item .r{margin-left:auto;color:var(--soft);font-size:12px}
+.item:hover .r,.item:hover kbd{color:inherit}
+.item.off{color:var(--warning)}
+.recent{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.tag{font-size:11px;line-height:14px;padding:1px 6px;border-radius:4px;background:var(--chip);color:var(--soft);border:1px solid var(--chip-line)}
+.tag.bad{color:var(--caution)}
+
+/* windows */
+.win{position:absolute;background:var(--bg);color:var(--text);border-radius:12px;box-shadow:var(--win);display:flex;flex-direction:column;overflow:hidden;z-index:20;transition:left .35s ease,top .35s ease,width .35s ease,height .35s ease}
+.tb{height:30px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid var(--border);user-select:none;cursor:default}
+.lights{display:flex;gap:6px}
+.lights i{width:11px;height:11px;border-radius:50%;background:#ff5f57}
+.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.tb .tt{flex:1;text-align:center;font-size:12px;color:var(--soft);margin-right:50px}
+.wb{flex:1;min-height:0;display:flex}
+#w-note .wb{padding:14px;display:block;font-size:14px;line-height:22px;overflow:auto}
+#note{outline:none;min-height:100%}
+#note .ins{background:rgba(58,133,247,.18);border-radius:3px}
+.sx-side{width:168px;flex:none;background:var(--ground);padding:8px;border-right:1px solid var(--border);overflow:auto}
+.sx-side button{display:block;width:100%;text-align:left;border:0;background:none;padding:5px 8px;border-radius:6px}
+.sx-side button.on{background:var(--pill);font-weight:600}
+.sx-main{flex:1;min-width:0;padding:16px 20px;overflow:auto}
+.f{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--border)}
+.f .fl{flex:1;min-width:0}
+.f .hint{font-size:12px;line-height:16px;color:var(--soft);margin-top:2px}
+.f .fc{flex:none;display:flex;gap:6px;align-items:center}
+select,input[type=text],input[type=number]{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:3px 6px;min-height:26px}
+input[type=number]{width:76px}
+input[type=checkbox]{width:16px;height:16px;accent-color:var(--dictate-text)}
+table{width:100%;border-collapse:collapse;font-size:12px;line-height:16px}
+td,th{text-align:left;padding:7px 6px 7px 0;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--soft);font-weight:500}
+td.num{font-family:var(--mono);text-align:right}
+.kc{min-width:140px;text-align:left;font:12px var(--mono);padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);cursor:pointer}
+.kc.rec{border-color:var(--dictate-text);color:var(--dictate-text)}
+.kc.none{color:var(--soft)}
+.conf,.err,.warn{font-size:12px;line-height:16px;padding:6px 8px;border-radius:6px;margin:4px 0 8px}
+.conf{background:var(--chip);border:1px solid var(--chip-line)}
+.err{color:var(--caution);background:var(--chip)}
+.warn{color:var(--warning);background:var(--chip)}
+.btn{padding:4px 10px;min-height:26px;border:1px solid var(--border);border-radius:6px;background:var(--bg);cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--pill)}
+.btn.pri{background:var(--dictate-text);color:var(--on-primary);border-color:transparent}
+.btn:disabled{opacity:.45;cursor:default}
+.link{border:0;background:none;color:var(--dictate-text);padding:0;cursor:pointer;font-size:12px}
+.card{background:var(--bg);border-radius:8px;padding:12px 14px;margin-bottom:8px;border:1px solid var(--border)}
+.pbar{height:6px;background:var(--chip);border-radius:3px;overflow:hidden;margin:6px 0}
+.pbar b{display:block;height:100%;width:0;background:var(--dictate-text)}
+.ok-t{color:var(--ok)}.bad-t{color:var(--caution)}.warn-t{color:var(--warning)}
+pre.json{margin:0;padding:10px;background:var(--code);border:1px solid var(--border);border-radius:8px;font:11px/16px var(--mono);white-space:pre;overflow:auto;max-height:260px}
+.bench td:nth-child(n+3){font-family:var(--mono)}
+.tog{position:relative;display:inline-flex}
+.bdr{width:100%;height:4px}
+
+/* prototype panel (not app UI) */
+#panel{width:350px;flex:none;overflow:auto;display:flex;flex-direction:column}
+#panel .card{padding:10px 12px}
+#panel .btns{display:flex;flex-wrap:wrap;gap:5px}
+#panel .btns .btn{font-size:12px;padding:3px 8px}
+.hold{font-weight:600}
+.hold.on{background:var(--dictate-text);color:var(--on-primary)}
+.hold.c.on{background:var(--command-text);color:var(--on-primary)}
+.lat{display:flex;height:16px;border-radius:5px;overflow:hidden;margin:6px 0;font:10px var(--mono);color:#fff}
+.lat span{display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
+#log{font:11px/16px var(--mono);height:150px;overflow:auto;color:var(--soft);white-space:pre-wrap;background:var(--code);border-radius:6px;padding:6px}
+#toast{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:var(--popover);box-shadow:var(--menu);border-radius:8px;padding:6px 12px;z-index:90;font-size:12px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="desk">
+  <div id="menubar">
+    <span style="width:12px"></span><span class="app" id="front">TextEdit</span><span>File</span><span>Edit</span><span>View</span><span>Window</span>
+    <span class="sp"></span>
+    <button id="jicon" data-state="idle" aria-label="Jisuno, idle" aria-expanded="false" title="Jisuno">
+      <svg class="glyph" viewBox="0 0 18 14"><path d="M2 5v4M6 2v10M10 4v6M14 1v12M17 6v2"/></svg>
+      <svg class="bdg lk" viewBox="0 0 9 9"><rect x="1" y="4" width="7" height="5" rx="1"/><path d="M2.6 4V2.9a1.9 1.9 0 0 1 3.8 0V4" fill="none" style="stroke:var(--bar)" stroke-width="1.1"/></svg>
+      <svg class="bdg wn" viewBox="0 0 9 9"><path d="M4.5 0.5 8.6 8.5H0.4Z"/></svg>
+      <span class="lbl" id="jlbl"></span>
+    </button>
+    <span>Wi-Fi</span><span>Thu 26 Nov 10:42</span>
+  </div>
+  <div id="notch"></div>
+  <div id="hud" role="status" aria-live="polite"></div>
+  <div id="popover" role="menu"></div>
+
+  <div class="win" id="w-note" style="left:40px;top:84px;width:450px;height:250px">
+    <div class="tb"><div class="lights"><i></i><i data-close="w-note"></i><i></i></div><div class="tt">Untitled: TextEdit (dictation target)</div></div>
+    <div class="wb"><div id="note" contenteditable="true">Standup notes: </div></div>
+  </div>
+
+  <div class="win" id="w-settings" style="display:none;left:30px;top:50px;width:min(800px,calc(100% - 50px));height:520px">
+    <div class="tb"><div class="lights"><i data-close="w-settings"></i><i></i><i></i></div><div class="tt">Settings</div></div>
+    <div class="wb">
+      <div class="sx-side" id="sx-side"></div>
+      <div class="sx-main" id="sx-main"></div>
+    </div>
+  </div>
+
+  <div class="win" id="w-welcome" style="display:none;left:50%;top:40px;width:540px;height:580px;transform:translateX(-50%)">
+    <div class="tb"><div class="lights"><i data-close="w-welcome"></i><i></i><i></i></div><div class="tt">Welcome to Jisuno</div></div>
+    <div class="wb"><div class="sx-main" id="wl-main" style="padding:18px 22px"></div></div>
+  </div>
+  <div id="toast"></div>
+</div>
+
+<aside id="panel">
+  <div class="card">
+    <h3 style="font-size:13px;margin:0 0 4px">Prototype controls (not app UI)</h3>
+    <p class="cap">Hold <kbd>Right ⌥</kbd> to dictate, <kbd>Right ⌘</kbd> for a command, or hold the buttons. <kbd>⌃⌥W</kbd> warms, <kbd>⌃⌥Space</kbd> hands-free, <kbd>⌃⌥,</kbd> Settings, <kbd>Esc</kbd> cancels, <kbd>Return</kbd> confirms. Speech is scripted.</p>
+    <div class="f" style="border:0;padding:6px 0 2px"><div class="fl">Dictation phrase</div></div>
+    <select id="ph-d" style="width:100%"></select>
+    <div class="f" style="border:0;padding:6px 0 2px"><div class="fl">Command phrase</div></div>
+    <select id="ph-c" style="width:100%"></select>
+    <div class="btns" style="margin-top:8px">
+      <button class="btn pri hold" id="hold-d" data-cmd="voice.dictate">Hold: dictate</button>
+      <button class="btn hold c" id="hold-c" data-cmd="voice.command">Hold: command</button>
+      <button class="btn" id="b-warm">Warm model</button>
+      <button class="btn" id="b-hf">Hands-free</button>
+    </div>
+    <div class="btns" style="margin-top:6px">
+      <button class="btn" id="b-pop">Open popover</button>
+      <button class="btn" id="b-set">Open Settings</button>
+      <button class="btn" id="b-wel">Open Welcome</button>
+      <button class="btn" id="b-note">Show TextEdit</button>
+      <button class="btn" id="b-dark">Dark</button>
+    </div>
+    <div class="lat" id="lat"></div>
+    <div class="cap" id="lat-t">No run yet. Simulated latency, budget 150 ms warm.</div>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0">HUD states (§3)</h4>
+    <div class="btns" id="hud-btns"></div>
+    <div class="cap" style="margin-top:6px">Each button renders the state; Hide clears it. Live runs replace it.</div>
+    <div class="btns" style="margin-top:6px"><button class="btn" data-hud="hide">Hide HUD</button></div>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0">Menu bar icon (§2)</h4>
+    <div class="btns" id="icon-btns"></div>
+    <div class="cap" style="margin-top:6px">Auto clears the preview. Lock and warning badges follow the state below.</div>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0">State and errors (§7)</h4>
+    <div class="btns" id="err-btns"></div>
+    <div class="cap" id="status" style="margin-top:6px"></div>
+  </div>
+
+  <div class="card">
+    <h4 style="margin-top:0">Event log</h4>
+    <div id="log"></div>
+  </div>
+</aside>
+
+<script>
+/* ---------- constants (strings from keybindings.md, voice-control.md, jisuno.md) ---------- */
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const desk=$('#desk'),hud=$('#hud'),pop=$('#popover'),jicon=$('#jicon');
+const HOLD_MIN=150,LOAD_MS=1400,COUNT_AT=105000,CAP_MS=120000,DL_TOTAL=650;
+const PLACES=['left-half','right-half','top-half','bottom-half','left-top','left-bottom','right-top','right-bottom','full','center'];
+const RECT={'left-half':[.02,.1,.47,.86],'right-half':[.51,.1,.47,.86],'right-top':[.51,.1,.47,.42],'right-bottom':[.51,.54,.47,.42],'full':[.02,.1,.96,.86],'center':[.2,.15,.6,.7]};
+const DEVICES=['System input','Built-in Microphone','AirPods Pro (Bluetooth)','Scarlett 2i2 (not connected)'];
+const CMDS=['voice.dictate','voice.command','model.warm','voice.hands_free_toggle','voice.cancel','voice.confirm','jisuno.settings','model.unload','jisuno.menu'];
+const WHEN={'voice.cancel':'listening','voice.confirm':'confirming'};
+const COMMON={'cmd+w':'Close','cmd+s':'Save','cmd+z':'Undo','cmd+c':'Copy','cmd+v':'Paste','cmd+x':'Cut','cmd+a':'Select all','cmd+m':'Minimize','cmd+,':'Settings'};
+const SYSTEM={'cmd+space':'cmd+space is a macOS system shortcut (Spotlight) · use another key','ctrl+space':'ctrl+space is a macOS system shortcut (input source) · use another key','cmd+tab':'cmd+tab is a macOS system shortcut (app switcher) · use another key','cmd+q':'cmd+q quits the frontmost app · use another key','cmd+h':'cmd+h hides the frontmost app · use another key','fn':'Fn/Globe is reserved for Apple dictation · pick another key'};
+const HOLDMSG='Hold keys must be a single right-side modifier (right_option, right_cmd, right_shift, right_ctrl)';
+const GL={ctrl:'⌃',option:'⌥',shift:'⇧',cmd:'⌘',right_option:'Right ⌥',right_cmd:'Right ⌘',right_shift:'Right ⇧',right_ctrl:'Right ⌃',space:'Space',escape:'Esc',return:'Return'};
+const HOLDCODE={AltRight:'right_option',MetaRight:'right_cmd',ShiftRight:'right_shift',ControlRight:'right_ctrl'};
+const MODCODE=/^(Shift|Control|Alt|Meta)(Left|Right)?$/;
+const disp=k=>k?k.split('+').map(p=>GL[p]||p.toUpperCase()).join(''):'Not set';
+const fmt=ms=>{const s=Math.max(0,Math.ceil(ms/1000));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+/* ---------- files (the four config files, with the defaults of the signed docs) ---------- */
+const cfg={
+  settings:{hud:'notch',sounds:true,insert:'paste',insert_type_apps:[],restore_clipboard:true,dictation_limit_s:120,hands_free_silence_ms:500,partials:true,model:'parakeet-tdt-0.6b-v3-int8',language:'auto',model_load:'on_demand',unload_after_idle_min:10,input_device:'System input',login_item:false},
+  keybindings:[
+    {key:'right_option',hold:true,command:'voice.dictate'},
+    {key:'right_cmd',hold:true,command:'voice.command'},
+    {key:'ctrl+option+w',command:'model.warm'},
+    {key:'ctrl+option+space',command:'voice.hands_free_toggle'},
+    {key:'escape',when:'listening',command:'voice.cancel'},
+    {key:'return',when:'confirming',command:'voice.confirm'},
+    {key:'ctrl+option+,',command:'jisuno.settings'}],
+  theme:{name:'quiet-light',appearance:'system',accent_dictate:'#3a85f7',accent_command:'#e39b17',hud:{style:'island',show_latency:false}},
+  vc:{version:1,commands:[
+    {id:'menu',say:['open jisuno'],steps:[{do:'jisuno.menu'}]},
+    {id:'settings',say:['open settings'],steps:[{do:'jisuno.settings'}]},
+    {id:'work.start',say:['start working'],steps:[{do:'workspace.open',workspace:'work'}]},
+    {id:'work.stop',say:['stop working'],steps:[{do:'workspace.close',workspace:'work'}]},
+    {id:'move',say:['move {window} to {place}'],steps:[{do:'window.tile',window:'{window}',place:'{place}'}]},
+    {id:'note',say:['open note {name}'],steps:[{do:'app.open',app:'Inkuno',arg:'{name}.md'}]},
+    {id:'send',say:['send it'],steps:[{do:'ax.press',app:'focused',role:'AXButton',name:'Send'}]},
+    {id:'clean',say:['clean build'],confirm:true,steps:[{do:'shell.run',cmd:'cargo clean'}]},
+    {id:'dark',say:['dark mode'],steps:[{do:'theme.set',theme:'quiet-dark'}]},
+    {id:'light',say:['light mode'],steps:[{do:'theme.set',theme:'quiet-light'}]},
+    {id:'mail',say:['open mail'],agent:true,steps:[{do:'app.open',app:'Mail'}]}],
+    workspaces:{work:[
+      {id:'terminal',app:'Rex',title:'hoocode — ~/github/jisuno',run:'hoocode',place:'left-half'},
+      {id:'editor',app:'Zed',title:'jisuno — Zed',open:'~/github/jisuno',place:'right-top'},
+      {id:'browser',app:'Safari',title:'localhost:4000',open:'http://localhost:4000',place:'right-bottom'}]}}
+};
+const DEFAULT_KB=JSON.parse(JSON.stringify(cfg.keybindings));
+const DICT=["let's ship the parakeet v3 build today and measure cold start on the M1","remind me to review the jisuno prototype with the team after lunch","ok"];
+const CMDPHR=['start working','move terminal to right half','open note standup','open mail','clean build','dark mode','stop working','open the thing please'];
+
+/* ---------- state ---------- */
+const st={model:'unloaded',loadEnd:0,loadT:null,modelPresent:true,micPresent:true,perms:{mic:true,ax:true,im:true},
+  secureApp:null,secureSeen:{},btWarned:false,cfgError:null,systemDark:false,noteOpen:true,confirm:null,
+  icon:null,recent:[],dl:null,dlT:null,lastX:300,lastY:200,kbErr:{},kbWarn:{},rec:null};
+const D={down:null,timer:null,cap:null,lvl:null,part:null};
+let hudT=null;
+const log=t=>{const el=$('#log');el.textContent+=t+'\n';el.scrollTop=1e9;if(el.textContent.length>6000)el.textContent=el.textContent.slice(-4000)};
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('show'),1800)}
+let ac;function tone(f,d=.06){if(!cfg.settings.sounds)return;try{ac=ac||new AudioContext();const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;g.gain.setValueAtTime(.06,ac.currentTime);g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+d);o.connect(g).connect(ac.destination);o.start();o.stop(ac.currentTime+d)}catch(e){}}
+function lev(a,b){const d=[...Array(b.length+1).keys()];for(let i=1;i<=a.length;i++){let p=d[0];d[0]=i;for(let j=1;j<=b.length;j++){const t=d[j];d[j]=Math.min(d[j]+1,d[j-1]+1,p+(a[i-1]===b[j-1]?0:1));p=t}}return d[b.length]}
+
+/* ---------- HUD (§3) ---------- */
+const chip=(k,t)=>`<div class="row"><span class="chip ${k}">${esc(t)}</span></div>`;
+const txtRow=t=>`<div class="row"><span class="txt">${esc(t)}</span></div>`;
+const modeLbl=m=>m==='dictate'?'<span class="mode d">Dictate</span>':'<span class="mode c">Command</span>';
+const BARS='<span class="bars"><i></i><i></i><i></i><i></i><i></i></span>';
+const BARS_C=BARS.replace('class="bars"','class="bars c"');
+function setHud(html,ms){
+  if(cfg.settings.hud==='off'){hideHud();return}
+  hud.innerHTML=html;hud.className=cfg.settings.hud+' show';
+  if(cfg.settings.hud==='cursor'){hud.style.left=st.lastX+'px';hud.style.top=(st.lastY+24)+'px'}else{hud.style.left='';hud.style.top=''}
+  clearTimeout(hudT);if(ms)hudT=setTimeout(hideHud,ms);
+}
+function hideHud(){hud.classList.remove('show')}
+function listenHtml(c,o){
+  o=o||{};const cold=o.cold!=null?o.cold:st.model!=='warm';
+  return `<div class="row">${modeLbl(c.mode)}${c.mode==='command'?BARS_C:BARS}<span class="meta" id="lmeta">${c.hf?'hands-free · ':''}esc to cancel</span></div>`+
+    (cold?`<div class="row" id="lrow"><span class="load"><b id="lb"></b></span><span class="meta">loading model while you speak</span></div>`:'')+
+    (c.bt?'<div class="note">Bluetooth mic: lower quality, more latency</div>':'')+
+    (c.device?`<div class="note">Mic "${esc(c.device)}" not found · using system input</div>`:'')+
+    `<div class="txt" id="htxt">${o.partial?esc(o.partial)+' <span class="tail">▍</span>':'<span class="tail">listening…</span>'}</div>`;
+}
+function decodeHtml(mode,loading){return `<div class="row">${modeLbl(mode)}<span class="spin"></span><span class="meta">${loading?'finishing model load':'decoding'}</span></div>`}
+
+/* ---------- model lifecycle (§7) ---------- */
+function startLoad(){
+  st.model='loading';st.loadEnd=performance.now()+LOAD_MS;clearTimeout(st.loadT);
+  st.loadT=setTimeout(()=>{st.model='warm';log('MODEL warm');if(!D.cap&&!D.down)setHud(chip('ok','Model ready'),900);renderAll()},LOAD_MS);
+  renderAll();return true;
+}
+function cancelSelfLoad(d){if(d&&d.selfLoad&&st.model==='loading'){clearTimeout(st.loadT);st.model='unloaded';log('LOAD cancelled (tap)');renderAll()}}
+function warmNow(){
+  if(!st.modelPresent)return toast('Model not downloaded');
+  if(st.model==='warm')return toast('Model is already warm');
+  if(st.model==='loading')return toast('Model is loading');
+  startLoad();
+}
+function unloadNow(){if(st.model!=='warm')return toast('Model is not loaded');st.model='unloaded';log('MODEL unloaded');toast('Model unloaded');renderAll()}
+
+/* ---------- hold, capture, tap, chord (keybindings.md §4) ---------- */
+function holdDown(cmd){
+  if(D.down||D.cap||st.confirm)return;
+  if(st.secureApp){secureNote();return}
+  D.down={cmd,mode:cmd==='voice.command'?'command':'dictate',t0:performance.now(),selfLoad:false};
+  if(st.model==='unloaded'&&st.modelPresent&&st.micPresent)D.down.selfLoad=startLoad();
+  D.timer=setTimeout(()=>beginCapture(D.down,false),HOLD_MIN);
+  setHoldButtons();
+}
+function holdUp(cmd){
+  const d=D.down;if(!d||d.cmd!==cmd)return;
+  D.down=null;clearTimeout(D.timer);setHoldButtons();
+  if(D.cap&&!D.cap.hf)return stopCapture(false);
+  cancelSelfLoad(d);log('TAP under 150 ms · nothing transcribed');
+}
+function failHold(d,html,ms){D.down=null;clearTimeout(D.timer);cancelSelfLoad(d);setHud(html,ms);setHoldButtons()}
+function beginCapture(d,hf){
+  if(!st.micPresent)return failHold(d,chip('err','No microphone found · dictation off'),4000);
+  if(!st.modelPresent)return failHold(d,chip('err','Model not downloaded · open Settings → Model'),4000);
+  if(!st.perms.mic)return failHold(d,chip('err','Microphone access is off · open System Settings'),4000);
+  const mode=d?d.mode:'dictate';
+  const phrase=mode==='dictate'?$('#ph-d').value:$('#ph-c').value;
+  const dev=cfg.settings.input_device,missing=/not connected/.test(dev);
+  const bt=/Bluetooth/.test(dev)&&!st.btWarned;if(bt)st.btWarned=true;
+  D.cap={mode,hf:!!hf,cmd:d?d.cmd:'voice.dictate',phrase,words:phrase.split(' '),t0:performance.now(),shown:0,target:st.noteOpen,
+    device:missing?dev.replace(' (not connected)',''):null,bt};
+  tone(mode==='dictate'?880:660);log(`MIC open · ${mode}${st.model!=='warm'?' · model '+st.model:''}`);
+  closePop();setIcon();setHud(listenHtml(D.cap),0);
+  D.lvl=setInterval(()=>$$('#hud .bars i').forEach(i=>i.style.height=(3+Math.random()*11)+'px'),90);
+  D.part=setInterval(tick,170);
+}
+function tick(){
+  const c=D.cap;if(!c)return;const el=performance.now()-c.t0;
+  if(st.model==='warm'){const r=$('#lrow');if(r)r.remove()}
+  const lb=$('#lb');if(lb)lb.style.width=Math.min(100,100*(1-Math.max(0,st.loadEnd-performance.now())/LOAD_MS))+'%';
+  if(st.model==='warm'&&cfg.settings.partials){
+    const n=Math.min(c.words.length,Math.floor(el/170));
+    if(n!==c.shown){c.shown=n;const t=$('#htxt');if(t)t.innerHTML=esc(c.words.slice(0,n).join(' '))+' <span class="tail">▍</span>'}
+  }
+  if(el>=COUNT_AT){const m=$('#lmeta');if(m){m.className='meta mono';m.textContent=fmt(CAP_MS-el)+' left'}}
+  if(c.hf&&el>c.words.length*170+cfg.settings.hands_free_silence_ms){log('PHASE silence');return stopCapture(false)}
+  if(el>=CAP_MS){log('CAP 2:00 · as if released');stopCapture(false)}
+}
+function stopCapture(cancel){
+  const c=D.cap;if(!c)return;D.cap=null;D.down=null;setHoldButtons();clearInterval(D.lvl);clearInterval(D.part);setIcon();
+  if(cancel){tone(300);log('CANCEL · nothing inserted');return setHud(chip('','Cancelled'),700)}
+  tone(c.mode==='dictate'?1320:990);
+  const load=st.model==='loading'?Math.max(0,Math.round(st.loadEnd-performance.now())):0;
+  const lat={flush:12,load,decode:Math.round(55+c.words.length*4),post:2,insert:c.mode==='dictate'?9:6};
+  const total=Object.values(lat).reduce((a,b)=>a+b,0);
+  setHud(decodeHtml(c.mode,load),0);log('KEY-UP · decoding');
+  setTimeout(()=>finish(c,lat,total),Math.min(total,1800));
+}
+function abandonHold(){
+  clearTimeout(D.timer);cancelSelfLoad(D.down);D.down=null;setHoldButtons();
+  if(D.cap){clearInterval(D.lvl);clearInterval(D.part);D.cap=null;setIcon();hideHud()}
+  log('CHORD · hold abandoned, key passes through');
+}
+function finish(c,lat,total){
+  showLat(lat,total);log('FINAL "'+c.phrase+'"');
+  if(c.mode==='dictate')insertText(c,total);else runCommand(c.phrase,total);
+}
+function insertText(c,ms){
+  if(!st.noteOpen||!c.target){addRecent(c.phrase,'dictate','not inserted');return setHud(chip('err','Focus lost: text in Recent'),4000)}
+  const n=$('#note');const s=document.createElement('span');s.className='ins';s.textContent=c.phrase+'. ';n.appendChild(s);
+  setTimeout(()=>s.classList.remove('ins'),1200);
+  addRecent(c.phrase,'dictate');
+  const w=c.phrase.split(' ').length;
+  setHud(`<div class="row"><span class="chip ok">Inserted ${w} words</span>${cfg.theme.hud.show_latency?`<span class="meta">${ms} ms</span>`:''}</div>`,1200);
+}
+function showLat(l,t){
+  const W=Math.max(t,150),col={flush:'#7d8590',load:'#d64545',decode:'#3a85f7',post:'#a35dd6',insert:'#2f9e55'};
+  $('#lat').innerHTML=Object.entries(l).filter(([k,v])=>v).map(([k,v])=>`<span style="width:${v/W*100}%;background:${col[k]}" title="${k} ${v} ms">${v>24?k:''}</span>`).join('');
+  $('#lat-t').textContent=`${t} ms simulated: `+Object.entries(l).filter(([k,v])=>v).map(([k,v])=>k+' '+v).join(' · ')+(t>150?'. Over budget.':'. Within 150 ms.');
+}
+
+/* ---------- commands: match, confirm, steps (voice-control.md §5, §6) ---------- */
+function matchCmd(said){
+  const s=said.toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+  const cmds=cfg.vc.commands;
+  for(const c of cmds)for(const p of c.say)if(!p.includes('{')&&p===s)return {cmd:c,slots:{}};
+  for(const c of cmds)for(const p of c.say){
+    if(!p.includes('{'))continue;
+    const names=[...p.matchAll(/\{(\w+)\}/g)].map(x=>x[1]);
+    const re=new RegExp('^'+p.replace(/[.*+?^$()|[\]\\]/g,'\\$&').replace(/\{\w+\}/g,'(.+)')+'$');
+    const m=s.match(re);if(!m)continue;
+    const slots={};names.forEach((n,i)=>slots[n]=m[i+1].replace(/ /g,'-'));
+    if(slots.place&&!PLACES.includes(slots.place))continue;
+    return {cmd:c,slots};
+  }
+  let near=null,best=Infinity,pick=null;
+  for(const c of cmds)for(const p of c.say){
+    if(p.includes('{'))continue;const d=lev(s,p)/p.length;
+    if(d<best){best=d;near=p}
+    if(d<=.2&&(!pick||d<pick.d))pick={cmd:c,slots:{},d};
+  }
+  return pick?{cmd:pick.cmd,slots:pick.slots}:{near};
+}
+const fill=(o,sl)=>JSON.parse(JSON.stringify(o).replace(/\{(\w+)\}/g,(m,n)=>sl[n]??m));
+function runCommand(said,ms){
+  const m=matchCmd(said);
+  if(!m.cmd){log('NO MATCH "'+said+'"');return setHud(txtRow(`Did you mean "${m.near}"?`),2500)}
+  const label=m.cmd.say.find(p=>!p.includes('{'))||said;
+  const steps=fill(m.cmd.steps,m.slots);
+  if(m.cmd.confirm){
+    st.confirm={cmd:m.cmd,steps,label:said,t:setTimeout(confirmTimeout,6000)};
+    log('CONFIRM '+m.cmd.id);
+    return setHud(`<div class="row"><span class="mode c">Command</span></div><div class="txt">Run "${esc(said)}"? ${esc(steps[0].cmd)} · Return to run · Esc to cancel</div>`,0);
+  }
+  execSteps(steps,said);
+}
+function confirmRun(){const c=st.confirm;if(!c)return;clearTimeout(c.t);st.confirm=null;execSteps(c.steps,c.label)}
+function confirmCancel(){const c=st.confirm;if(!c)return;clearTimeout(c.t);st.confirm=null;log('CONFIRM cancelled');setHud(chip('','Cancelled'),700)}
+function confirmTimeout(){st.confirm=null;log('CONFIRM timed out');setHud(chip('','Not run'),1000)}
+async function execSteps(steps,label){
+  for(let i=0;i<steps.length;i++){
+    const why=await act(steps[i]);
+    if(why){addRecent(label,'command','failed');log(`STEP ${i+1} of ${steps.length} FAILED ${steps[i].do}: ${why}`);
+      return setHud(chip('err',`Step ${i+1} of ${steps.length} failed: ${steps[i].do} · ${why}`),4000)}
+    log('STEP '+steps[i].do);if(i<steps.length-1)await new Promise(r=>setTimeout(r,150));
+  }
+  addRecent(label,'command');setHud(chip('ok',`Ran "${label}"`),1300);
+}
+async function act(s){
+  switch(s.do){
+    case 'jisuno.menu':openPop();return null;
+    case 'jisuno.settings':openWin('w-settings');return null;
+    case 'workspace.open':openWorkspace(s.workspace);return null;
+    case 'workspace.close':closeWorkspace();return null;
+    case 'window.tile':{const w=findWin(s.window);if(!w)return `no window "${s.window}"`;
+      if(!PLACES.includes(s.place))return `bad place "${s.place}"`;place(w,RECT[s.place]);front(w);return null}
+    case 'app.open':if(s.app==='Inkuno'){openNote(s.arg);return null}toast(`Open ${s.app} (simulated)`);return null;
+    case 'ax.press':toast(`AX press "${s.name}" in focused app (simulated)`);return null;
+    case 'shell.run':toast(`$ ${s.cmd} (simulated)`);return null;
+    case 'theme.set':cfg.theme.name=s.theme;cfg.theme.appearance='fixed';applyPalette();renderAll();return null;
+    default:return `unknown action ${s.do}`;
+  }
+}
+
+/* ---------- windows ---------- */
+let zTop=30;const front=w=>{w.style.zIndex=++zTop};
+function place(el,r){const W=desk.clientWidth,H=desk.clientHeight;Object.assign(el.style,{left:r[0]*W+'px',top:r[1]*H+'px',width:r[2]*W+'px',height:r[3]*H+'px'})}
+function findWin(name){return document.querySelector(`.win[data-win="${name}"]`)}
+function openWorkspace(name){
+  const ws=cfg.vc.workspaces[name];if(!ws)return toast('No workspace '+name);
+  ws.forEach((w,i)=>{
+    if(findWin(w.id))return front(findWin(w.id));
+    const el=document.createElement('div');el.className='win';el.dataset.win=w.id;el.dataset.ws=name;
+    const body=w.app==='Rex'?`<div class="wb" style="background:#0f1012;color:#cfd2d6;font:12px/18px var(--mono);padding:10px;display:block"><div><span style="color:#7be19b">~/github/jisuno $</span> ${esc(w.run)}</div><div>hoocode · ready</div><div>&gt; _</div></div>`
+      :w.app==='Zed'?`<div class="wb" style="background:var(--code);font:12px/18px var(--mono);padding:10px;display:block"><div><span style="color:#a35dd6">pub fn</span> dictate(cfg: &amp;Settings) {</div><div>&nbsp;&nbsp;mic::open("default")?;</div><div>}</div></div>`
+      :`<div class="wb" style="padding:10px;display:block"><div class="mono" style="font-size:12px;background:var(--code);border-radius:6px;padding:4px 8px;color:var(--soft)">${esc(w.open)}</div><div class="cap">Local dev server</div></div>`;
+    el.innerHTML=`<div class="tb"><div class="lights"><i data-close="${w.id}"></i><i></i><i></i></div><div class="tt">${w.app} — ${esc(w.title)}</div></div>${body}`;
+    el.style.left=(desk.clientWidth/2-150)+'px';el.style.top=(desk.clientHeight/2-100)+'px';el.style.width='300px';el.style.height='200px';
+    desk.appendChild(el);dragify(el);front(el);
+    setTimeout(()=>place(el,RECT[w.place]),60+i*120);
+  });
+  $('#front').textContent=ws[0].app;toast(`Workspace "${name}": ${ws.length} windows`);
+}
+function closeWorkspace(){$$('.win[data-ws]').forEach(e=>{e.style.opacity=0;setTimeout(()=>e.remove(),250)});log('WORKSPACE closed')}
+function openNote(file){
+  let el=findWin('inkuno');if(el)el.remove();
+  el=document.createElement('div');el.className='win';el.dataset.win='inkuno';
+  el.innerHTML=`<div class="tb"><div class="lights"><i data-close="inkuno"></i><i></i><i></i></div><div class="tt">Inkuno — ${esc(file)}</div></div><div class="wb" style="padding:14px;display:block"><h3>${esc(file.replace('.md',''))}</h3><div class="cap">Opened by voice</div></div>`;
+  desk.appendChild(el);dragify(el);el.style.left=(desk.clientWidth/2-150)+'px';el.style.top=(desk.clientHeight/2-100)+'px';el.style.width='300px';el.style.height='200px';
+  setTimeout(()=>place(el,RECT.center),40);front(el);$('#front').textContent='Inkuno';
+}
+function openWin(id){const w=document.getElementById(id);w.style.display='flex';front(w);if(id==='w-note'){st.noteOpen=true;$('#note').contentEditable='true';renderAll()}if(id==='w-settings')renderSettings();if(id==='w-welcome')renderWelcome()}
+function closeWin(id){
+  if(id==='w-note'){st.noteOpen=false;$('#note').contentEditable='false';$('#w-note').style.display='none';log('NOTE window closed');renderAll();return}
+  if(id==='w-settings'||id==='w-welcome'){document.getElementById(id).style.display='none';return}
+  const el=document.querySelector(`[data-win="${id}"]`);if(el)el.remove();
+}
+function dragify(w){const tb=w.querySelector('.tb');w.addEventListener('mousedown',()=>front(w));
+  tb.addEventListener('mousedown',e=>{if(e.target.dataset.close)return;const ox=e.clientX-w.offsetLeft,oy=e.clientY-w.offsetTop;
+    const mv=e=>{w.style.left=(e.clientX-ox)+'px';w.style.top=Math.max(28,e.clientY-oy)+'px'},up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up)};
+    addEventListener('mousemove',mv);addEventListener('mouseup',up)})}
+desk.addEventListener('click',e=>{const c=e.target.dataset.close;if(!c)return;closeWin(c)});
+desk.addEventListener('mousemove',e=>{const r=desk.getBoundingClientRect();st.lastX=e.clientX-r.left;st.lastY=e.clientY-r.top});
+$$('.win').forEach(dragify);
+
+/* ---------- recent, popover (§4) ---------- */
+function addRecent(text,kind,tag){st.recent.unshift({text,kind,tag:tag||''});st.recent.length=Math.min(st.recent.length,5);renderAll()}
+function openPop(){renderPop();pop.classList.add('show');jicon.setAttribute('aria-expanded','true')}
+function closePop(){pop.classList.remove('show');jicon.setAttribute('aria-expanded','false')}
+jicon.onclick=e=>{e.stopPropagation();pop.classList.contains('show')?closePop():openPop()};
+document.addEventListener('click',e=>{if(!e.target.closest('#popover,#jicon'))closePop()});
+function modelLine(){
+  if(!st.modelPresent)return ['caution','Not downloaded'];
+  if(st.model==='warm')return ['ok',`Warm · ~0.9 GB · unloads in ${cfg.settings.unload_after_idle_min||'never'}${cfg.settings.unload_after_idle_min?' min':''}`];
+  if(st.model==='loading')return ['warning','Loading…'];
+  return ['soft','Not loaded · loads on first use'];
+}
+function renderPop(){
+  const [k,line]=modelLine();
+  const perm=(key,name)=>st.perms[key]
+    ?`<div class="item" role="menuitem"><span class="recent">${name}</span><span class="r ok-t">Allowed</span></div>`
+    :`<button class="item off" role="menuitem" data-grant="${key}"><span class="recent">${name}</span><span class="r">Not allowed · Open System Settings</span></button>`;
+  const recent=st.recent.length?st.recent.map((r,i)=>`<button class="item" role="menuitem" data-copy="${i}"><span class="recent">${esc(r.kind==='command'?'⌘ '+r.text:r.text)}</span>${r.tag?`<span class="tag ${r.tag==='failed'?'bad':''}">${r.tag}</span>`:''}</button>`).join(''):'<div class="cap" style="padding:4px 8px">Nothing yet.</div>';
+  pop.innerHTML=`
+  <div class="pv-h"><span class="dot" style="background:var(--${k})"></span><div><div class="t">Jisuno</div><div class="cap">${esc(cfg.settings.model)}</div><div class="cap">${esc(line)}</div></div></div>
+  <div class="pv-sec"><button class="item" role="menuitem" data-act="${!st.modelPresent?'dl':st.model==='warm'?'unload':'warm'}"><span class="recent">${!st.modelPresent?(st.dl?'Downloading model…':'Download model'):st.model==='warm'?'Unload model':'Warm model'}</span><span class="r">${!st.modelPresent?'':st.model==='warm'?'':'⌃⌥W'}</span></button></div>
+  <div class="pv-sec"><div class="pv-l">Permissions</div>${perm('mic','Microphone')}${perm('ax','Accessibility')}${perm('im','Input Monitoring')}</div>
+  ${st.secureApp?`<div class="pv-sec"><div class="item off" role="menuitem"><span class="recent">Secure input on (${esc(st.secureApp)}) · keys paused</span></div></div>`:''}
+  <div class="pv-sec"><div class="pv-l">Recent · memory only</div>${recent}</div>
+  <div class="pv-sec"><button class="item" role="menuitem" data-act="settings"><span class="recent">Settings…</span><span class="r"><kbd>⌃⌥,</kbd></span></button><button class="item" role="menuitem" data-act="quit"><span class="recent">Quit Jisuno</span><span class="r"><kbd>⌘Q</kbd></span></button></div>`;
+}
+pop.addEventListener('click',e=>{
+  e.stopPropagation();const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.grant)return grantPerm(b.dataset.grant);
+  if(b.dataset.copy!=null){toast('Copied');return}
+  const a=b.dataset.act;
+  if(a==='warm')warmNow();else if(a==='unload')unloadNow();else if(a==='dl')dlStart();
+  else if(a==='settings'){closePop();openWin('w-settings')}
+  else if(a==='quit')toast('Quit (prototype: the window stays)');
+  renderPop();
+});
+function grantPerm(k){
+  const name={mic:'Microphone',ax:'Accessibility',im:'Input Monitoring'}[k];
+  toast(`Opens System Settings › Privacy: ${name} (simulated, granted in 1.5 s)`);
+  setTimeout(()=>{st.perms[k]=true;log('PERM '+name+' allowed');renderAll()},1500);
+}
+
+/* ---------- icon (§2) ---------- */
+let iconOverride=null;
+function setIcon(){
+  const warnNow=!!(st.cfgError||!st.perms.mic||!st.perms.ax||!st.perms.im||!st.micPresent||!st.modelPresent);
+  let s=iconOverride&&iconOverride!=='auto'?iconOverride:(D.cap?(D.cap.mode==='dictate'?'listen-d':'listen-c'):st.model==='loading'?'loading':'idle');
+  const isError=s==='error';if(isError)s='idle';
+  jicon.dataset.state=s;
+  jicon.classList.toggle('unloaded',s==='idle'&&st.model!=='warm'&&st.modelPresent);
+  jicon.classList.toggle('lock',!!st.secureApp);
+  jicon.classList.toggle('warn',isError||warnNow);
+  const names={idle:'idle','listen-d':'dictating','listen-c':'command',loading:'loading model'};
+  let label='Jisuno, '+names[s];if(isError||warnNow)label+=', needs attention';if(st.secureApp)label+=', secure input on';
+  jicon.setAttribute('aria-label',label);
+  $('#jlbl').textContent=s==='listen-d'?'Dictating':s==='listen-c'?'Command':'';
+}
+
+/* ---------- Settings (§5) ---------- */
+const PANES=['General','Audio','Model','Keybindings','Commands','Appearance','Performance','Files'];
+let pane='General',filesSel='settings.json';
+function setPath(o,p,v){const ks=p.split('.');let t=o;ks.slice(0,-1).forEach(k=>t=t[k]);t[ks[ks.length-1]]=v}
+const getPath=(o,p)=>p.split('.').reduce((t,k)=>t?t[k]:undefined,o);
+const fld=(label,hint,ctl)=>`<div class="f"><div class="fl"><div>${label}</div>${hint?`<div class="hint">${hint}</div>`:''}</div><div class="fc">${ctl}</div></div>`;
+const sel=(file,k,opts,cur)=>`<select data-f="${file}" data-k="${k}">${opts.map(o=>`<option value="${esc(o[0])}"${String(cur)===String(o[0])?' selected':''}>${esc(o[1])}</option>`).join('')}</select>`;
+const tog=(file,k,cur)=>`<input type="checkbox" data-f="${file}" data-k="${k}"${cur?' checked':''}>`;
+const num=(file,k,cur)=>`<input type="number" min="0" data-f="${file}" data-k="${k}" value="${cur}">`;
+const txt=(file,k,cur)=>`<input type="text" data-f="${file}" data-k="${k}" value="${esc(cur)}" size="9">`;
+function renderSettings(){
+  $('#sx-side').innerHTML=PANES.map(p=>`<button class="${p===pane?'on':''}" data-pane="${p}">${p}</button>`).join('');
+  $('#sx-main').innerHTML=PANE[pane]();
+}
+const PANE={
+General:()=>{const s=cfg.settings;return `<h3>General</h3><p class="cap">settings.json. Each change is written at once and hot-reloaded.</p>
+  ${fld('Listening cue','Where the HUD appears. Off hides it; failures still show in the popover and icon.',sel('settings','hud',[['notch','Notch'],['cursor','Cursor'],['off','Off']],s.hud))}
+  ${fld('Sounds','Short tone on start, stop and cancel.',tog('settings','sounds',s.sounds))}
+  ${fld('Live partial text','partials · shown once the model is warm',tog('settings','partials',s.partials))}
+  ${fld('Insert text by','Paste keeps the clipboard; type is used for apps in insert_type_apps and when paste fails.',sel('settings','insert',[['paste','Paste'],['type','Type']],s.insert))}
+  ${fld('Apps that take typing','insert_type_apps (bundle ids)',`<span class="cap mono">${s.insert_type_apps.length?esc(s.insert_type_apps.join(', ')):'none'}</span>`)}
+  ${fld('Restore clipboard after paste','restore_clipboard',tog('settings','restore_clipboard',s.restore_clipboard))}
+  ${fld('Dictation limit','dictation_limit_s · seconds. The HUD counts down the last 15 s.',num('settings','dictation_limit_s',s.dictation_limit_s))}
+  ${fld('Hands-free stops after silence','hands_free_silence_ms · hold keys ignore this: key-up ends the utterance',num('settings','hands_free_silence_ms',s.hands_free_silence_ms))}
+  ${fld('Launch at login','login_item',tog('settings','login_item',s.login_item))}`},
+Audio:()=>{const s=cfg.settings;const dev=s.input_device;
+  return `<h3>Audio</h3><p class="cap">Mic picker. Default is the system input.</p>
+  ${fld('Input device','input_device',sel('settings','input_device',DEVICES.map(d=>[d,d]),dev))}
+  ${/Bluetooth/.test(dev)?`<div class="warn">Bluetooth input: audio is compressed and latency is higher. Use the built-in microphone for dictation.</div>`:''}
+  ${/not connected/.test(dev)?`<div class="err">Mic "${esc(dev.replace(' (not connected)',''))}" not found · using system input</div>`:''}
+  <div class="f"><div class="fl"><div>Test the microphone</div><div class="hint">Shows the level meter for two seconds. Nothing is recorded.</div></div><div class="fc"><button class="btn" data-act="meter">Test</button></div></div>
+  <div class="cap" style="margin-top:8px">Devices come from the system. A missing device falls back to the system input with a HUD note.</div>`},
+Model:()=>{const s=cfg.settings;const dlLine=st.dl!=null?`Downloading ${st.dl}% · ${Math.round(st.dl*DL_TOTAL/100)} of ${DL_TOTAL} MB`:!st.modelPresent?'Not downloaded':st.model==='warm'?'Loaded (warm)':'Downloaded, not loaded';
+  return `<h3>Model</h3><p class="cap">One model is loaded at a time. Switching unloads the current one.</p>
+  <div class="card">
+    <div class="f" style="border:0"><label class="fl"><input type="radio" name="mdl" data-f="settings" data-k="model" value="parakeet-tdt-0.6b-v3-int8"${s.model.includes('v3')?' checked':''}> <b>Parakeet TDT 0.6B v3, int8</b> · default · multilingual · ~650 MB</label></div>
+    <div class="f" style="border:0"><label class="fl"><input type="radio" name="mdl" data-f="settings" data-k="model" value="parakeet-tdt-0.6b-v2-int8"${s.model.includes('v2')?' checked':''}> <b>Parakeet TDT 0.6B v2, int8</b> · English only · optional download</label></div>
+    <div class="cap">State: <span class="${st.modelPresent?'ok-t':'bad-t'}">${dlLine}</span> · ${st.model==='warm'?'in memory':st.model==='loading'?'loading':'not in memory'}</div>
+    ${st.dl!=null?`<div class="pbar"><b style="width:${st.dl}%"></b></div>`:''}
+    <div class="btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+      <button class="btn pri" data-act="dl" ${st.dl!=null||st.modelPresent?'disabled':''}>Download</button>
+      <button class="btn" data-act="warm">Warm now</button><button class="btn" data-act="unload">Unload now</button>
+      <button class="btn" data-act="idle">Simulate idle unload</button></div>
+  </div>
+  ${fld('Load','model_load',sel('settings','model_load',[['on_demand','On demand'],['at_login','At login']],s.model_load))}
+  ${fld('Unload after idle (min)','unload_after_idle_min · 0 = never',num('settings','unload_after_idle_min',s.unload_after_idle_min))}
+  ${fld('Language','language · auto = the model detects',sel('settings','language',[['auto','auto']],s.language))}`},
+Keybindings:()=>{
+  const rows=CMDS.map(cmd=>{const b=bindingOf(cmd);const recOn=st.rec&&st.rec.cmd===cmd;
+    const when=b?(b.when||'global'):(WHEN[cmd]||'-');
+    let out=`<tr><td class="mono">${cmd}</td><td><button class="kc${recOn?' rec':''}${!b&&!recOn?' none':''}" data-kc="${cmd}">${recOn?esc(st.rec.live||'Press keys…'):esc(b?disp(b.key):'Not set')}</button></td><td>${esc(when)}</td><td>${b&&b.hold?'yes':''}</td><td><button class="link" data-default="${cmd}">Set to default</button></td></tr>`;
+    if(recOn&&st.rec.conflict){const o=st.rec.conflict.other;out+=`<tr><td colspan="5"><div class="conf">Taken by ${esc(o.command)} (${esc(o.when||'global')}) <button class="btn" data-replace="1">Replace</button> <button class="btn" data-cancelrec="1">Cancel</button></div></td></tr>`}
+    if(st.kbErr[cmd])out+=`<tr><td colspan="5"><div class="err" role="alert">${esc(st.kbErr[cmd])}</div></td></tr>`;
+    if(st.kbWarn[cmd])out+=`<tr><td colspan="5"><div class="warn">${esc(st.kbWarn[cmd])}</div></td></tr>`;
+    return out}).join('');
+  return `<h3>Keybindings</h3><p class="cap">keybindings.json. Click a key, then press the new keys. Esc cancels. Save is immediate. A hold key is a single right-side modifier.</p>
+  <table style="margin-top:8px"><tr><th>Command</th><th>Key</th><th>When</th><th>Hold</th><th></th></tr>${rows}</table>`},
+Commands:()=>{
+  const built=cfg.vc.commands.filter(c=>!c.agent),agents=cfg.vc.commands.filter(c=>c.agent);
+  const stepTxt=c=>c.steps.map(s=>[s.do,...Object.entries(s).filter(([k])=>k!=='do').map(([,v])=>v)].join(' ')).join(' → ');
+  const tbl=L=>L.length?`<table><tr><th>Say</th><th>Steps</th><th></th></tr>${L.map(c=>`<tr><td>${c.say.map(p=>'"'+esc(p)+'"').join(', ')}</td><td class="mono">${esc(stepTxt(c))}</td><td>${c.confirm?'<span class="tag">confirm</span>':''}</td></tr>`).join('')}</table>`:'<div class="cap">None.</div>';
+  const ws=cfg.vc.workspaces.work;
+  return `<h3>Commands</h3><p class="cap">voice-control-config.json. Read-only here: edit the file or use <span class="mono">jisuno control</span>.</p>
+  <h4>Built in</h4>${tbl(built)}
+  <h4>Added by agents (${agents.length})</h4>${tbl(agents)}
+  <h4>Workspaces</h4><b>work</b><table style="margin-top:4px"><tr><th>App</th><th>Opens</th><th>Place</th></tr>${ws.map(w=>`<tr><td>${w.app}</td><td class="mono">${esc(w.run||w.open)}</td><td>${w.place}</td></tr>`).join('')}</table>`},
+Appearance:()=>{const t=cfg.theme;return `<h3>Appearance</h3><p class="cap">theme.json. Palette: inkuno Quiet. Accents are fills; text uses the read variants (app-ui.md §1).</p>
+  ${fld('Palette','name · quiet-light or quiet-dark. Used when appearance is fixed.',sel('theme','name',[['quiet-light','quiet-light'],['quiet-dark','quiet-dark']],t.name))}
+  ${fld('Appearance','system follows macOS; fixed uses name',sel('theme','appearance',[['system','system'],['fixed','fixed']],t.appearance))}
+  ${fld('Dictate accent','accent_dictate · hex',txt('theme','accent_dictate',t.accent_dictate))}
+  ${fld('Command accent','accent_command · hex',txt('theme','accent_command',t.accent_command))}
+  ${fld('HUD style','hud.style · the only value in v1',`<span class="mono">${t.hud.style}</span>`)}
+  ${fld('Show latency in HUD','hud.show_latency · ms after the result line',tog('theme','hud.show_latency',t.hud.show_latency))}`},
+Performance:()=>`<h3>Performance</h3><p class="cap">Targets from jisuno.md §6 and §6.1. Measured values come from jisuno bench on the reference Mac.</p>
+  <table class="bench" style="margin-top:8px"><tr><th>Metric</th><th>Target</th><th>Measured</th></tr>
+  <tr><td>Key-up → text, warm, 5 s clip</td><td class="num">≤ 150 ms</td><td class="num">not measured</td></tr>
+  <tr><td>Tail flush</td><td class="num">≤ 15 ms</td><td class="num">not measured</td></tr>
+  <tr><td>Final decode, 5 s clip</td><td class="num">≤ 100 ms</td><td class="num">not measured</td></tr>
+  <tr><td>Post-process</td><td class="num">≤ 2 ms</td><td class="num">not measured</td></tr>
+  <tr><td>Insert (paste + clipboard restore)</td><td class="num">≤ 10 ms</td><td class="num">not measured</td></tr>
+  <tr><td>Key-up → text, cold</td><td class="num">no target set</td><td class="num">not measured</td></tr>
+  <tr><td>Warm decode, 2 s / 15 s clip</td><td class="num">no target set</td><td class="num">not measured</td></tr>
+  <tr><td>Cold load</td><td class="num">≤ 1.5 s</td><td class="num">not measured</td></tr>
+  <tr><td>Memory, warm</td><td class="num">&lt; 1 GB</td><td class="num">not measured</td></tr>
+  <tr><td>Memory, unloaded</td><td class="num">&lt; 60 MB</td><td class="num">not measured</td></tr>
+  <tr><td>Idle CPU</td><td class="num">no target set</td><td class="num">not measured</td></tr>
+  <tr><td>WER, LibriSpeech test-clean / own set</td><td class="num">no target set</td><td class="num">not measured</td></tr></table>
+  <p class="cap" style="margin-top:8px">Reference machine: MacBook Air M1, 8 GB, macOS 27.3. Numbers are recorded, not gated.</p>
+  <div class="btns" style="display:flex;gap:6px;margin-top:6px"><button class="btn" data-act="bench">Run benchmark</button></div>`,
+Files:()=>{
+  const files={'settings.json':cfg.settings,'keybindings.json':{$schema:'./schemas/keybindings.schema.json',bindings:cfg.keybindings},'theme.json':{$schema:'./schemas/theme.schema.json',...cfg.theme},'voice-control-config.json':{$schema:'./schemas/voice-control-config.schema.json',...cfg.vc}};
+  const errs={'keybindings.json':st.cfgError};
+  return `<h3>Files</h3><p class="cap">Files are the settings. Open one in your editor, or copy its last error. Folder: <span class="mono">~/.config/jisuno/</span></p>
+  <table style="margin-top:8px"><tr><th>File</th><th>Status</th><th></th></tr>
+  ${Object.keys(files).map(f=>`<tr><td class="mono">${f}</td><td>${errs[f]?`<span class="bad-t">Error</span>`:'<span class="ok-t">OK</span>'}</td><td style="text-align:right;white-space:nowrap"><button class="btn" data-open="${f}">Open file</button> <button class="btn" data-copyerr="${f}" ${errs[f]?'':'disabled'}>Copy error</button></td></tr>`).join('')}
+  </table>
+  ${st.cfgError?`<div class="err" style="margin-top:8px">${esc(st.cfgError)}</div>`:''}
+  <h4>Preview</h4><select data-filesel="1" style="margin-bottom:6px">${Object.keys(files).map(f=>`<option${f===filesSel?' selected':''}>${f}</option>`).join('')}</select>
+  <pre class="json">${esc(JSON.stringify(files[filesSel],null,2))}</pre>`;
+}
+};
+function bindingOf(cmd){return cfg.keybindings.find(b=>b.command===cmd)}
+function setCfg(file,k,v){
+  if(file==='settings'){setPath(cfg.settings,k,v);if(k==='model'){st.model='unloaded';st.modelPresent=/v3/.test(v);if(!st.modelPresent)toast('Not downloaded: press Download')}}
+  else if(file==='theme'){setPath(cfg.theme,k,v);if(k==='name')cfg.theme.appearance='fixed';applyPalette()}
+  if(k==='accent_dictate'||k==='accent_command'){document.documentElement.style.setProperty(k==='accent_dictate'?'--dictate':'--command',v)}
+  log(`SAVE ${file}.json · ${k} = ${JSON.stringify(v)}`);toast(`Saved to ${file}.json`);
+  if(k==='hud'&&v==='off')hideHud();
+  renderAll();
+}
+$('#sx-main').addEventListener('change',e=>{
+  const t=e.target;
+  if(t.dataset.filesel){filesSel=t.value;renderSettings();return}
+  if(!t.dataset.f)return;
+  let v=t.type==='checkbox'?t.checked:t.type==='number'?Number(t.value):t.value;
+  if(t.type==='radio'){v=t.value}
+  if(t.type==='text'&&/accent/.test(t.dataset.k)&&!/^#[0-9a-f]{6}$/i.test(v)){toast('Accent must be 6-digit hex, e.g. #3a85f7');return renderSettings()}
+  if(t.type==='number'&&(!Number.isFinite(v)||v<0)){toast('Enter a number, 0 or more');return renderSettings()}
+  setCfg(t.dataset.f,t.dataset.k,v);
+});
+$('#sx-side').addEventListener('click',e=>{const p=e.target.dataset.pane;if(p){pane=p;st.rec=null;renderSettings()}});
+$('#sx-main').addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.kc){if(st.rec&&st.rec.cmd===b.dataset.kc){st.rec=null}else{st.rec={cmd:b.dataset.kc,live:'',lone:null,conflict:null};st.kbErr={};}return renderSettings()}
+  if(b.dataset.replace){const r=st.rec;if(!r||!r.conflict)return;cfg.keybindings=cfg.keybindings.filter(x=>x!==r.conflict.other);setBinding(r.cmd,r.conflict.key,r.conflict.when);st.rec=null;return}
+  if(b.dataset.cancelrec){st.rec=null;return renderSettings()}
+  if(b.dataset.default){const d=DEFAULT_KB.find(x=>x.command===b.dataset.default);st.rec=null;if(!d){cfg.keybindings=cfg.keybindings.filter(x=>x.command!==b.dataset.default);return saveKb()}
+    const other=cfg.keybindings.find(x=>x.command!==d.command&&x.key===d.key&&(x.when||'')===(d.when||''));if(other)cfg.keybindings=cfg.keybindings.filter(x=>x!==other);
+    setBinding(d.command,d.key,d.when,true);return}
+  if(b.dataset.act==='meter'){toast('Level meter: speak now (prototype)');return}
+  if(b.dataset.act==='bench'){toast('Run "jisuno bench" in a terminal on the reference Mac');return}
+  if(b.dataset.act){const a=b.dataset.act;if(a==='warm')warmNow();else if(a==='unload')unloadNow();else if(a==='dl')dlStart();else if(a==='idle'){if(st.model==='warm'){st.model='unloaded';toast('Idle timeout: model unloaded');renderAll()}else toast('Model is not loaded')}return}
+  if(b.dataset.open){toast(`Opens ${b.dataset.open} in your editor (prototype)`);return}
+  if(b.dataset.copyerr){navigator.clipboard&&navigator.clipboard.writeText(st.cfgError||'').catch(()=>{});toast('Copied error');return}
+});
+function saveKb(){log('SAVE keybindings.json');toast('Saved to keybindings.json');renderAll()}
+function setBinding(cmd,key,when,silent){
+  const hold=/^right_(option|cmd|shift|ctrl)$/.test(key);
+  const b={key};if(hold)b.hold=true;if(when)b.when=when;b.command=cmd;
+  const i=cfg.keybindings.findIndex(x=>x.command===cmd);if(i>=0)cfg.keybindings[i]=b;else cfg.keybindings.push(b);
+  st.kbErr={};st.kbWarn={};st.rec=null;log(`KEY ${cmd} = ${key}${when?' when '+when:''}`);
+  if(!silent)toast('Saved to keybindings.json');
+  saveKb();
+}
+/* validation of a recorded key (keybindings.md §7, §8) */
+function checkKey(cmd,key,when){
+  if(SYSTEM[key])return {err:SYSTEM[key]};
+  const lone=/^right_/.test(key);const holdRow=cmd==='voice.dictate'||cmd==='voice.command';
+  if(lone&&!holdRow)return {err:HOLDMSG};
+  if(holdRow&&!lone)return {err:HOLDMSG};
+  if((key==='escape'||key==='return')&&!when)return {err:'escape/return need a "when" (listening or confirming) · unscoped escape/return is rejected'};
+  if(/^[a-z0-9]$/.test(key)&&!when)return {err:`"${key}" types text · add a modifier or a "when"`};
+  if(key==='space'&&!when)return {err:`"space" types text · add a modifier or a "when"`};
+  const other=cfg.keybindings.find(x=>x.command!==cmd&&x.key===key&&(x.when||'')===(when||''));
+  return {other,warn:COMMON[key]?`Warning: "${key}" is a common app shortcut (${COMMON[key]}) · apps will stop getting it`:''};
+}
+function recKey(e){
+  const r=st.rec;
+  if(MODCODE.test(e.code)){
+    if(HOLDCODE[e.code]){r.lone=HOLDCODE[e.code];r.loneCode=e.code}
+    const mods=[];if(e.ctrlKey)mods.push('ctrl');if(e.altKey)mods.push('option');if(e.shiftKey)mods.push('shift');if(e.metaKey)mods.push('cmd');
+    r.live=mods.length?disp(mods.join('+'))+'…':(r.lone?GL[r.lone]:'Press keys…');
+    return renderSettings();
+  }
+  r.lone=null;
+  if(e.code==='Escape'&&!(e.ctrlKey||e.altKey||e.shiftKey||e.metaKey)){st.rec=null;return renderSettings()}
+  const k={Space:'space',Enter:'return',NumpadEnter:'return',Comma:',',Period:'.',Slash:'/',Semicolon:';',Quote:"'",BracketLeft:'[',BracketRight:']',Minus:'-',Equal:'=',Tab:'tab',Backspace:'delete',Escape:'escape'}[e.code]||(e.code.startsWith('Key')?e.code.slice(3).toLowerCase():e.code.startsWith('Digit')?e.code.slice(5):null);
+  if(!k)return;
+  const mods=[];if(e.ctrlKey)mods.push('ctrl');if(e.altKey)mods.push('option');if(e.shiftKey)mods.push('shift');if(e.metaKey)mods.push('cmd');
+  const key=[...mods,k].join('+');r.live=disp(key);
+  commitRec(key);
+}
+function commitRec(key){
+  const r=st.rec;const v=checkKey(r.cmd,key,WHEN[r.cmd]);
+  if(v.err){st.kbErr={[r.cmd]:v.err};st.rec=null;return renderSettings()}
+  if(v.other){r.conflict={key,when:WHEN[r.cmd],other:v.other};return renderSettings()}
+  setBinding(r.cmd,key,WHEN[r.cmd]);
+  if(v.warn){st.kbWarn={[r.cmd]:v.warn};renderAll()}
+}
+
+/* ---------- Welcome (§6) ---------- */
+function renderWelcome(){
+  const perm=(k,name,why)=>`<div class="f"><div class="fl"><div>${name}</div><div class="hint">${why}</div></div><div class="fc">${st.perms[k]?'<span class="ok-t">Allowed</span>':`<span class="bad-t">Not allowed</span> <button class="btn" data-grant="${k}">Open System Settings</button>`}</div></div>`;
+  const all=st.perms.mic&&st.perms.ax&&st.perms.im;
+  const dl=st.dl!=null?`<div class="cap">Downloading ${st.dl}% · ${Math.round(st.dl*DL_TOTAL/100)} of ${DL_TOTAL} MB</div><div class="pbar"><b style="width:${st.dl}%"></b></div>`
+    :st.modelPresent?'<div class="cap ok-t">Downloaded</div>':'<div class="cap">Not downloaded. Dictation works once the download finishes.</div>';
+  $('#wl-main').innerHTML=`
+  <h3 style="font-size:20px;line-height:26px">Welcome to Jisuno</h3>
+  <p class="cap">Hold a key, speak, let go. Three things to set up first.</p>
+  <h4>1 · Permissions</h4>
+  ${perm('mic','Microphone','Records only while you hold a key.')}
+  ${perm('ax','Accessibility','Inserts text and moves windows.')}
+  ${perm('im','Input Monitoring','Lets the hold keys work in every app.')}
+  <div class="cap" style="margin-top:4px">Checked live: this window updates when System Settings changes.</div>
+  <h4>2 · Config files</h4>
+  <div class="card" style="margin:0"><div class="cap ok-t">Written to ~/.config/jisuno/</div>
+  <div class="mono" style="font-size:12px;line-height:18px;margin-top:4px">settings.json · keybindings.json · theme.json · voice-control-config.json · schemas/</div></div>
+  <h4>3 · Speech model</h4>
+  <div><b>Parakeet TDT 0.6B v3, int8</b> · about ${DL_TOTAL} MB</div>
+  ${dl}
+  <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button class="btn" data-dl="1" ${st.dl!=null||st.modelPresent?'disabled':''}>Download</button></div>
+  <div style="display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:18px">
+    ${all?'':'<span class="cap">Allow the three permissions to start.</span>'}
+    <button class="btn pri" data-start="1" ${all?'':'disabled'}>Start Jisuno</button></div>`;
+}
+$('#wl-main').addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.grant)return grantPerm(b.dataset.grant);
+  if(b.dataset.dl)return dlStart();
+  if(b.dataset.start){closeWin('w-welcome');toast('Jisuno is in the menu bar')}
+});
+function dlStart(){
+  if(st.dl!=null||st.modelPresent)return;
+  st.dl=0;log('DOWNLOAD v3 started');
+  st.dlT=setInterval(()=>{st.dl+=2;if(st.dl>=100){clearInterval(st.dlT);st.dl=null;st.modelPresent=true;log('DOWNLOAD v3 done');toast('Model downloaded')}renderAll()},120);
+  renderAll();
+}
+
+/* ---------- palette, status, panel ---------- */
+function applyPalette(){document.body.classList.toggle('dark',cfg.theme.appearance==='system'?st.systemDark:cfg.theme.name==='quiet-dark');$('#b-dark').textContent=st.systemDark?'macOS: Dark':'macOS: Light'}
+function setHoldButtons(){$('#hold-d').classList.toggle('on',!!(D.down&&D.down.cmd==='voice.dictate'));$('#hold-c').classList.toggle('on',!!(D.down&&D.down.cmd==='voice.command'))}
+function renderAll(){
+  setIcon();
+  if(pop.classList.contains('show'))renderPop();
+  if($('#w-settings').style.display!=='none')renderSettings();
+  if($('#w-welcome').style.display!=='none')renderWelcome();
+  $('#status').innerHTML=`Model: ${st.model}${st.modelPresent?'':' (not downloaded)'} · Permissions: ${['mic','ax','im'].filter(k=>st.perms[k]).length}/3 · Mic: ${st.micPresent?'present':'none'} · Config: ${st.cfgError?'error':'OK'}${st.secureApp?' · secure input: '+esc(st.secureApp):''}`;
+  $('#jlbl').textContent=jicon.dataset.state==='listen-d'?'Dictating':jicon.dataset.state==='listen-c'?'Command':'';
+}
+const HUDS={
+ 'listen-d':()=>listenHtml({mode:'dictate'},{cold:false}),
+ 'listen-c':()=>listenHtml({mode:'command'},{cold:false}),
+ 'hf':()=>listenHtml({mode:'dictate',hf:true},{cold:false}),
+ 'load':()=>listenHtml({mode:'dictate'},{cold:true}),
+ 'partial':()=>listenHtml({mode:'dictate'},{cold:false,partial:DICT[0]}),
+ 'countdown':()=>listenHtml({mode:'dictate'},{cold:false}),
+ 'decode':()=>decodeHtml('dictate',false),
+ 'ok-d':()=>chip('ok','Inserted 9 words'),
+ 'ok-c':()=>chip('ok','Ran "start working"'),
+ 'cancel':()=>chip('','Cancelled'),
+ 'confirm':()=>`<div class="row"><span class="mode c">Command</span></div><div class="txt">Run "clean build"? cargo clean · Return to run · Esc to cancel</div>`,
+ 'notmatch':()=>txtRow('Did you mean "start working"?'),
+ 'stepfail':()=>chip('err','Step 2 of 3 failed: window.tile · no window "terminal"'),
+ 'config':()=>chip('err','keybindings.json:12: unknown key "hald" · using last good config'),
+ 'focus':()=>chip('err','Focus lost: text in Recent'),
+ 'secure':()=>chip('err','Secure input on (Terminal) · keys paused'),
+ 'bt':()=>listenHtml({mode:'dictate',bt:true},{cold:false}),
+ 'device':()=>listenHtml({mode:'dictate',device:'Scarlett 2i2'},{cold:false}),
+ 'ready':()=>chip('ok','Model ready'),
+ 'dl':()=>`<div class="row"><span class="txt">Model downloading · 42%</span></div>`,
+ 'nomodel':()=>chip('err','Model not downloaded · open Settings → Model'),
+ 'nomic':()=>chip('err','No microphone found · dictation off'),
+ 'micoff':()=>chip('err','Microphone access is off · open System Settings'),
+ 'axoff':()=>chip('err',"Can't insert: Accessibility is off · text in Recent")
+};
+const HUD_LABEL={'listen-d':'Listening · Dictate','listen-c':'Listening · Command','hf':'Hands-free','load':'Model loading under speech','partial':'Live partial text','countdown':'Countdown · 0:15 left','decode':'Decoding','ok-d':'Inserted','ok-c':'Ran command','cancel':'Cancelled','confirm':'Confirm prompt','notmatch':'Did you mean','stepfail':'Step failure','config':'Config error','focus':'Focus lost','secure':'Secure input','bt':'Bluetooth mic','device':'Missing device','ready':'Model ready','dl':'Model downloading','nomodel':'Model missing','nomic':'No microphone','micoff':'Microphone off','axoff':'Accessibility off'};
+const HUD_MS={'ok-d':1200,'ok-c':1300,'cancel':700,'notmatch':2500,'stepfail':4000,'config':6000,'focus':4000,'secure':3000,'ready':900,'nomodel':4000,'nomic':4000,'micoff':4000,'axoff':4000};
+function previewHud(k){
+  if(D.cap||D.down)return toast('A live hold is running');
+  if(k==='hide')return hideHud();
+  if(k==='countdown'){
+    setHud(HUDS[k](),0);let left=15;const m=$('#lmeta');m.className='meta mono';m.textContent='0:15 left';
+    const t=setInterval(()=>{left--;const x=$('#lmeta');if(x&&left>=0)x.textContent=fmt(left*1000)+' left';if(left<=0){clearInterval(t);hideHud()}},1000);return;
+  }
+  setHud(HUDS[k](),HUD_MS[k]||0);
+  if(k==='load'){const b=$('#lb');if(b)b.style.width='40%'}
+  log('HUD preview · '+HUD_LABEL[k]);
+}
+const ICONS=[['idle','Idle'],['listen-d','Dictating'],['listen-c','Command'],['loading','Loading'],['error','Error (warning badge)'],['auto','Auto']];
+const ERRS=[
+ ['mic','No microphone'],['micperm','Microphone revoked'],['axperm','Accessibility revoked'],['imperm','Input Monitoring revoked'],
+ ['model','Model missing'],['cfg','Invalid config'],['secure','Secure input on'],['device','Missing device: Scarlett 2i2'],['cfgclear','Clear config error']
+];
+function toggleErr(k){
+  if(k==='mic')st.micPresent=!st.micPresent;
+  if(k==='micperm')st.perms.mic=!st.perms.mic;
+  if(k==='axperm')st.perms.ax=!st.perms.ax;
+  if(k==='imperm')st.perms.im=!st.perms.im;
+  if(k==='model'){st.modelPresent=!st.modelPresent;if(!st.modelPresent&&st.model!=='unloaded'){st.model='unloaded'}}
+  if(k==='cfg'){st.cfgError='keybindings.json:12: unknown key "hald" · using last good config';if(!D.cap&&!D.down)setHud(HUDS.config(),6000)}
+  if(k==='cfgclear')st.cfgError=null;
+  if(k==='secure')st.secureApp=st.secureApp?null:'Terminal';
+  if(k==='device')cfg.settings.input_device=cfg.settings.input_device.includes('not connected')?'System input':'Scarlett 2i2 (not connected)';
+  log('STATE '+k);renderAll();
+}
+function secureNote(){if(st.secureSeen[st.secureApp])return;st.secureSeen[st.secureApp]=true;setHud(chip('err',`Secure input on (${st.secureApp}) · keys paused`),3000)}
+function buildPanel(){
+  $('#hud-btns').innerHTML=Object.keys(HUDS).map(k=>`<button class="btn" data-hud="${k}">${HUD_LABEL[k]}</button>`).join('')+'<button class="btn" data-hud="hide">Hide HUD</button>';
+  $('#icon-btns').innerHTML=ICONS.map(([k,l])=>`<button class="btn" data-icon="${k}">${l}</button>`).join('');
+  $('#err-btns').innerHTML=ERRS.map(([k,l])=>`<button class="btn" data-err="${k}">${l}</button>`).join('');
+  $('#ph-d').innerHTML=DICT.map(p=>`<option>${esc(p)}</option>`).join('');
+  $('#ph-c').innerHTML=CMDPHR.map(p=>`<option>${esc(p)}</option>`).join('');
+}
+$('#hud-btns').addEventListener('click',e=>{const k=e.target.dataset.hud;if(k)previewHud(k)});
+$('#icon-btns').addEventListener('click',e=>{const k=e.target.dataset.icon;if(!k)return;iconOverride=k==='auto'?null:k;setIcon()});
+$('#err-btns').addEventListener('click',e=>{const k=e.target.dataset.err;if(k)toggleErr(k)});
+$('#hold-d').addEventListener('pointerdown',e=>{e.preventDefault();holdDown('voice.dictate')});
+$('#hold-c').addEventListener('pointerdown',e=>{e.preventDefault();holdDown('voice.command')});
+['pointerup','pointerleave'].forEach(ev=>{$('#hold-d').addEventListener(ev,()=>holdUp('voice.dictate'));$('#hold-c').addEventListener(ev,()=>holdUp('voice.command'))});
+$('#b-warm').onclick=warmNow;
+$('#b-hf').onclick=()=>{if(D.cap){if(D.cap.hf)stopCapture(false);return}if(!D.down)beginCapture(null,true)};
+$('#b-pop').onclick=e=>{e.stopPropagation();pop.classList.contains('show')?closePop():openPop()};
+$('#b-set').onclick=()=>openWin('w-settings');
+$('#b-wel').onclick=()=>openWin('w-welcome');
+$('#b-note').onclick=()=>openWin('w-note');
+$('#b-dark').onclick=()=>{st.systemDark=!st.systemDark;applyPalette();renderAll()};
+
+/* ---------- keyboard: hold keys, chords, Esc/Return in their contexts ---------- */
+function runCmd(cmd){
+  switch(cmd){
+    case 'model.warm':return warmNow();
+    case 'model.unload':return unloadNow();
+    case 'voice.hands_free_toggle':return $('#b-hf').onclick();
+    case 'voice.cancel':return D.cap?stopCapture(true):null;
+    case 'voice.confirm':return confirmRun();
+    case 'jisuno.settings':return openWin('w-settings');
+    case 'jisuno.menu':return openPop();
+  }
+}
+const spellOf=e=>{
+  const k={Space:'space',Enter:'return',NumpadEnter:'return',Comma:',',Period:'.',Slash:'/',Semicolon:';',Quote:"'",BracketLeft:'[',BracketRight:']',Minus:'-',Equal:'=',Tab:'tab',Escape:'escape'}[e.code]||(e.code.startsWith('Key')?e.code.slice(3).toLowerCase():e.code.startsWith('Digit')?e.code.slice(5):null);
+  if(!k)return null;const m=[];if(e.ctrlKey)m.push('ctrl');if(e.altKey)m.push('option');if(e.shiftKey)m.push('shift');if(e.metaKey)m.push('cmd');return [...m,k].join('+');
+};
+addEventListener('keydown',e=>{
+  if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)&&!st.rec)return;
+  if(st.rec){e.preventDefault();if(!e.repeat)recKey(e);return}
+  if(HOLDCODE[e.code]){
+    e.preventDefault();const b=cfg.keybindings.find(x=>x.hold&&x.key===HOLDCODE[e.code]);
+    if(b&&!e.repeat&&(b.command==='voice.dictate'||b.command==='voice.command'))holdDown(b.command);
+    return;
+  }
+  if(MODCODE.test(e.code))return;
+  if(st.secureApp)return;
+  if(e.code==='Escape'&&D.cap){e.preventDefault();return stopCapture(true)}
+  if(D.down){abandonHold();return}
+  if(e.code==='Escape'&&st.confirm){e.preventDefault();return confirmCancel()}
+  if(e.code==='Escape'&&pop.classList.contains('show')){closePop();return}
+  const sp=spellOf(e);if(!sp)return;
+  const b=cfg.keybindings.find(x=>!x.hold&&x.key===sp&&(!x.when||(x.when==='listening'&&D.cap)||(x.when==='confirming'&&st.confirm)));
+  if(b){e.preventDefault();runCmd(b.command)}
+});
+addEventListener('keyup',e=>{
+  if(st.rec){if(st.rec.lone&&e.code===st.rec.loneCode)commitRec(st.rec.lone);return}
+  const sp=HOLDCODE[e.code];if(!sp)return;
+  const b=cfg.keybindings.find(x=>x.hold&&x.key===sp);
+  if(b&&D.down&&D.down.cmd===b.command)holdUp(b.command);
+});
+
+/* ---------- init ---------- */
+buildPanel();applyPalette();renderAll();renderSettings();
+log('READY · model unloaded (on_demand) · Right ⌥ dictate, Right ⌘ command');
+</script>
+</body>
+</html>

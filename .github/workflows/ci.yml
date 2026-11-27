@@ -4,15 +4,21 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  core:
+    name: Core (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -22,6 +28,89 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
+
+  macos:
+    name: macOS (Apple silicon)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (app feature)
+        run: cargo clippy -p jisuno --features app --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Test (app + dev debug hooks)
+        run: cargo test -p jisuno --features app,dev
+      - name: Build app
+        run: cargo build --release -p jisuno --features app
+      - name: Bundle unsigned app
+        run: packaging/bundle.sh --version 0.0.0 --arch arm64 --out dist
+      - name: Zip app
+        run: ditto -c -k --keepParent dist/Jisuno.app dist/Jisuno-0.0.0-arm64.zip
+      - name: Upload unsigned app
+        uses: actions/upload-artifact@v7
+        with:
+          name: Jisuno-app-unsigned-arm64
+          path: dist/Jisuno-0.0.0-arm64.zip
+          retention-days: 7
+
+  bench:
+    name: Bench (numbers only, no gate)
+    # Shared runners record numbers; the reference Mac signs off (design §6.1).
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: macos-latest
+    env:
+      MODEL_ID: parakeet-tdt-0.6b-v3-int8
+      JISUNO_MODELS_DIR: ${{ github.workspace }}/models
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore model cache
+        id: model-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.JISUNO_MODELS_DIR }}
+          key: jisuno-models-${{ env.MODEL_ID }}-v1
+      - name: Download model (cache miss)
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: cargo run --release -p jisuno -- models download "$MODEL_ID"
+      - name: Generate fixtures (say)
+        run: |
+          set -euo pipefail
+          fixtures="${{ runner.temp }}/bench-fixtures"
+          mkdir -p "$fixtures"
+          make_fixture() {
+            local name="$1" text="$2"
+            say -o "$fixtures/$name.aiff" "$text"
+            afconvert -f WAVE -d LEI16@16000 -c 1 "$fixtures/$name.aiff" "$fixtures/$name.wav"
+            rm -f "$fixtures/$name.aiff"
+            printf '%s\n' "$text" > "$fixtures/$name.txt"
+          }
+          make_fixture short "The quick brown fox jumps over the lazy dog."
+          make_fixture medium "Please send the quarterly report to the finance team before Friday."
+          ls -l "$fixtures"
+      - name: Run bench
+        run: |
+          set -euo pipefail
+          out="${{ runner.temp }}/bench-out"
+          mkdir -p "$out"
+          cargo run --release -p jisuno-bench -- --json \
+            --model "$MODEL_ID" \
+            --fixtures-dir "${{ runner.temp }}/bench-fixtures" \
+            > "$out/jisuno-bench.json"
+          cat "$out/jisuno-bench.json"
+      - name: Upload bench results
+        uses: actions/upload-artifact@v7
+        with:
+          name: jisuno-bench
+          path: ${{ runner.temp }}/bench-out/jisuno-bench.json
+          retention-days: 7

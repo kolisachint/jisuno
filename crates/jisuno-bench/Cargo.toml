@@ -1,0 +1,18 @@
+[package]
+name = "jisuno-bench"
+description = "ASR latency/memory/WER harness for Jisuno (also `jisuno bench`)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+jisuno-asr = { path = "../jisuno-asr" }
+jisuno-audio = { path = "../jisuno-audio", default-features = false }
+libc = { version = "0.2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }

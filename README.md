@@ -1,205 +1,108 @@
-# voicetools
+# jisuno
 
-Local, offline **voice-to-text for the terminal**. A small Rust binary that
-captures your microphone, stops automatically when you go quiet, and streams
-recognized text on stdout using a simple line protocol — designed to drop into
-a TUI (e.g. hoocode) as a push-to-talk input. **No audio ever leaves the
+Local, offline voice-to-text for macOS. Jisuno is a menu bar app and a `jisuno` command. Hold a key, speak,
+release: the text goes into the app you were using. Hold the other key and say a command phrase: Jisuno runs the
+steps you set for it. Speech recognition runs on your Mac with Parakeet TDT 0.6B (ONNX). **No audio leaves the
 machine.**
 
-```bash
-voicetools setup --model parakeet-v3   # once — ~650 MB, 25 languages
-voicetools transcribe                  # speak; stops after ~600ms of silence
-```
+- **Dictate:** hold Right ⌥, speak, release.
+- **Command:** hold Right ⌘, say a phrase from `voice-control-config.json`, release.
 
-- **Parakeet-TDT** (NVIDIA) via ONNX Runtime — fast, multilingual, int8.
-- **Whisper** (whisper.cpp) as an optional fallback backend.
-- Models are pre-exported and downloaded on first run — no Python/NeMo needed.
-- ~Single static binary; models live in your user data dir.
-
-[Install](#install) · [Output protocol](#output-protocol) ·
-[Architecture](#architecture) · [Status](#status)
+Status: v0.1, pre-release. Builds are unsigned unless a release says otherwise.
 
 ## Install
 
-Grab a binary from [Releases](../../releases), or build from source:
+**Menu bar app (macOS 13 or later):**
+
+- Download the Jisuno zip from [Releases](../../releases), unzip it, and move `Jisuno.app` to `/Applications`.
+- There is no Homebrew tap yet. The cask file (`jisuno.rb`) is attached to signed releases; install from the zip.
+
+**Command line only:**
 
 ```bash
-# Linux needs ALSA headers for mic capture
-sudo apt-get install -y libasound2-dev   # Debian/Ubuntu
-
-cargo build --release
-# binary at target/release/voicetools
+cargo install jisuno        # from crates.io; no menu bar app
 ```
 
-## First run: download a model
+**From source:**
 
 ```bash
-voicetools setup --model parakeet-v3     # recommended, ~650MB, 25 languages
-# or
-voicetools setup --model parakeet-v2     # English-only, ~631MB
-voicetools setup --model whisper-small   # fallback (needs --features whisper)
-
-voicetools models                        # list what's installed
+cargo build --release -p jisuno --features app                          # the app binary
+packaging/bundle.sh --version 0.1.0 --arch arm64 --out target/packaging # Jisuno.app, unsigned
 ```
 
-Models are stored under your platform data directory, e.g.
-`~/.local/share/voicetools/models/` on Linux.
+`bundle.sh` builds its own binaries. Its default `--arch universal` needs both Rust Apple targets. The CLI also
+builds on Linux (`sudo apt-get install -y libasound2-dev` for mic capture).
 
-## Transcribe
+## Usage
+
+1. Open Jisuno. The Welcome window asks for Microphone, Accessibility and Input Monitoring, and offers the
+   model download (about 650 MB).
+2. Hold **Right ⌥**, speak, release. The text is inserted into the focused app.
+3. Hold **Right ⌘**, say "open settings", release. Jisuno runs the command.
+
+The command line:
 
 ```bash
-# From the mic — records until ~600ms of silence, then transcribes:
-voicetools transcribe
-
-# Tune the trailing-silence auto-stop:
-voicetools transcribe --silence-ms 800
-
-# From a WAV file (any rate/channels; great for validating a model):
-voicetools transcribe --wav recording.wav
+jisuno transcribe                     # speak; prints the text after silence
+jisuno transcribe --wav recording.wav # transcribe a file
 ```
 
-Environment variables: `VOICETOOLS_MODEL`, `VOICE_SILENCE_MS`.
+## Documentation
 
-## Serve (persistent daemon)
+| Where | What |
+|---|---|
+| [User guide](docs/user/src/SUMMARY.md) | Install, permissions, dictation, voice commands, settings, config files, agents, FAQ |
+| [Developer guide](docs/dev/src/SUMMARY.md) | Architecture, building, testing, performance, protocols, release, decisions |
+| [Design record](docs/design/README.md) | Signed-off design, decisions in [`jisuno.md`](docs/design/jisuno.md) §10 |
+| [PERF.md](crates/jisuno-asr/PERF.md) | Measured latency and memory, with method and rejected experiments |
+| [Docs index](docs/README.md) | All documentation in one place |
 
-`transcribe` reloads the ONNX models on every invocation and only decodes
-*after* you stop talking. `serve` loads the models once and then answers
-commands on stdin, so repeated captures are instant — and it transcribes
-**live**, streaming interim text as you speak rather than dumping it all at
-the end:
+Agent and release references: [`AGENTS.md`](AGENTS.md), [`ci/README.md`](ci/README.md),
+[`packaging/README.md`](packaging/README.md).
 
-```bash
-voicetools serve
-# stdin:  START            begin mic capture + VAD
-#         CANCEL           stop the current capture without transcribing
-#         SHUTDOWN         exit gracefully
-```
+## Models
 
-While listening it re-decodes the audio-so-far on a short interval and emits a
-`PARTIAL` line; at the end it emits one authoritative `FINAL`. Flags:
-`--model`, `--silence-ms`, and `--partial-ms` (min gap between partials,
-default 400; `0` disables partials). Env vars `VOICETOOLS_MODEL`,
-`VOICE_SILENCE_MS`, `VOICE_PARTIAL_MS`. One capture runs at a time; the mic
-opens on `START` and closes when it stops.
+| Model | Id | Size | Languages |
+|---|---|---|---|
+| Parakeet TDT 0.6B v3 int8 (default) | `parakeet-tdt-0.6b-v3-int8` | about 650 MB | multilingual (25 European languages) |
+| Parakeet TDT 0.6B v2 int8 (optional) | `parakeet-tdt-0.6b-v2-int8` | about 630 MB | English |
 
-## Output protocol
+Models live in `~/Library/Application Support/jisuno/models/`. Downloads are resumable and hash-verified. Weights
+are NVIDIA's, under CC-BY-4.0 ([MODELS_NOTICE.md](MODELS_NOTICE.md)). See [Models](docs/user/src/models.md).
 
-Every line on **stdout** is one event; **stderr** carries human logs and
-download progress, so a consumer can parse stdout cleanly:
+## Performance
 
-```text
-STATUS recording        # state transitions
-SEGMENT hello            # a chunk of recognized text (usually one word)
-SEGMENT world
-DONE                     # finished
-ERROR <message>          # fatal; process exits non-zero
-```
+Measured on a MacBook Air M1 with 8 GB RAM, release build, warm model. Full method in
+[`PERF.md`](crates/jisuno-asr/PERF.md).
 
-`serve` speaks the same protocol plus daemon-only lines for the live UI:
+| Measure | Result | Target |
+|---|---|---|
+| Key-up → text, speech with pauses (streaming) | 21–22 ms | ≤ 150 ms |
+| Key-up → text, 5.8 s with no pause | about 160 ms | ≤ 150 ms (not met) |
+| Warm decode, 5 s clip | about 380 ms | ≤ 100 ms (not met) |
+| Cold load | about 1.2 s | ≤ 1.5 s |
+| Memory, model loaded (helper process) | about 1.1 GB | < 1.2 GB |
+| Memory, model unloaded (app) | 32–39 MB | < 60 MB |
 
-```text
-READY                    # models finished loading; ready for START
-LEVEL 0.0123              # live RMS energy per audio chunk, while listening
-PARTIAL hello wor         # interim transcript so far; replaces the last PARTIAL
-PHASE silence             # trailing silence just started, while listening
-FINAL hello world         # committed transcript; DONE follows
-```
+The model unloads after 10 minutes without use by default, which returns its memory to the system.
 
-`PARTIAL` streams the best guess while you speak and is superseded by the next
-one (overwrite, don't append); `FINAL` is the text to insert. `serve` uses
-`PARTIAL`/`FINAL` in place of the batch `SEGMENT` that `transcribe` streams.
+## Privacy
 
-## Architecture
-
-```
-src/
-├── main.rs            CLI + subcommands, mic→VAD→transcribe pipeline
-├── mic.rs             cpal capture (native-rate mono chunks over a channel)
-├── audio.rs           mono downmix, anti-aliased resample → 16 kHz, WAV loading
-├── vad.rs             energy VAD with auto-stop on trailing silence
-├── setup.rs           model registry + HuggingFace download wizard
-├── protocol.rs        the stdout line protocol
-├── serve.rs           persistent daemon: streaming START/CANCEL/SHUTDOWN over stdin
-└── transcribe/
-    ├── mod.rs         Transcriber trait + backend selection
-    ├── parakeet.rs    ONNX Runtime: nemo128 → encoder → decoder_joint (TDT)
-    └── whisper.rs     whisper.cpp fallback (feature = "whisper")
-```
-
-Audio is captured at the device's native rate, VAD runs on those chunks (RMS
-is rate-independent), and the buffer is resampled to 16 kHz before inference.
-Resampling is anti-aliased — a windowed-sinc low-pass runs before decimation
-so high frequencies aren't folded back into the speech band (which garbles
-recognition). `transcribe` resamples and decodes the whole utterance once at
-the end; `serve` re-runs that pipeline on the audio-so-far at intervals to
-stream live `PARTIAL`s, then decodes the full buffer once more for `FINAL`.
-
-### Parakeet decoding
-
-`nemo128.onnx` produces a 128-bin mel spectrogram, `encoder.int8.onnx` encodes
-it, and the combined `decoder_joint.int8.onnx` runs greedy Token-and-Duration
-Transducer (TDT) decoding. The token/duration logit split is derived from the
-joint output width at runtime (`width − NUM_DURATIONS`), so the same code works
-for v2 and v3 without hardcoded vocab sizes.
-
-The ONNX input/output tensor names are `const`s at the top of
-`src/transcribe/parakeet.rs`. They match the istupakov/PalatineVision export;
-if you use a differently-named export, inspect it with
-[Netron](https://netron.app) and adjust those constants — the decode logic
-itself is export-agnostic. Decode flow is adapted from
-[`jason-ni/parakeet-rs`](https://github.com/jason-ni/parakeet-rs).
+- Recognition is local. Audio is not sent anywhere and is not written to disk.
+- No telemetry and no update check. The only network use is downloading a model.
+- Recent (the last 5 results) is kept in memory and is gone when you quit.
+- Logs hold counts, not speech, unless `JISUNO_LOG_TEXT=1`.
 
 ## Status
 
-**v0.1.** The mic → VAD → resample pipeline, the setup/download wizard, the CLI
-and the stdout protocol are implemented and unit-tested. The Parakeet TDT decode
-has been validated end-to-end against the real `parakeet-tdt-0.6b-v3` int8
-weights — a clean transcription of a reference speech clip — but CI cannot run
-it, because the models are large and gated, so validate locally with `--wav`.
-
-ONNX sessions run **single-threaded on purpose**: multi-threaded int8 inference
-is non-deterministic and makes the greedy decode drop or garble words (see
-`build_session` in `src/transcribe/parakeet.rs`).
-
-## Cargo features
-
-| Feature    | Default | Pulls in            | Backend           |
-|------------|:-------:|---------------------|-------------------|
-| `parakeet` |   ✓     | `ort`, `ndarray`    | Parakeet via ONNX |
-| `whisper`  |         | `whisper-rs`        | whisper.cpp       |
-
-```bash
-cargo build --release                      # parakeet (default)
-cargo build --release --features whisper   # add whisper fallback
-```
-
-## Releases
-
-CI (`cargo fmt`/`clippy`/`test`) and release automation live in
-[`.github/workflows/`](.github/workflows/) (`ci.yml`, `release.yml`); see
-[`ci/README.md`](ci/README.md) for the workflow reference. Releases are cut via
-the `/pr <patch|minor|major>` slash command: merging the labeled PR bumps the
-version, tags, publishes to crates.io, and attaches macOS/Linux/Windows
-binaries. Requires the `CRATES_IO_TOKEN` secret.
-
-## Editor / TUI integration
-
-Reference files for wiring `voicetools` into the hoocode TUI as a `ctrl+r`
-push-to-talk input live in [`docs/hoocode-integration/`](docs/hoocode-integration/).
+The app, the CLI, voice commands and the release workflow are implemented. Known gaps between the design and
+the code are listed in [Decisions](docs/dev/src/decisions.md#known-differences-between-design-and-code).
 
 ## Related
 
-A small set of offline-first tools for agents:
+- **[hoocode](https://github.com/kolisachint/hoocode)**: deterministic terminal coding agent (TypeScript, on npm).
+  Its push-to-talk uses `jisuno serve`: see [Use from a TUI](docs/user/src/tui.md).
+- **[embeddingsearchtools](https://github.com/kolisachint/embeddingsearchtools)**: semantic and BM25 retrieval (Rust).
+- **[webtools](https://github.com/kolisachint/webtools)**: token-efficient web fetch and search (Rust).
 
-- **[hoocode](https://github.com/kolisachint/hoocode)** — deterministic terminal
-  coding agent (TypeScript, on npm)
-- **[embeddingsearchtools](https://github.com/kolisachint/embeddingsearchtools)** —
-  semantic + BM25 retrieval, HNSW from scratch (Rust)
-- **[webtools](https://github.com/kolisachint/webtools)** — token-efficient web
-  fetch and search (Rust)
-
-Built by [Sachin Koli](https://kolisachint.github.io).
-
-## License
-
-MIT
+Built by [Sachin Koli](https://kolisachint.github.io). License: MIT.

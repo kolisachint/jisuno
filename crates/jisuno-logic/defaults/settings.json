@@ -1,0 +1,16 @@
+{
+  "$schema": "./schemas/settings.schema.json",
+  "model": "parakeet-tdt-0.6b-v3-int8",
+  "model_load": "on_demand",
+  "unload_after_idle_min": 10,
+  "input_device": "system",
+  "dictation_limit_s": 120,
+  "hands_free_silence_ms": 500,
+  "partials": true,
+  "insert": "paste",
+  "insert_type_apps": [],
+  "restore_clipboard": true,
+  "sounds": true,
+  "hud": "notch",
+  "login_item": false
+}

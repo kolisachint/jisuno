@@ -7,10 +7,28 @@ exists; changes go into the next version and are logged here.
 Prototype limits: speech is scripted (pick the phrase you "say"), latency numbers are simulated
 from the budget in `../jisuno.md` §5, the desktop and its windows are fakes.
 
-| Version | Date | File |
-|--|--|--|
-| v1 | 2026-11-26 | `v1.html` |
-| v2 | 2026-11-26 | `v2.html` |
+| Version | Date | File | Status |
+|--|--|--|--|
+| v1 | 2026-11-26 | `v1.html` | superseded by v2 |
+| v2 | 2026-11-26 | `v2.html` | superseded by v3 |
+| v3 | 2026-11-26 | `v3.html` | current, signed off 2026-11-26; spec in `../app-ui.md` |
+
+## v3: app UI spec and full clickable flow (2026-11-26)
+
+Changes from v2, following `../app-ui.md` (signed off 2026-11-26; fonts changed to SF Pro / SF Mono):
+
+- Tokens: inkuno Quiet Light and Dark (`crates/inkuno-ui/src/theme.rs`), Jisuno's two accents with
+  legible text variants, and a fixed dark HUD palette. HUD colours changed from v2.
+- Menu bar icon: idle, dictating, command, loading, error; lock and warning badges.
+- HUD: every state in `app-ui.md` §3.3 from a state switcher; hold keys follow the 150 ms minimum,
+  tap rule and 2 min countdown (`0:15 left`); confirm prompt with 6 s timeout.
+- Popover: model state with warm and unload, Recent (5, memory only), permissions, Secure Input holder,
+  Settings, Quit. The v2 workspace starter is gone.
+- Settings: General, Audio (mic picker, Bluetooth warning, missing device), Model (v3 default, v2
+  optional, no whisper), Keybindings (record a key, conflict with Replace and Cancel, warnings), Commands
+  (agent-added shown apart), Appearance, Performance (targets only), Files (open and copy error).
+- Welcome: permissions checked live, config files written, model download with progress.
+- Esc cancels a confirm prompt (`keybindings.md` §4, §5).
 
 ## v2: owner decisions applied (2026-11-26)
 

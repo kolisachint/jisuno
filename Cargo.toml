@@ -1,41 +1,37 @@
-[package]
-name = "voicetools"
-version = "0.1.4"
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
 edition = "2021"
-description = "Local, offline voice-to-text for the terminal — Parakeet (ONNX) with a Whisper fallback"
 license = "MIT"
-repository = "https://github.com/kolisachint/voicetools"
+repository = "https://github.com/kolisachint/jisuno"
+rust-version = "1.89"
 
-[[bin]]
-name = "voicetools"
-path = "src/main.rs"
-
-[features]
-default = ["parakeet"]
-# Parakeet TDT via ONNX Runtime (recommended backend)
-parakeet = ["dep:ort", "dep:ndarray"]
-# whisper.cpp fallback backend
-whisper = ["dep:whisper-rs"]
-
-[dependencies]
-# --- Parakeet backend (optional) ---
-ort     = { version = "=2.0.0-rc.10", optional = true, features = ["download-binaries"] }
-ndarray = { version = "0.16", optional = true }
-
-# --- Whisper backend (optional) ---
-whisper-rs = { version = "0.12", optional = true }
-
-# --- Always-on: mic, audio, CLI, downloads ---
-cpal   = "0.15"
-hound  = "3.5"           # WAV decode for `--wav` and tests
-ureq   = { version = "2", features = ["tls", "native-certs", "proxy-from-env"] }
+[workspace.dependencies]
+jisuno-logic = { path = "crates/jisuno-logic", version = "0.1.0" }
+jisuno-audio = { path = "crates/jisuno-audio", version = "0.1.0" }
+jisuno-asr = { path = "crates/jisuno-asr", version = "0.1.0" }
+jisuno-platform = { path = "crates/jisuno-platform", version = "0.1.0" }
+jisuno-ui = { path = "crates/jisuno-ui", version = "0.1.0" }
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+cpal = "0.15"
+dirs = "5"
+hound = "3.5"
+ndarray = "0.16"
+ort = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.7"
 rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+libc = "0.2"
+tempfile = "3"
+ureq = { version = "2", features = ["tls", "native-certs", "proxy-from-env"] }
 webpki-roots = "0.26"
-dirs   = "5"
-anyhow = "1"
-clap   = { version = "4", features = ["derive", "env"] }
 
 [profile.release]
 opt-level = 3

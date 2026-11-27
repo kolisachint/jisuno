@@ -1,12 +1,14 @@
 # Jisuno: design (v3, signed off 2026-11-26)
 
-Status: signed off 2026-11-26 (with `keybindings.md`, `voice-control.md`). UI code waits for
-`app-ui.md` and `prototypes/v3.html` sign-off.
-Last update: 2026-11-26. Decisions are logged in §10; they win over any older text.
+Status: signed off 2026-11-26 (round 6), with `keybindings.md`, `voice-control.md`, `app-ui.md` and
+`prototypes/v3.html`. The UI build may start.
+Last update: 2026-11-26 (round 6). Decisions are logged in §10; they win over any older text.
 
 ## 1. What Jisuno is
 
-`voicetools` becomes **Jisuno**: a macOS menu bar app, always one key away.
+**Jisuno** is a macOS menu bar app, always one key away. It is a separate product from
+`voicetools` (no shared code, config, model storage, or release assets; it started from a copy
+of that code).
 
 - **Dictate**: hold Right ⌥, speak, release; the text lands in the focused app.
 - **Command**: hold Right ⌘, say a phrase from `voice-control-config.json` ("start working",
@@ -28,7 +30,7 @@ jisuno/
   Cargo.toml                  virtual workspace, members = ["crates/*"]
   crates/
     jisuno/                   macOS app (GPUI): menu bar, HUD, settings; plus the CLI
-                              (setup, models, transcribe, serve, control, model, bench)
+                              (setup, models, transcribe, serve, control, model)
     jisuno-logic/             pure, builds anywhere: config schemas + load/validate, command
                               matcher with {slots}, step runner (actions as data), line
                               protocol, VAD state machine, latency accounting
@@ -38,7 +40,7 @@ jisuno/
     jisuno-platform/          macOS only: hotkey event tap, text insert, AX actions, window
                               placement, app launch, login item, permissions, status item
     jisuno-ui/                theme tokens, HUD, popover, settings widgets (GPUI)
-    jisuno-bench/             bench harness and fixtures runner (also `jisuno bench`)
+    jisuno-bench/             bench harness and fixtures runner (`jisuno-bench`, bundled in the app)
   docs/design/                this doc, keybindings.md, voice-control.md, app-ui.md,
                               prototypes/
   docs/user/                  mdBook: install, permissions, dictation, commands, config files
@@ -52,7 +54,7 @@ jisuno/
 | `vad.rs`, `protocol.rs` | `jisuno-logic` |
 | `transcribe/*`, `setup.rs`, `tls.rs` | `jisuno-asr` |
 | `serve.rs` | `crates/jisuno` (daemon mode, same pipeline as the app) |
-| `docs/hoocode-integration/` | `docs/user/` "Use from a TUI" |
+| `docs/hoocode-integration/` | `docs/user/src/tui.md` + `docs/user/src/tui/voice-transcribe.ts` (done) |
 
 ## 3. CI
 
@@ -73,9 +75,9 @@ config stays live, with the error in the HUD and in `jisuno control validate`.
 
 | File | Owns |
 |--|--|
-| `settings.json` | `model`, `language`, `model_load` (on_demand/at_login), `unload_after_idle_min`, `input_device`, `dictation_limit_s`, `hands_free_silence_ms`, partials, `insert` (paste/type) + `insert_type_apps`, `restore_clipboard`, sounds, `hud` position, login item |
+| `settings.json` | `model`, `model_load` (on_demand/at_login), `unload_after_idle_min`, `input_device`, `dictation_limit_s`, `hands_free_silence_ms`, partials, `insert` (paste/type) + `insert_type_apps`, `restore_clipboard`, sounds, `hud` position, login item |
 | `keybindings.json` | `{"bindings": [{key, hold?, when?, command}]}` |
-| `theme.json` | theme name, appearance, dictate/command accents, HUD style |
+| `theme.json` | theme name, appearance, dictate/command accents, HUD style and latency (`app-ui.md` §5) |
 | `voice-control-config.json` | `commands[]` and `workspaces{}` |
 
 ## 5. Voice control
@@ -133,20 +135,30 @@ Hold keys are the fast path: key-up ends the utterance, so there is no silence t
 | Insert (paste + clipboard restore) | ≤ 10 ms |
 | **Key-up → text** | **≤ 150 ms** |
 
+Cold load and memory targets are in §6.1.
+
 Levers: incremental (chunked) encoding instead of today's re-decode-everything partials in
 `serve.rs`; CoreML vs CPU execution provider measured on the reference Mac; paste instead of
 typing; mic opened on key-down.
 
 ### 6.1 Measurement
 
-`jisuno bench` and the Settings → Performance page report: key-up → text (warm, cold),
+`jisuno-bench` and the Settings → Performance page report: key-up → text (warm, cold),
 warm decode for 2/5/15 s clips, cold load, memory warm/unloaded, idle CPU, and WER on
 LibriSpeech test-clean plus an owner-recorded set. Shared CI runners record numbers only; the
 reference Mac is where numbers are signed off.
 
 Reference machine: MacBook Air M1 (MacBookAir10,1), 4 performance + 4 efficiency cores,
-**8 GB RAM**, macOS 27.3. A warm model at ~0.9 GB is over 10% of that RAM, which is why
+**8 GB RAM**, macOS 27.3. A warm model at ~1.1 GB is over 10% of that RAM, which is why
 on-demand loading and idle unload are the default. The 150 ms target must hold on this machine.
+
+Targets (round 6), on the reference Mac:
+
+| Metric | Target |
+|--|--|
+| Cold load | ≤ 1.5 s |
+| Memory, warm | < 1.2 GB (helper process; round 9) |
+| Memory, unloaded | < 60 MB |
 
 ## 7. Model lifecycle
 
@@ -167,7 +179,7 @@ States: `unloaded → loading → warm → (idle) unloaded`.
 | `voice.command` | hold Right ⌘ |
 | `model.warm` | ⌃⌥W |
 | `voice.hands_free_toggle` | ⌃⌥Space |
-| `voice.cancel` | Esc (when listening) |
+| `voice.cancel` | Esc (when listening or confirming) |
 | `voice.confirm` | Return (when confirming) |
 | `jisuno.settings` | ⌃⌥, |
 
@@ -234,10 +246,10 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
    ("Focus lost: text in Recent").
 7. Secure input (a password field or app holding Secure Event Input) blocks the event tap.
    While it is on, the menu bar icon shows a lock badge and the popover names the app. The HUD
-   shows "Secure input on: keys paused" once per holding app per session.
+   shows "Secure input on (<app>) · keys paused" once per holding app per session (round 6, item 5).
 8. First hold key wins (§8).
 9. A dictation is capped at 2 min (`dictation_limit_s`, default 120; hands-free too). The HUD
-   shows a countdown from 1:45; at the cap Jisuno stops and transcribes, as if released.
+   shows a countdown for the last 15 s (from 1:45 with the default); at the cap Jisuno stops and transcribes, as if released.
 10. Settings → Audio has a mic picker (default: system input). If the input is Bluetooth, a
     warning explains the quality and latency cost; it also appears once in the HUD. A missing
     device falls back to the system input with a HUD note.
@@ -255,7 +267,59 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
     is built with the `app` feature for packaging). Updates are manual in v1 (`brew upgrade`
     or a new download); no update check, which keeps rule 15. Revisit Sparkle after v1.
 
+**2026-11-26, round 5**
+1. Jisuno and `voicetools` are separate products with no runtime relation. Jisuno downloads
+   and stores its own models (`~/Library/Application Support/jisuno/models`), mirrors them on
+   its own `kolisachint/jisuno` release (`models-v1`), and never reads voicetools paths, env
+   vars, or release assets.
+
+**2026-11-26, round 6** (owner sign-off of `app-ui.md` and `prototypes/v3.html`)
+1. `app-ui.md` and `prototypes/v3.html` are signed off. All docs in `docs/design/` are signed off;
+   the UI build may start.
+2. Fonts: macOS system fonts, nothing bundled. SF Pro for UI text, SF Mono for code and key caps.
+   Inter and JetBrains Mono are dropped (`app-ui.md` §1.2).
+3. Performance targets on the reference Mac: cold load ≤ 1.5 s; memory warm < 1 GB; memory
+   unloaded < 60 MB (§6.1).
+4. Popover: the workspace starter stays dropped.
+5. Secure input copy is `Secure input on (<app>) · keys paused` everywhere. This fixes round 4
+   item 7.
+6. Login item key is `login_item`, as in `settings.schema.json`. `launch_at_login` is dropped.
+7. The partials toggle lives only in `settings.json` `partials`, in Settings → General.
+   `hud.show_partials` is removed from `theme.json`. `hud.show_latency` stays in `theme.json`.
+8. Esc in `confirming` is already in `keybindings.md` §3 (8 default bindings); removed from the
+   `app-ui.md` conflicts list.
+9. The rest of the `app-ui.md` decisions list is accepted as written. Conflicts in `app-ui.md` §11
+   are resolved there, one line each.
+10. `theme.json` has a schema (`crates/jisuno-logic/schemas/theme.schema.json`) and defaults
+    (`crates/jisuno-logic/defaults/theme.json`). Every key is optional; a missing key uses its
+    default.
+11. `docs/user/src/config-files.md` lists the `theme.json` keys.
+
+**2026-11-26, round 9**
+1. The model runs in a helper process (`jisuno asr-worker`) started on load and stopped on
+   unload, so unloading returns all model memory to the system. App memory with the model
+   unloaded is measured at 32-39 MB.
+2. Warm memory target is raised from < 1 GB to < 1.2 GB for v1. The Parakeet v3 int8 encoder
+   alone needs ~1.06 GB in ONNX Runtime; every runtime setting was measured
+   (`crates/jisuno-asr/PERF.md`, "Memory"). Idle unload (default 10 min) frees all of it.
+3. Streaming: audio is split at pauses during the hold and each segment is decoded in the
+   helper as its own utterance; key-up decodes only the tail. Measured key-up to text 21-22 ms
+   with natural pauses; a long burst with no pause decodes in full (~160 ms for 5.8 s).
+4. Debug hooks (`--debug-wav`, `--debug-hold-ms`, `--debug-open`, fake helper) exist only with
+   the `dev` cargo feature; release builds never include them.
+5. Logs never contain dictated, partial, or command text unless `JISUNO_LOG_TEXT=1`.
+
+**2026-11-26, round 10**
+1. `ax.*` uses direct attributes first, then a bounded search of the focused window (depth <= 4,
+   <= 300 elements); never unbounded. Supersedes "never a scan" in §5.2 and round 2 item 2.
+   Details: `voice-control.md` changelog round 8 (also: `center` = 60% of the visible frame;
+   `shell.run` timeout 60 s with reason `shell timed out after 60 s`).
+2. `language` is removed from `settings.json`: Parakeet v3 detects the language per utterance and
+   v2 is English only, so there is nothing to choose.
+3. `login_item` registers Jisuno as a login item through `SMAppService.mainApp` (macOS 13+).
+4. Settings -> Performance runs the bundled `jisuno-bench` (shipped inside `Jisuno.app` next to
+   `jisuno`); there is no `jisuno bench` subcommand.
+
 ## 11. Open questions
 
-None. Next: owner sign-off of this doc, `keybindings.md`, `voice-control.md`, `app-ui.md` and
-`prototypes/v3.html`, then the implementation plan.
+None. All design docs are signed off (round 6). Next: the implementation plan and the UI build.

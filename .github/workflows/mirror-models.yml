@@ -1,5 +1,10 @@
 name: Mirror models
 
+# One-off: fetches the pre-exported ONNX model files from HuggingFace
+# and republishes them as assets on the `models-v1` GitHub release, so
+# `jisuno setup` has a fallback source for networks that can't reach
+# huggingface.co (e.g. behind a corporate proxy). Not kept in sync with
+# upstream automatically — re-run manually if the upstream files change.
 on:
   workflow_dispatch:
 
@@ -10,7 +15,7 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download model files from HuggingFace
         run: |
@@ -33,9 +38,6 @@ jobs:
             https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/nemo128.onnx
           curl -fL --retry 3 -o mirror/parakeet-v2-vocab.txt \
             https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main/vocab.txt
-
-          curl -fL --retry 3 -o mirror/whisper-small-en-ggml-small.en.bin \
-            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 
           ls -lh mirror/
 

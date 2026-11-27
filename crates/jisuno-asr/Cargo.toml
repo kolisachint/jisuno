@@ -1,0 +1,37 @@
+[package]
+name = "jisuno-asr"
+description = "Parakeet ONNX transcription, model registry and downloads for Jisuno"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+dirs = { workspace = true }
+jisuno-logic = { workspace = true }
+libc = { workspace = true }
+ndarray = { workspace = true }
+ort = { workspace = true }
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+rustls-pemfile = { workspace = true }
+sha2 = { workspace = true }
+ureq = { workspace = true }
+webpki-roots = { workspace = true }
+
+[features]
+# Debug-only hooks: the fake worker backend (`JISUNO_FAKE_WORKER`). Off in
+# release builds. The self dev-dependency turns it on for `cargo test`, so
+# the lifecycle tests and the `asr_worker` example run without a flag.
+dev = []
+
+[[example]]
+name = "asr_worker"
+required-features = ["dev"]
+
+[dev-dependencies]
+jisuno-asr = { path = ".", features = ["dev"] }
+jisuno-audio = { workspace = true }
+tempfile = { workspace = true }

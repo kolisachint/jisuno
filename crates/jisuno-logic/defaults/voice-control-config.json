@@ -1,0 +1,12 @@
+{
+  "$schema": "./schemas/voice-control-config.schema.json",
+  "version": 1,
+  "commands": [
+    {"id": "menu", "say": ["open jisuno"], "steps": [{"do": "jisuno.menu"}]},
+    {"id": "settings", "say": ["open settings"], "steps": [{"do": "jisuno.settings"}]},
+    {"id": "dark", "say": ["dark mode"], "steps": [{"do": "theme.set", "theme": "quiet-dark"}]},
+    {"id": "light", "say": ["light mode"], "steps": [{"do": "theme.set", "theme": "quiet-light"}]},
+    {"id": "warm", "say": ["warm up"], "steps": [{"do": "model.warm"}]}
+  ],
+  "workspaces": {}
+}

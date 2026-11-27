@@ -67,15 +67,22 @@ Follow these steps exactly. Stop and report if any step fails.
    git push -u origin pr/<short-slug>
    ```
 
-9. Open the PR with a body summarizing the changes (commit messages, affected
-   modules, and any `fixes #N` references), and apply the bump label:
+9. Make sure the bump label exists. `gh label create` fails when the label
+   already exists, hence `|| true`:
+   ```bash
+   case "$1" in major) color=B60205 ;; minor) color=FBCA04 ;; *) color=0E8A16 ;; esac
+   gh label create "cargo:$1" --color "$color" --description "Release: $1 bump on merge" || true
+   ```
+   Then open the PR with a body summarizing the changes (commit messages,
+   affected modules, and any `fixes #N` references), and apply the bump label:
    ```bash
    gh pr create --title "<title>" --body-file <tmp-body.md> --label "cargo:$1"
    ```
 
 10. Report the PR URL and the applied `cargo:$1` label.
 
-On merge, the labeled PR triggers the release workflow which bumps the version
-in `Cargo.toml`, updates the lockfile, creates a git tag, publishes to
+On merge into `main`, the labeled PR triggers the release workflow, which
+takes the version from the highest `v*` tag bumped by the label (or the manifest
+version for the first release), bumps `Cargo.toml`, tags, publishes to
 crates.io, and builds release binaries — so do not run the release process
 yourself here.

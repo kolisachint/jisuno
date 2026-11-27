@@ -8,23 +8,35 @@ permissions:
   contents: write
 
 jobs:
-  # ── 1. Bump version, commit, push, annotated tag ──────────────────────
+  # ── 1. Resolve the version, bump, commit, tag ─────────────────────────
+  # Base version: the latest v* tag, bumped by the label. No v* tag yet: the
+  # manifest version is released as is (first release). A re-run finds the
+  # tag this merge already produced and only sets the outputs.
   bump-and-tag:
+    # One release at a time: a second merge waits for the first run to finish.
+    # Scoped to this job so a closed unlabelled PR (skipped here) can never
+    # replace a pending labelled release run.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     if: >
-      github.event.pull_request.merged == true && (
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' && (
         contains(github.event.pull_request.labels.*.name, 'cargo:patch') ||
         contains(github.event.pull_request.labels.*.name, 'cargo:minor') ||
         contains(github.event.pull_request.labels.*.name, 'cargo:major')
       )
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.bump.outputs.version }}
-      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,65 +56,152 @@ jobs:
             echo "type=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump version in Cargo.toml
-        id: bump
+      - name: Resolve version
+        id: release
+        env:
+          MERGE: ${{ github.event.pull_request.merge_commit_sha }}
+          BUMP_TYPE: ${{ steps.release-type.outputs.type }}
         run: |
-          CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          echo "Current version: $CURRENT_VERSION"
+          set -euo pipefail
 
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          # Re-run: a v* tag on the merge commit, or on the release commit made
+          # directly on top of it, is this release. Reuse it; push nothing.
+          for tag in $(git tag --list 'v*' --sort=-v:refname); do
+            commit="$(git rev-list -n 1 "$tag")"
+            parent="$(git rev-parse --verify --quiet "$commit^" || true)"
+            if [[ "$commit" == "$MERGE" || "$parent" == "$MERGE" ]]; then
+              echo "$tag already points at merge $MERGE; reusing it"
+              {
+                echo "reuse=true"
+                echo "bump=false"
+                echo "version=${tag#v}"
+                echo "tag=$tag"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
 
-          BUMP_TYPE="${{ steps.release-type.outputs.type }}"
-          case "$BUMP_TYPE" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
+          manifest="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          echo "Manifest version: $manifest"
 
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "New version: $NEW_VERSION"
+          # Base: the highest v* tag reachable from main (not `git describe`,
+          # which picks the nearest tag and can pick an older one). None yet:
+          # release the manifest version unchanged.
+          latest="$(git tag --merged HEAD --list 'v*' --sort=-v:refname | head -n1)"
+          if [[ -z "$latest" ]]; then
+            version="$manifest"
+            echo "No v* tag yet: releasing manifest version $version"
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${latest#v}"
+            case "$BUMP_TYPE" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            version="$MAJOR.$MINOR.$PATCH"
+            echo "Latest tag $latest: $BUMP_TYPE bump to $version"
+          fi
 
-          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-          cargo update -p voicetools
+          # No bump commit when the manifest already has the version.
+          bump=true
+          if [[ "$manifest" == "$version" ]]; then bump=false; fi
 
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          {
+            echo "reuse=false"
+            echo "bump=$bump"
+            echo "version=$version"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in Cargo.toml
+        if: steps.release.outputs.reuse != 'true' && steps.release.outputs.bump == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Workspace version, then the version pins on the workspace path
+          # dependencies (root Cargo.toml [workspace.dependencies]). A stale pin
+          # would make cargo reject the crates after a minor or major bump.
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          sed -i "/path = \"crates\//s/version = \"[^\"]*\"/version = \"$VERSION\"/" Cargo.toml
+          cargo update --workspace
 
       - name: Commit and tag
+        if: steps.release.outputs.reuse != 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BUMP: ${{ steps.release.outputs.bump }}
+          MERGE: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          VERSION="${{ steps.bump.outputs.version }}"
-          git add Cargo.toml Cargo.lock
-          git commit -m "release: v${VERSION}"
-          git tag -a "v${VERSION}" -m "release: v${VERSION}"
+          set -euo pipefail
+          target="$MERGE"
+          if [[ "$BUMP" == "true" ]]; then
+            git add Cargo.toml Cargo.lock
+            git commit -m "release: $TAG"
+            target="$(git rev-parse HEAD)"
+          fi
+          git tag -a "$TAG" "$target" -m "release: $TAG"
 
       - name: Push version bump and tag
-        run: git push --follow-tags origin main
+        if: steps.release.outputs.reuse != 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BUMP: ${{ steps.release.outputs.bump }}
+        run: |
+          set -euo pipefail
+          # One atomic push: the release commit and its tag land together or not at all.
+          if [[ "$BUMP" == "true" ]]; then
+            git push --atomic origin main "refs/tags/$TAG"
+          else
+            git push origin "refs/tags/$TAG"
+          fi
 
-  # ── 2. Publish crate to crates.io ─────────────────────────────────────
+  # ── 2. Publish crates to crates.io ────────────────────────────────────
+  # Published in dependency order. jisuno-platform and jisuno-ui are
+  # published because the `app` feature of jisuno depends on them (cargo
+  # requires optional deps to be on the registry). jisuno-bench has
+  # `publish = false` and is never listed.
   publish:
     name: Publish to crates.io
     needs: [bump-and-tag]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          ref: main
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install ALSA
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Publish voicetools
+      - name: Publish crates in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
-          cargo publish -p voicetools 2>&1 | tee /tmp/publish.log || {
-            status=${PIPESTATUS[0]}
-            if grep -q "already exists on crates.io" /tmp/publish.log; then
-              echo "voicetools already published — skipping"
-              exit 0
-            fi
-            exit "$status"
-          }
+          # crates.io rate-limits new crates (a burst, then about one per
+          # 10 minutes): on a 429 / rate-limit error, wait 11 minutes and retry,
+          # up to 4 times.
+          for crate in jisuno-logic jisuno-audio jisuno-asr jisuno-platform jisuno-ui jisuno; do
+            retries=0
+            while true; do
+              status=0
+              cargo publish -p "$crate" 2>&1 | tee /tmp/publish.log || status=$?
+              if [[ $status -eq 0 ]]; then
+                break
+              fi
+              if grep -q "already exists on crates.io" /tmp/publish.log; then
+                echo "$crate already published — skipping"
+                break
+              fi
+              if grep -qiE "429|rate limit|too many" /tmp/publish.log && ((retries < 4)); then
+                retries=$((retries + 1))
+                echo "$crate rate-limited; sleeping 11 minutes (retry $retries of 4)"
+                sleep 660
+                continue
+              fi
+              exit "$status"
+            done
+          done
 
   # ── 3. Create the GitHub release (runs in parallel with publish) ──────
   create-release:
@@ -110,12 +209,10 @@ jobs:
     needs: [bump-and-tag]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           tag="${{ needs.bump-and-tag.outputs.tag }}"
           if gh release view "$tag" >/dev/null 2>&1; then
@@ -124,46 +221,201 @@ jobs:
             gh release create "$tag" --title "$tag" --generate-notes
           fi
 
-  # ── 4. Cross-platform binary builds ───────────────────────────────────
-  build:
-    name: Build ${{ matrix.target }}
-    needs: [create-release, bump-and-tag]
+  # ── 4. macOS app: universal, signed and notarized when secrets exist ──
+  macos-app:
+    name: macOS app (universal)
+    needs: [bump-and-tag, create-release]
+    runs-on: macos-latest
+    outputs:
+      signed: ${{ steps.signing.outputs.enabled }}
+    env:
+      VERSION: ${{ needs.bump-and-tag.outputs.version }}
+      TAG: ${{ needs.bump-and-tag.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check signing secrets
+        id: signing
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_ID: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          missing=()
+          for v in CERT_P12 CERT_PASSWORD SIGN_ID APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            [[ -n "${!v}" ]] || missing+=("$v")
+          done
+          if ((${#missing[@]} > 0)); then
+            echo "::warning::macOS signing skipped (missing secrets: ${missing[*]}); the app zip will be unsigned and not notarized"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/jisuno-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$keychain_password" "$keychain" >/dev/null
+          existing=()
+          while IFS= read -r kc; do existing+=("$kc"); done < <(security list-keychains -d user | tr -d '" ' | grep .)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          security find-identity -v -p codesigning
+
+      - name: Build universal app bundle
+        run: packaging/bundle.sh --version "$VERSION" --arch universal --out dist
+
+      - name: Sign, notarize and zip
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: packaging/sign-notarize.sh --app dist/Jisuno.app --zip "dist/Jisuno-$VERSION-universal.zip"
+
+      - name: Zip unsigned app
+        if: steps.signing.outputs.enabled != 'true'
+        run: ditto -c -k --keepParent dist/Jisuno.app "dist/Jisuno-$VERSION-universal.zip"
+
+      - name: Upload app zip and checksum
+        run: |
+          set -euo pipefail
+          zip="Jisuno-$VERSION-universal.zip"
+          (cd dist && shasum -a 256 "$zip" > "$zip.sha256" && cat "$zip.sha256")
+          gh release upload "$TAG" "dist/$zip" "dist/$zip.sha256" --clobber
+
+      - name: Remove temporary keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/jisuno-signing.keychain-db" || true
+
+  # ── 5. CLI binaries (no app feature), tar.gz per target ───────────────
+  cli:
+    name: CLI ${{ matrix.target }}
+    needs: [bump-and-tag, create-release]
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    env:
+      VERSION: ${{ needs.bump-and-tag.outputs.version }}
+      TAG: ${{ needs.bump-and-tag.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          ref: main
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
       - name: Install ALSA (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Build and upload
-        uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: voicetools
-          target: ${{ matrix.target }}
-          archive: voicetools-$target
-          checksum: sha256
-          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── 5. Aggregate SHA256SUMS ───────────────────────────────────────────
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build CLI
+        run: cargo build --release --locked -p jisuno --target "${{ matrix.target }}"
+
+      - name: Package and upload
+        run: |
+          set -euo pipefail
+          name="jisuno-$VERSION-${{ matrix.target }}"
+          mkdir -p dist
+          tar -C "target/${{ matrix.target }}/release" -czf "dist/$name.tar.gz" jisuno
+          (
+            cd dist
+            if command -v sha256sum >/dev/null; then
+              sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+            else
+              shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+            fi
+            cat "$name.tar.gz.sha256"
+          )
+          gh release upload "$TAG" "dist/$name.tar.gz" "dist/$name.tar.gz.sha256" --clobber
+
+  # ── 6. Homebrew cask, rendered from the notarized zip ─────────────────
+  cask:
+    name: Render Homebrew cask
+    needs: [bump-and-tag, macos-app]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.bump-and-tag.outputs.version }}
+      TAG: ${{ needs.bump-and-tag.outputs.tag }}
+      SIGNED: ${{ needs.macos-app.outputs.signed }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ needs.bump-and-tag.outputs.tag }}
+
+      - name: Render cask
+        run: |
+          set -euo pipefail
+          zip="Jisuno-$VERSION-universal.zip"
+          mkdir -p dist
+          gh release download "$TAG" --pattern "$zip" --dir dist --clobber
+          sha="$(sha256sum "dist/$zip" | cut -d' ' -f1)"
+          sed -e "s/__VERSION__/$VERSION/g" -e "s/__SHA256__/$sha/g" \
+            packaging/homebrew/jisuno.rb > dist/jisuno.rb
+          if grep -q '__VERSION__\|__SHA256__' dist/jisuno.rb; then
+            echo "error: unfilled placeholder in cask" >&2
+            exit 1
+          fi
+          ruby -c dist/jisuno.rb
+          cat dist/jisuno.rb
+
+      - name: Upload cask
+        if: env.SIGNED == 'true'
+        run: gh release upload "$TAG" dist/jisuno.rb --clobber
+
+      - name: Skip cask upload if the app is unsigned
+        if: env.SIGNED != 'true'
+        run: echo "::warning::App zip is unsigned or not notarized; jisuno.rb was rendered but not uploaded. Add the signing secrets and re-run the workflow to publish it."
+
+  # ── 7. Aggregate SHA256SUMS ───────────────────────────────────────────
   checksums:
     name: Aggregate SHA256SUMS
-    needs: [build, bump-and-tag]
+    needs: [bump-and-tag, macos-app, cli]
     runs-on: ubuntu-latest
     steps:
       - name: Build SHA256SUMS from per-asset checksums
