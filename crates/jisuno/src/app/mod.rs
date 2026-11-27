@@ -507,6 +507,7 @@ pub fn run(opts: AppOptions) {
         if settings.model_load == settings::ModelLoad::AtLogin {
             state.borrow_mut().start_load(cx, "at-login");
         }
+        state.borrow_mut().apply_login_item(cx, settings.login_item);
         let tick_state = Rc::clone(&state);
         cx.spawn(async move |cx: &mut AsyncApp| {
             // The first tick shows any startup errors immediately.

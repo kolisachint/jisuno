@@ -182,6 +182,7 @@ impl AppState {
             return;
         }
         let fresh = self.settings_good.current().clone();
+        let login_item = (fresh.login_item != self.settings.login_item).then_some(fresh.login_item);
         if fresh != self.settings {
             self.log("settings reloaded");
             let limit_s = u64::from(fresh.dictation_limit_s);
@@ -214,6 +215,21 @@ impl AppState {
             self.settings = fresh;
         }
         self.last_config_error = None;
+        if let Some(enabled) = login_item {
+            self.apply_login_item(cx, enabled);
+        }
+    }
+
+    /// Register or unregister the login item. Unbundled runs only log: the
+    /// registration needs the signed app. Any other failure shows once.
+    pub(crate) fn apply_login_item(&mut self, cx: &mut App, enabled: bool) {
+        if !jisuno_platform::login_item::in_app_bundle() {
+            self.log("login item: needs the bundled app");
+            return;
+        }
+        if let Err(e) = jisuno_platform::login_item::set_enabled(enabled) {
+            self.note_config_error(cx, &format!("settings.json: login item failed: {e:#}"));
+        }
     }
 
     /// A live session (or a pending reply/confirm) means the machine is not

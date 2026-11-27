@@ -51,7 +51,7 @@ is rejected, and the last good version stays live.
 | `restore_clipboard` | boolean | `true` | Restore the clipboard after a paste. |
 | `sounds` | boolean | `true` | Short tones on start, stop and cancel. |
 | `hud` | enum | `notch` | Where the HUD appears: `notch`, `cursor` or `off`. |
-| `login_item` | boolean | `false` | Shown as **Launch at login** in Settings. Not yet applied: Jisuno does not register itself to start at login, so this has no effect. Open Jisuno at login by adding it under System Settings → General → Login Items. |
+| `login_item` | boolean | `false` | Launch at login. `true` registers Jisuno as a login item (macOS 13 or later), `false` removes it. Also in Settings → General as **Launch at login**. Works only in the installed app; a development run logs a note instead. |
 
 ## keybindings.json
 
