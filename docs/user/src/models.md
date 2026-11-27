@@ -78,11 +78,15 @@ A warm model uses about 1.1 GB of memory, in the helper process. On an 8 GB Mac 
 of the RAM, so loading on demand and unloading when idle are the defaults.
 
 The speed target is key-up to text in 150 ms or less, with a warm model, on the reference machine: a
-MacBook Air M1 with 8 GB of RAM. Measured on that machine, key-up to text is about 21 ms when you pause
-while speaking. A long burst with no pause takes longer, because the whole tail is decoded at key-up.
-Settings → Performance shows the targets. To measure your own Mac, run the benchmark from a checkout:
-`cargo run --release -p jisuno-bench`. The app bundle ships `jisuno-bench` next to `jisuno`, so the
-**Run benchmark** button in Settings works in the installed app. Results are cached in
+MacBook Air M1 with 8 GB of RAM. On that machine, with the model warm and a release build, key-up to text
+measured about 21 ms for clips with pauses, and about 160 ms for a 5.8 s clip with no pause. The no-pause
+case decodes the whole tail at key-up, so it is slower. The 5 s warm decode (about 380 ms) is above the
+100 ms target. The full numbers and their method are in [`PERF.md`](../../../crates/jisuno-asr/PERF.md).
+
+Settings → Performance shows the targets and the last measured values. The app bundle ships `jisuno-bench`
+next to `jisuno`, so **Run benchmark** works in the installed app. It uses synthetic audio, so its word error
+rate is `n/a`. To measure with your own clips, run the benchmark from a checkout:
+`cargo run --release -p jisuno-bench -- --fixtures-dir <dir>`. Results are cached in
 `~/Library/Caches/jisuno/bench/`.
 
 ## Check the model from the command line
