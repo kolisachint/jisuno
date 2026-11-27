@@ -30,7 +30,7 @@ for large breaking changes.
 - **Crates.** `jisuno-logic`, `jisuno-audio`, `jisuno-asr`, `jisuno-platform`, `jisuno-ui` and `jisuno` are
   published in dependency order. A version already on the index is skipped. `jisuno-bench` is not published.
 - **Homebrew.** Copying `jisuno.rb` to the tap is manual. Check the cask with `brew audit --cask --strict` and
-  an install before it goes out.
+  an install from the zip before it goes out. There is no tap yet.
 - **Secrets.** The names are in `ci/README.md`. Values are never in the repo.
 - **First release.** The first release uses the version already in `Cargo.toml` (`0.1.0`), not a bump. The
   release workflow is being changed in a separate change, so check `release.yml` before you rely on this.

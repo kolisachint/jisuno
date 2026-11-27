@@ -126,7 +126,7 @@ An unsigned build is blocked by Gatekeeper. Open **System Settings → Privacy &
 Anyway**. See [Install](install.md).
 
 **How do I update?**
-Run `brew upgrade --cask jisuno`, or download the new zip.
+Download the new zip from Releases. Jisuno does not check for updates.
 
 **How do I uninstall it completely?**
 Turn off **Launch at login** in Settings → General first. Then delete `Jisuno.app` and these folders:
@@ -135,7 +135,8 @@ Turn off **Launch at login** in Settings → General first. Then delete `Jisuno.
 ~/Library/Application Support/jisuno     models (about 650 MB or more)
 ~/.config/jisuno                         settings and voice commands
 ~/Library/Caches/jisuno                  benchmark results
+~/Library/Logs/Jisuno                    app log (jisuno.log, jisuno.log.1)
 ~/Library/Preferences/dev.kolisachint.jisuno.plist
 ```
 
-The Homebrew cask lists the same paths under `zap`.
+The cask file attached to signed releases lists the same paths under `zap`.

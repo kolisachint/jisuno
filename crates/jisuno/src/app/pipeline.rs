@@ -103,6 +103,23 @@ pub(crate) enum NoCxRoute {
     Dropped,
 }
 
+/// Effect name for logs, without payloads (`ShowConfirm` carries spoken text).
+fn effect_kind(effect: &Effect) -> &'static str {
+    match effect {
+        Effect::OpenMic => "OpenMic",
+        Effect::CloseMic { .. } => "CloseMic",
+        Effect::StartModelLoad => "StartModelLoad",
+        Effect::CancelModelLoad => "CancelModelLoad",
+        Effect::ShowHud(_) => "ShowHud",
+        Effect::HideHud => "HideHud",
+        Effect::Transcribe { .. } => "Transcribe",
+        Effect::RunCommand => "RunCommand",
+        Effect::ShowConfirm { .. } => "ShowConfirm",
+        Effect::PassThrough => "PassThrough",
+        Effect::Countdown { .. } => "Countdown",
+    }
+}
+
 /// Route one machine effect for the headless contexts; see [`NoCxRoute`].
 pub(crate) fn no_cx_route(effect: &Effect) -> NoCxRoute {
     match effect {
@@ -166,6 +183,7 @@ impl AppState {
         self.poll_popover(cx);
         self.poll_settings(cx);
         self.poll_welcome(cx);
+        self.poll_log_size();
         if let Some((down, up, sent)) = self.debug_hold {
             let now = Instant::now();
             if !sent && now >= down {
@@ -225,7 +243,22 @@ impl AppState {
             }
         }
         for ev in events {
-            self.log(&format!("tap {ev:?}"));
+            // Other keys are logged, and break a hold, only while a hold or
+            // capture is live: the log never records ordinary typing.
+            let busy = self.key_capturing.is_some()
+                || self
+                    .machine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .in_session();
+            if busy
+                || matches!(
+                    ev,
+                    KeyEvent::HoldDown(_) | KeyEvent::HoldUp(_) | KeyEvent::TapReenabled
+                )
+            {
+                self.log(&format!("tap {ev:?}"));
+            }
             if self.key_capturing.is_some() {
                 self.feed_capture(cx, &ev);
                 continue;
@@ -240,7 +273,11 @@ impl AppState {
                         self.input(cx, Input::HoldUp(kind), "up");
                     }
                 }
-                KeyEvent::OtherKeyDown => self.input(cx, Input::OtherKeyDown, "other-key"),
+                KeyEvent::OtherKeyDown => {
+                    if busy {
+                        self.input(cx, Input::OtherKeyDown, "other-key");
+                    }
+                }
                 KeyEvent::Chord(key) => self.on_chord(cx, &key),
                 KeyEvent::Escape => {
                     if self.machine_captures(CapturedKey::Escape) {
@@ -761,7 +798,10 @@ impl AppState {
                     }
                 }
                 NoCxRoute::Dropped => {
-                    self.log(&format!("hold {tag}: {effect:?} has no headless path"));
+                    self.log(&format!(
+                        "hold {tag}: {} has no headless path",
+                        effect_kind(&effect)
+                    ));
                 }
             }
         }

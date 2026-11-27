@@ -17,6 +17,7 @@ cask "jisuno" do
     "~/Library/Application Support/jisuno",
     "~/.config/jisuno",
     "~/Library/Caches/jisuno",
+    "~/Library/Logs/Jisuno",
     "~/Library/Preferences/dev.kolisachint.jisuno.plist",
     "~/Library/Saved Application State/dev.kolisachint.jisuno.savedState",
   ]

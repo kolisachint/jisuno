@@ -41,6 +41,10 @@ Runs are queued in the `release` concurrency group and never cancelled.
    cargo requires optional deps to be on the registry). A version already on
    the index is skipped, so a partial run can be retried. Needs
    `CRATES_IO_TOKEN`. `jisuno-bench` has `publish = false`.
+   crates.io rate-limits brand-new crates (a burst, then about one per 10
+   minutes). On a 429, "rate limit" or "too many" error the step sleeps 11
+   minutes and retries, up to 4 times per crate, then fails. The job has
+   `timeout-minutes: 90`.
 3. **create-release** — creates the GitHub release `v<version>` with
    auto-generated notes (idempotent). Runs in parallel with `publish`.
 4. **macos-app** — macos-14. Builds the universal `Jisuno.app` with

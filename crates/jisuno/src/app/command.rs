@@ -169,6 +169,12 @@ fn split_resolve_failed(hud: &str) -> (String, String) {
         .unwrap_or_else(|| (String::new(), hud.to_string()))
 }
 
+/// Log-safe command name: the id and the label summary. The label carries
+/// spoken slot text, so it is only shown with `JISUNO_LOG_TEXT=1`.
+fn command_log(plan: &Plan) -> String {
+    format!("{} ({})", plan.command_id, text_summary(&plan.label))
+}
+
 /// `Did you mean "x"?` carries the full copy; the HUD needs the phrase.
 pub(crate) fn extract_suggestion(copy: &str) -> Option<String> {
     copy.strip_prefix("Did you mean \"")?
@@ -215,7 +221,7 @@ impl AppState {
             self.hook_tx.clone(),
         );
         let tx = self.cmd_tx.clone();
-        self.log(&format!("command run: {label}"));
+        self.log(&format!("command run: {}", command_log(&plan)));
         std::thread::spawn(move || {
             let mut actions = MacActions::new(hooks);
             let outcome = runner::execute(&plan, &mut actions, &workspaces);
@@ -253,7 +259,12 @@ impl AppState {
             .as_ref()
             .map(Self::confirm_summary)
             .unwrap_or_default();
-        self.log(&format!("confirm prompt: {label}"));
+        let logged = self
+            .confirming
+            .as_ref()
+            .map(command_log)
+            .unwrap_or_default();
+        self.log(&format!("confirm prompt: {logged}"));
         if !self.hud_enabled() {
             return;
         }
@@ -292,9 +303,12 @@ impl AppState {
                     total,
                     action,
                     reason,
-                    hud,
+                    ..
                 } => {
-                    self.log(&format!("hud: {hud}"));
+                    self.log(&format!(
+                        "step {step_index} of {total} failed: {action} ({})",
+                        text_summary(&reason)
+                    ));
                     self.push_recent(
                         format!("{COMMAND_RECENT_PREFIX}{}", done.label),
                         Some("failed".to_string()),
@@ -379,7 +393,7 @@ impl AppState {
             R::Failed { hud } => {
                 // Unreachable with a validated config: log + Recent either
                 // way, HUD only while the machine is still waiting.
-                self.log(&hud);
+                self.log(&format!("could not run command ({})", text_summary(&hud)));
                 self.push_recent(text.clone(), Some("failed".to_string()));
                 let (label, reason) = split_resolve_failed(&hud);
                 if self.input_checked(

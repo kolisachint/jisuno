@@ -7,17 +7,18 @@ on:
 permissions:
   contents: write
 
-# One release at a time: a second merge waits for the first run to finish.
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
   # ── 1. Resolve the version, bump, commit, tag ─────────────────────────
   # Base version: the latest v* tag, bumped by the label. No v* tag yet: the
   # manifest version is released as is (first release). A re-run finds the
   # tag this merge already produced and only sets the outputs.
   bump-and-tag:
+    # One release at a time: a second merge waits for the first run to finish.
+    # Scoped to this job so a closed unlabelled PR (skipped here) can never
+    # replace a pending labelled release run.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' && (
@@ -164,6 +165,7 @@ jobs:
     name: Publish to crates.io
     needs: [bump-and-tag]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -176,15 +178,29 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
+          # crates.io rate-limits new crates (a burst, then about one per
+          # 10 minutes): on a 429 / rate-limit error, wait 11 minutes and retry,
+          # up to 4 times.
           for crate in jisuno-logic jisuno-audio jisuno-asr jisuno-platform jisuno-ui jisuno; do
-            cargo publish -p "$crate" 2>&1 | tee /tmp/publish.log || {
-              status=${PIPESTATUS[0]}
+            retries=0
+            while true; do
+              status=0
+              cargo publish -p "$crate" 2>&1 | tee /tmp/publish.log || status=$?
+              if [[ $status -eq 0 ]]; then
+                break
+              fi
               if grep -q "already exists on crates.io" /tmp/publish.log; then
                 echo "$crate already published — skipping"
-              else
-                exit "$status"
+                break
               fi
-            }
+              if grep -qiE "429|rate limit|too many" /tmp/publish.log && ((retries < 4)); then
+                retries=$((retries + 1))
+                echo "$crate rate-limited; sleeping 11 minutes (retry $retries of 4)"
+                sleep 660
+                continue
+              fi
+              exit "$status"
+            done
           done
 
   # ── 3. Create the GitHub release (runs in parallel with publish) ──────

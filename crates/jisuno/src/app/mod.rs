@@ -438,6 +438,7 @@ pub fn run(opts: AppOptions) {
             child_rss_mb: None,
             worker_crash_shown: false,
             last_active: Instant::now(),
+            log_checked_at: Instant::now(),
             target: None,
             to_worker,
             from_worker,
