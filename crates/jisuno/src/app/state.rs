@@ -26,8 +26,8 @@ use jisuno_ui::tokens::ThemeJson;
 
 use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
-use super::socket::SocketSnapshot;
 use super::model::{ActiveDownload, DownloadEvent};
+use super::socket::SocketSnapshot;
 use super::windows::{PopoverHandle, SettingsHandle};
 use super::worker::{FromWorker, ToWorker};
 use jisuno_logic::keybindings::{Command as KeyCommand, When as KeyWhen};

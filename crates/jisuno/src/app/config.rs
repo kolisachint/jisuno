@@ -318,7 +318,10 @@ impl AppState {
                 Captured::Chord(_) => true,
             }
         });
-        match KeyTap::start(tap_config_for(&self.bindings), should_capture) {
+        match KeyTap::start(
+            tap_config_for(&self.bindings, self.key_capturing.is_some()),
+            should_capture,
+        ) {
             Ok((tap, rx)) => {
                 self.tap = Some(tap);
                 self.tap_rx = Some(rx);

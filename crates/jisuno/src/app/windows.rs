@@ -77,9 +77,7 @@ impl AppState {
                 AppModelState::Warm => ModelPresence::Warm,
                 AppModelState::Loading { .. } => ModelPresence::Loading,
                 AppModelState::Unloaded if self.model_present => ModelPresence::Cold,
-                AppModelState::Unloaded | AppModelState::Failed => {
-                    ModelPresence::NotDownloaded
-                }
+                AppModelState::Unloaded | AppModelState::Failed => ModelPresence::NotDownloaded,
             }
         };
         let recent = self
@@ -179,11 +177,15 @@ impl AppState {
             .button_frame()
             .map(|(bx, _by, bw, _bh)| {
                 (
-                    (bx + bw - f64::from(POPOVER_W)).clamp(8.0, screen.width - f64::from(POPOVER_W) - 8.0),
+                    (bx + bw - f64::from(POPOVER_W))
+                        .clamp(8.0, screen.width - f64::from(POPOVER_W) - 8.0),
                     screen.usable_top + 4.0,
                 )
             })
-            .unwrap_or(((screen.width - f64::from(POPOVER_W)) / 2.0, screen.usable_top + 4.0));
+            .unwrap_or((
+                (screen.width - f64::from(POPOVER_W)) / 2.0,
+                screen.usable_top + 4.0,
+            ));
         x = x.max(8.0);
         let bounds = Bounds {
             origin: Point {
@@ -394,10 +396,11 @@ impl AppState {
         let model = self.settings_model(None);
         let theme = self.ui_theme(cx);
         let sender = self.settings_tx.clone();
-        let emit: SettingsEmit =
-            std::rc::Rc::new(move |intent: SettingsIntent, _window: &mut Window, _cx: &mut App| {
+        let emit: SettingsEmit = std::rc::Rc::new(
+            move |intent: SettingsIntent, _window: &mut Window, _cx: &mut App| {
                 let _ = sender.send(intent);
-            });
+            },
+        );
         let model_open = model.clone();
         let emit_open = emit.clone();
         match cx.open_window(
@@ -463,11 +466,7 @@ impl AppState {
             .voice_config
             .workspaces
             .iter()
-            .flat_map(|(name, windows)| {
-                windows
-                    .iter()
-                    .map(|window| WorkspaceRow::of(name, window))
-            })
+            .flat_map(|(name, windows)| windows.iter().map(|window| WorkspaceRow::of(name, window)))
             .collect();
         let dir = ConfigDir::resolve()
             .map(|dir| dir.root().display().to_string())
@@ -490,7 +489,9 @@ impl AppState {
             .collect();
         let keep_binding_ui = keep.filter(|_| self.key_capturing.is_some());
         SettingsModel {
-            pane: keep.map(|model| model.pane).unwrap_or(SettingsPane::General),
+            pane: keep
+                .map(|model| model.pane)
+                .unwrap_or(SettingsPane::General),
             general: GeneralModel {
                 hud: match s.hud {
                     settings::Hud::Notch => "notch".into(),
@@ -551,7 +552,9 @@ impl AppState {
                 hud_style: t.hud_style.clone(),
                 show_latency: t.show_latency,
             },
-            perf: performance_rows(&[None, None, None, None, None, None, None, None, None, None, None, None]),
+            perf: performance_rows(&[
+                None, None, None, None, None, None, None, None, None, None, None, None,
+            ]),
             bench_running: false,
             files: file_rows(&dir, &file_errors),
         }
@@ -694,7 +697,9 @@ impl AppState {
             .as_ref()
             .is_some_and(|active| active.model_id == file_id)
         {
-            self.log(&format!("remove {file_id}: download running, cancel it first"));
+            self.log(&format!(
+                "remove {file_id}: download running, cancel it first"
+            ));
             return;
         }
         match jisuno_asr::setup::Model::parse(file_id) {
@@ -802,10 +807,7 @@ impl AppState {
             self.log("settings closed");
             return;
         }
-        let keep = self
-            .settings_win
-            .as_ref()
-            .map(|handle| handle.last.clone());
+        let keep = self.settings_win.as_ref().map(|handle| handle.last.clone());
         let fresh = self.settings_model(keep.as_ref());
         if Some(&fresh) != keep.as_ref() {
             let theme = self.ui_theme(cx);
@@ -828,9 +830,11 @@ fn apply_pending_replace(model: &mut SettingsModel) {
             && row.key.as_ref() == Some(&pending.key)
             && row.when == pending.when)
     });
-    if let Some(row) = model.keybinding_rows.iter_mut().find(|row| {
-        row.command == recording.command && row.when == recording.when
-    }) {
+    if let Some(row) = model
+        .keybinding_rows
+        .iter_mut()
+        .find(|row| row.command == recording.command && row.when == recording.when)
+    {
         row.key = Some(pending.key.clone());
         row.hold = matches!(pending.key, jisuno_logic::keybindings::Key::Hold(_));
     }
@@ -900,5 +904,3 @@ fn set_json_key(doc: &mut serde_json::Value, key: &str, value: serde_json::Value
     }
     node[current] = value;
 }
-
-

@@ -315,7 +315,7 @@ pub fn run(opts: AppOptions) {
             !missing.iter().any(|(p, _)| *p == Pane::InputMonitoring),
         );
 
-        let tap_config = tap_config_for(&bindings_holder.current);
+        let tap_config = tap_config_for(&bindings_holder.current, false);
         let machine_w = Arc::clone(&machine);
         let should_capture: ShouldCapture = Arc::new(move |captured: Captured| {
             let machine = machine_w.lock().unwrap_or_else(|e| e.into_inner());
@@ -449,7 +449,7 @@ pub fn run(opts: AppOptions) {
     }
 }
 
-pub(crate) fn tap_config_for(bindings: &Keybindings) -> TapConfig {
+pub(crate) fn tap_config_for(bindings: &Keybindings, capturing: bool) -> TapConfig {
     let mut holds = Vec::new();
     let mut chords = Vec::new();
     for binding in &bindings.bindings {
@@ -463,7 +463,59 @@ pub(crate) fn tap_config_for(bindings: &Keybindings) -> TapConfig {
             }
         }
     }
+    if capturing {
+        // Keybinding recording: report every chord so the host can feed
+        // the next one to `feed_recorded_key` (Esc cancels). Bare keys and
+        // every modifier combination are covered; the hold keys stay as-is.
+        chords = capture_chords(&chords);
+    }
     TapConfig { holds, chords }
+}
+
+/// Every reportable chord: the configured ones plus all modifier
+/// combinations over every known keycode, so recording catches any press.
+fn capture_chords(configured: &[Key]) -> Vec<Key> {
+    use jisuno_logic::keybindings::Modifier;
+    use jisuno_platform::keys::keycode_name;
+    let mut out: Vec<Key> = configured.to_vec();
+    let combos: [Vec<Modifier>; 16] = [
+        vec![],
+        vec![Modifier::Ctrl],
+        vec![Modifier::Opt],
+        vec![Modifier::Shift],
+        vec![Modifier::Cmd],
+        vec![Modifier::Ctrl, Modifier::Opt],
+        vec![Modifier::Ctrl, Modifier::Shift],
+        vec![Modifier::Ctrl, Modifier::Cmd],
+        vec![Modifier::Opt, Modifier::Shift],
+        vec![Modifier::Opt, Modifier::Cmd],
+        vec![Modifier::Shift, Modifier::Cmd],
+        vec![Modifier::Ctrl, Modifier::Opt, Modifier::Shift],
+        vec![Modifier::Ctrl, Modifier::Opt, Modifier::Cmd],
+        vec![Modifier::Ctrl, Modifier::Shift, Modifier::Cmd],
+        vec![Modifier::Opt, Modifier::Shift, Modifier::Cmd],
+        vec![
+            Modifier::Ctrl,
+            Modifier::Opt,
+            Modifier::Shift,
+            Modifier::Cmd,
+        ],
+    ];
+    for code in 0..=255u16 {
+        let Some(name) = keycode_name(code) else {
+            continue;
+        };
+        for modifiers in &combos {
+            let key = Key::Chord {
+                modifiers: modifiers.clone(),
+                key: name.to_string(),
+            };
+            if !out.contains(&key) {
+                out.push(key);
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn hold_kind_for(bindings: &Keybindings, key: RightKey) -> Option<HoldKind> {

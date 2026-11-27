@@ -340,11 +340,7 @@ impl AppState {
                 self.log(&hud);
                 self.push_recent(text.clone(), Some("failed".to_string()));
                 let (label, reason) = split_resolve_failed(&hud);
-                self.show_ephemeral(
-                    cx,
-                    UiHud::ResolveFailed { label, reason },
-                    "resolve failed",
-                );
+                self.show_ephemeral(cx, UiHud::ResolveFailed { label, reason }, "resolve failed");
             }
         }
     }

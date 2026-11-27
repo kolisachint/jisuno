@@ -169,8 +169,8 @@ mod macos_impl {
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{define_class, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSApplication, NSEventMask, NSEventType, NSEventModifierFlags, NSImage, NSMenu,
-        NSMenuItem, NSStatusBar, NSStatusBarButton, NSStatusItem, NSView,
+        NSApplication, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSMenuItem,
+        NSStatusBar, NSStatusBarButton, NSStatusItem, NSView,
     };
     use objc2_foundation::{NSPoint, NSString};
 
