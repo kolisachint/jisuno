@@ -51,6 +51,12 @@ pub enum HudState {
     ConfirmExpired,
     /// H11: the matcher finds nothing close enough.
     NoMatch { suggestion: String },
+    /// Runner `Resolution::NoMatch`: no eligible command, nothing runs.
+    /// HUD copy: `No command matched`.
+    NoCommandMatched,
+    /// Runner `Resolution::Failed` after a match (slot fill failure).
+    /// HUD copy: `Could not run "<label>": <reason>`.
+    ResolveFailed { label: String, reason: String },
     /// H12: a step fails; earlier steps stay done.
     StepFailed {
         step: u32,
@@ -216,6 +222,22 @@ pub fn render_model(state: &HudState) -> HudModel {
             secondary_text: None,
             progress: None,
             dismiss_after_ms: Some(2500),
+        },
+        HudState::NoCommandMatched => HudModel {
+            accent: HudAccent::Neutral,
+            icon: HudIcon::None,
+            primary_text: "No command matched".into(),
+            secondary_text: None,
+            progress: None,
+            dismiss_after_ms: Some(2500),
+        },
+        HudState::ResolveFailed { label, reason } => HudModel {
+            accent: HudAccent::Error,
+            icon: HudIcon::None,
+            primary_text: format!("Could not run \"{label}\": {reason}"),
+            secondary_text: None,
+            progress: None,
+            dismiss_after_ms: Some(4000),
         },
         HudState::StepFailed {
             step,
@@ -484,6 +506,14 @@ pub fn all_samples() -> Vec<(&'static str, HudState)> {
                 suggestion: "start working".into(),
             },
         ),
+        ("H11 no command", HudState::NoCommandMatched),
+        (
+            "resolve failed",
+            HudState::ResolveFailed {
+                label: "open note".into(),
+                reason: "missing slot value".into(),
+            },
+        ),
         (
             "H12 step failure",
             HudState::StepFailed {
@@ -710,6 +740,25 @@ mod tests {
             model(&HudState::ConfirmExpired).dismiss_after_ms,
             Some(1000)
         );
+    }
+
+    #[test]
+    fn runner_no_match_and_failed_copies() {
+        let m = model(&HudState::NoCommandMatched);
+        assert_eq!(m.primary_text, "No command matched");
+        assert_eq!(m.dismiss_after_ms, Some(2500));
+        assert!(detail_lines(&HudState::NoCommandMatched).is_empty());
+        let failed = HudState::ResolveFailed {
+            label: "open note".into(),
+            reason: "missing slot value".into(),
+        };
+        let m = model(&failed);
+        assert_eq!(
+            m.primary_text,
+            "Could not run \"open note\": missing slot value"
+        );
+        assert_eq!(m.dismiss_after_ms, Some(4000));
+        assert!(detail_lines(&failed).is_empty());
     }
 
     #[test]
