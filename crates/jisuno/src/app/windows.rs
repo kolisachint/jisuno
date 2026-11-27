@@ -53,9 +53,10 @@ const TOAST_MS: u64 = 1500;
 const POPOVER_GRACE_MS: u64 = 1000;
 /// How long the Settings audio picker reuses one device enumeration.
 const DEVICE_CACHE_MS: u64 = 5000;
-/// Prefix of a Recent entry that is a voice command (not dictated text).
-/// Written when the entry is pushed; read back here for the popover row.
-pub(crate) const COMMAND_RECENT_PREFIX: &str = "⌘ ";
+/// Prefix of a Recent entry that is a voice command (not dictated text),
+/// shared with [`jisuno_ui::popover_model`]: written when the entry is
+/// pushed; read back here for the popover row.
+pub(crate) use jisuno_ui::popover_model::COMMAND_RECENT_PREFIX;
 
 /// The live popover window and the model it last rendered.
 pub(crate) struct PopoverHandle {

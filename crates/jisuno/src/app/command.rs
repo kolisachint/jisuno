@@ -21,6 +21,7 @@ use jisuno_platform::actions::{self, MacActions};
 use jisuno_ui::hud_model::HudState as UiHud;
 
 use super::state::{text_summary, AppState};
+use super::windows::COMMAND_RECENT_PREFIX;
 use crate::runtime::{build_runtime, scan_installed_apps, THEMES};
 
 /// Installed-apps cache TTL: re-scanned at most once an hour.
@@ -283,7 +284,7 @@ impl AppState {
         while let Ok(done) = self.cmd_rx.try_recv() {
             match done.outcome {
                 Outcome::Done => {
-                    self.push_recent(format!("⌚ {}", done.label), None);
+                    self.push_recent(format!("{COMMAND_RECENT_PREFIX}{}", done.label), None);
                     self.show_ephemeral(cx, UiHud::RanCommand { label: done.label }, "command ran");
                 }
                 Outcome::Failed {
@@ -294,7 +295,10 @@ impl AppState {
                     hud,
                 } => {
                     self.log(&format!("hud: {hud}"));
-                    self.push_recent(format!("⌚ {}", done.label), Some("failed".to_string()));
+                    self.push_recent(
+                        format!("{COMMAND_RECENT_PREFIX}{}", done.label),
+                        Some("failed".to_string()),
+                    );
                     self.show_ephemeral(
                         cx,
                         UiHud::StepFailed {

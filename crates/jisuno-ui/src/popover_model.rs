@@ -5,6 +5,11 @@
 //! [`PopoverIntent`]s; the app agent hosts it, performs the intents (file and
 //! OS access) and feeds updated models back.
 
+/// Prefix of a Recent entry that is a voice command (not dictated text).
+/// Written by the app when the entry is pushed; read back for the popover
+/// row and its display text.
+pub const COMMAND_RECENT_PREFIX: &str = "⌘ ";
+
 /// Model (download/load) presence shown in the popover's Model row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelPresence {
@@ -135,7 +140,7 @@ impl RecentItem {
     /// The row text: commands carry the `⌘` prefix (§4).
     pub fn display_text(&self) -> String {
         if self.command {
-            format!("⌘ {}", self.text)
+            format!("{COMMAND_RECENT_PREFIX}{}", self.text)
         } else {
             self.text.clone()
         }
