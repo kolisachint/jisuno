@@ -488,7 +488,9 @@ impl AppState {
         let win_bounds = Bounds {
             origin: Point {
                 x: px(((screen.width - f64::from(win_w)) / 2.0).max(0.0) as f32),
-                y: px((screen.usable_top + ((screen.height - screen.usable_top - f64::from(win_h)) / 2.0)).max(screen.usable_top) as f32),
+                y: px((screen.usable_top
+                    + ((screen.height - screen.usable_top - f64::from(win_h)) / 2.0))
+                    .max(screen.usable_top) as f32),
             },
             size: size(px(win_w), px(win_h)),
         };
@@ -1097,7 +1099,9 @@ impl AppState {
         let win_bounds = Bounds {
             origin: Point {
                 x: px(((screen.width - f64::from(win_w)) / 2.0).max(0.0) as f32),
-                y: px((screen.usable_top + ((screen.height - screen.usable_top - f64::from(win_h)) / 2.0)).max(screen.usable_top) as f32),
+                y: px((screen.usable_top
+                    + ((screen.height - screen.usable_top - f64::from(win_h)) / 2.0))
+                    .max(screen.usable_top) as f32),
             },
             size: size(px(win_w), px(win_h)),
         };
@@ -1155,8 +1159,8 @@ impl AppState {
         let root = ConfigDir::resolve().map(|d| d.root().to_path_buf());
         let mut text = match root {
             Ok(d) => {
-                let under_home =
-                    std::env::var_os("HOME").and_then(|h| d.strip_prefix(h).ok().map(|r| r.to_path_buf()));
+                let under_home = std::env::var_os("HOME")
+                    .and_then(|h| d.strip_prefix(h).ok().map(|r| r.to_path_buf()));
                 match under_home {
                     Some(rel) => format!("~/{}", rel.display()),
                     None => d.display().to_string(),
