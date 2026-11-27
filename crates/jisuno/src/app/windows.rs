@@ -733,7 +733,10 @@ impl AppState {
                 return;
             }
         };
-        set_json_key(&mut doc, key, value);
+        if let Err(message) = set_json_key(&mut doc, key, value) {
+            self.note_config_error(cx, &format!("{file}: {message} · using last good config"));
+            return;
+        }
         let pretty = serde_json::to_string_pretty(&doc)
             .map(|text| format!("{text}\n"))
             .unwrap_or(text);
@@ -1312,20 +1315,63 @@ impl AppState {
 }
 
 /// Set a (possibly dotted, e.g. `hud.show_latency`) key on a JSON document.
-fn set_json_key(doc: &mut serde_json::Value, key: &str, value: serde_json::Value) {
-    let mut parts = key.split('.');
-    let Some(first) = parts.next() else {
-        return;
-    };
+/// Missing or `null` parents are created as objects; a parent that is any
+/// other non-object value is an error, and nothing is written.
+fn set_json_key(
+    doc: &mut serde_json::Value,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
     let mut node = doc;
-    let mut current = first;
-    for part in parts {
-        if node.get(current).is_none() {
-            node[current] = serde_json::json!({});
+    let mut parts = key.split('.').peekable();
+    while let Some(part) = parts.next() {
+        let object = node
+            .as_object_mut()
+            .ok_or_else(|| format!("`{key}`: `{part}` is not inside a JSON object"))?;
+        if parts.peek().is_none() {
+            object.insert(part.to_string(), value);
+            return Ok(());
         }
-        // SAFETY: just ensured present.
-        node = node.get_mut(current).expect("settings key parent");
-        current = part;
+        node = object.entry(part).or_insert_with(|| serde_json::json!({}));
+        if node.is_null() {
+            *node = serde_json::json!({});
+        }
     }
-    node[current] = value;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set_json_key;
+    use serde_json::json;
+
+    #[test]
+    fn sets_top_and_dotted_keys_creating_parents() {
+        let mut doc = json!({ "a": 1 });
+        set_json_key(&mut doc, "a", json!(2)).unwrap();
+        set_json_key(&mut doc, "hud.show_latency", json!(true)).unwrap();
+        set_json_key(&mut doc, "hud.style", json!("x")).unwrap();
+        assert_eq!(
+            doc,
+            json!({ "a": 2, "hud": { "show_latency": true, "style": "x" } })
+        );
+    }
+
+    #[test]
+    fn null_parent_becomes_object() {
+        let mut doc = json!({ "hud": null });
+        set_json_key(&mut doc, "hud.style", json!("x")).unwrap();
+        assert_eq!(doc, json!({ "hud": { "style": "x" } }));
+    }
+
+    #[test]
+    fn non_object_roots_and_parents_are_errors() {
+        let mut root = json!([1, 2]);
+        assert!(set_json_key(&mut root, "a", json!(1)).is_err());
+        assert_eq!(root, json!([1, 2]));
+
+        let mut parent = json!({ "hud": 5 });
+        assert!(set_json_key(&mut parent, "hud.style", json!("x")).is_err());
+        assert_eq!(parent, json!({ "hud": 5 }));
+    }
 }
