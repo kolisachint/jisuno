@@ -215,7 +215,7 @@ file at once (atomic write, hot reload, `keybindings.md` §9); an error shows th
 | Keybindings | `keybindings.json` | the nine commands of `keybindings.md` §10: key, when, hold, `Set to default` | §5.1 |
 | Commands | `voice-control-config.json` | built-in commands; commands added by agents (`"agent": true`) under their own heading; workspaces | read-only: edit the file or use `jisuno control` |
 | Appearance | `theme.json` | Palette (`name`: `quiet-light`, `quiet-dark`); Appearance (`appearance`: `system`, `fixed`); Dictate accent (`accent_dictate`), Command accent (`accent_command`), both `#rrggbb`; HUD style (`hud.style`, `island`, the only value in v1); Show latency (`hud.show_latency`) | key table in `docs/user/src/config-files.md`; `appearance` as §12 |
-| Performance | none (reads `jisuno bench`) | table in §5.2 | `Run benchmark` runs `jisuno bench` |
+| Performance | none (reads `~/Library/Caches/jisuno/bench/*.json`) | table in §5.2 | `Run benchmark` runs the bundled `jisuno-bench --json` |
 | Files | all four | one row per file: name, path under `~/.config/jisuno/`, `OK` or `Error`, `Open file`, `Copy error` (enabled on error); `schemas/` folder row | the error copy is the §8 message |
 
 Warning text, Bluetooth (Audio pane), new copy: `Bluetooth input: audio is compressed and latency is higher. Use the built-in microphone for dictation.`
@@ -250,7 +250,7 @@ Warning text, Bluetooth (Audio pane), new copy: `Bluetooth input: audio is compr
 | WER, LibriSpeech test-clean / owner set | no target set | not measured |
 
 Footer caption: `Reference machine: MacBook Air M1, 8 GB, macOS 27.3. Numbers are recorded, not gated.`
-Values come from `jisuno bench`; the pane shows no simulated numbers.
+Values come from the bundled `jisuno-bench`; the pane shows no simulated numbers.
 
 ## 6. Welcome window (first run)
 
