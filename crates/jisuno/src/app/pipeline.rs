@@ -87,6 +87,8 @@ impl AppState {
     pub(crate) fn drain_menu(&mut self, cx: &mut App) {
         while let Ok(action) = self.menu_rx.try_recv() {
             match action {
+                MenuAction::TogglePopover => self.log("popover window comes later"),
+                MenuAction::OpenSettings => self.log("settings window comes later"),
                 MenuAction::WarmModel => self.start_load(cx, "menu"),
                 MenuAction::UnloadModel => self.unload_model("menu"),
                 MenuAction::OpenPane(pane) => {
