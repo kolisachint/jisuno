@@ -31,13 +31,48 @@ impl Capture {
     }
 }
 
+/// What `settings.json` `input_device` resolves to on this host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputChoice<'a> {
+    /// `system`: the default input device.
+    System,
+    /// A connected device with exactly this name.
+    Named(&'a str),
+    /// A name that is not connected: the caller falls back to the system
+    /// input and notes it (`app-ui.md` H17).
+    Missing,
+}
+
+/// Pure selection for `input_device` over the connected device names.
+pub fn choose_input<'a>(wanted: &str, available: &'a [String]) -> InputChoice<'a> {
+    if wanted == "system" {
+        return InputChoice::System;
+    }
+    match available.iter().find(|name| name.as_str() == wanted) {
+        Some(name) => InputChoice::Named(name.as_str()),
+        None => InputChoice::Missing,
+    }
+}
+
 /// Open the default input device and begin streaming mono chunks.
 pub fn start() -> anyhow::Result<Capture> {
-    let host = cpal::default_host();
-    let device = host
+    let device = cpal::default_host()
         .default_input_device()
         .context("no default input device — is a microphone connected?")?;
+    open(device)
+}
 
+/// Open the connected input device named `name` (exact match).
+pub fn start_named(name: &str) -> anyhow::Result<Capture> {
+    let device = cpal::default_host()
+        .input_devices()
+        .context("failed to list input devices")?
+        .find(|d| d.name().is_ok_and(|n| n == name))
+        .with_context(|| format!("no input device named \"{name}\""))?;
+    open(device)
+}
+
+fn open(device: cpal::Device) -> anyhow::Result<Capture> {
     let config = device
         .default_input_config()
         .context("failed to read default input config")?;
@@ -93,4 +128,44 @@ pub fn start() -> anyhow::Result<Capture> {
         input_rate,
         stream,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{choose_input, InputChoice};
+
+    fn devices() -> Vec<String> {
+        vec![
+            "MacBook Air Microphone".to_string(),
+            "Scarlett 2i2".to_string(),
+        ]
+    }
+
+    #[test]
+    fn system_is_the_default_input_whatever_is_connected() {
+        assert_eq!(choose_input("system", &devices()), InputChoice::System);
+        assert_eq!(choose_input("system", &[]), InputChoice::System);
+    }
+
+    #[test]
+    fn a_connected_name_opens_that_device() {
+        assert_eq!(
+            choose_input("Scarlett 2i2", &devices()),
+            InputChoice::Named("Scarlett 2i2")
+        );
+    }
+
+    #[test]
+    fn a_name_not_connected_is_missing() {
+        assert_eq!(choose_input("Scarlett 2i2", &[]), InputChoice::Missing);
+        assert_eq!(choose_input("USB Mic", &devices()), InputChoice::Missing);
+    }
+
+    #[test]
+    fn names_match_exactly() {
+        assert_eq!(
+            choose_input("scarlett 2i2", &devices()),
+            InputChoice::Missing
+        );
+    }
 }

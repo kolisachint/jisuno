@@ -86,6 +86,8 @@ pub(crate) struct ListeningUi {
     /// Latest live partial text (H4), `None` before the first words or when
     /// `settings.partials` is off.
     pub(crate) partial: Option<String>,
+    /// H16: this hold shows the Bluetooth note (first hold on the device).
+    pub(crate) bluetooth_note: bool,
 }
 
 // Read by the popover (comes later); until then entries are logged on push.
@@ -189,9 +191,11 @@ pub(crate) struct AppState {
     pub(crate) perm_line: [String; 3],
     pub(crate) recent: VecDeque<RecentEntry>,
     pub(crate) announced_secure: Vec<String>,
-    pub(crate) announced_bluetooth: bool,
+    /// Devices whose Bluetooth note (H16) already showed this session.
+    pub(crate) announced_bluetooth: Vec<String>,
     pub(crate) mic_satisfied: bool,
-    pub(crate) bluetooth_now: bool,
+    /// The input in use for this utterance when it is Bluetooth.
+    pub(crate) bluetooth_device: Option<String>,
     pub(crate) missing_device_note: Option<String>,
     pub(crate) secure_now: bool,
     pub(crate) last_config_error: Option<String>,

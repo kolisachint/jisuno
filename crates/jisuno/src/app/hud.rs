@@ -59,7 +59,7 @@ impl AppState {
             None
         };
         let countdown_ms = l.countdown_ms;
-        let bluetooth = self.bluetooth_now && !self.announced_bluetooth;
+        let bluetooth = l.bluetooth_note;
         let missing_device = self.missing_device_note.clone();
         if l.dictate {
             Some(UiHud::ListeningDictate {
@@ -84,10 +84,6 @@ impl AppState {
         if !self.hud_enabled() {
             self.log("hud off — listening without a window");
             return;
-        }
-        if self.bluetooth_now && !self.announced_bluetooth {
-            self.announced_bluetooth = true;
-            self.log("bluetooth mic note (once per session)");
         }
         let Some(origin) = self.hud_origin(cx) else {
             return;
