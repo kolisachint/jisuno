@@ -8,12 +8,12 @@
 //! Menu actions travel back to the app over a channel; the app polls it on
 //! its tick.
 //!
-//! Icon states follow `app-ui.md` §2. The listening colours need a
-//! non-template image; until custom-drawn glyphs land, the template
-//! `waveform` image stays and the state is carried by the VoiceOver label
-//! (via the tooltip) plus a text badge suffix (`!` warning, lock while
-//! Secure Input holds the keyboard). The badge is a placeholder for the
-//! 9x9pt drawn badges in the spec.
+//! Icon states follow `app-ui.md` §2: an SF Symbol glyph per state, the
+//! listening glyphs in the mode colour, and 9x9 pt badges (lock while Secure
+//! Input holds the keyboard, warning on an error). Idle and loading glyphs
+//! are template images; the listening and badged images are drawn in colour
+//! (`app-ui.md` §12). The pure mapping (symbol, tint, badges, label, colours)
+//! is unit-tested on every platform.
 
 use std::sync::mpsc;
 
@@ -59,6 +59,92 @@ impl IconState {
             Self::Error => "Jisuno, needs attention",
         }
     }
+}
+
+/// Listening glyph tint: the `dictate_text` and `command_text` tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tint {
+    Dictate,
+    Command,
+}
+
+/// Badges drawn over the glyph, bottom right; the lock sits left of the
+/// warning when both show (`app-ui.md` §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Badge {
+    Lock,
+    Warning,
+}
+
+/// SF Symbol for the glyph of each state (names exist on macOS 13+).
+pub fn glyph_symbol(state: IconState) -> &'static str {
+    match state {
+        IconState::Idle { .. } | IconState::Loading | IconState::Error => "waveform",
+        IconState::ListeningDictate => "waveform.circle.fill",
+        IconState::ListeningCommand => "command.circle.fill",
+    }
+}
+
+/// The glyph tint: listening states only.
+pub fn glyph_tint(state: IconState) -> Option<Tint> {
+    match state {
+        IconState::ListeningDictate => Some(Tint::Dictate),
+        IconState::ListeningCommand => Some(Tint::Command),
+        IconState::Idle { .. } | IconState::Loading | IconState::Error => None,
+    }
+}
+
+/// Badges to draw, in order from left to right.
+pub fn badges(warning: bool, secure: bool) -> Vec<Badge> {
+    let mut out = Vec::new();
+    if secure {
+        out.push(Badge::Lock);
+    }
+    if warning {
+        out.push(Badge::Warning);
+    }
+    out
+}
+
+/// SF Symbol for a badge.
+pub fn badge_symbol(badge: Badge) -> &'static str {
+    match badge {
+        Badge::Lock => "lock.fill",
+        Badge::Warning => "exclamationmark.triangle.fill",
+    }
+}
+
+/// `0xRRGGBB` for a tint: `app-ui.md` §1.1 (light, dark).
+pub fn tint_hex(tint: Tint, dark: bool) -> u32 {
+    match (tint, dark) {
+        (Tint::Dictate, false) => 0x09_5a_d7,
+        (Tint::Dictate, true) => 0x7f_af_fa,
+        (Tint::Command, false) => 0x86_5c_0e,
+        (Tint::Command, true) => 0xe8_a0_1c,
+    }
+}
+
+/// `0xRRGGBB` for a badge fill: `text` for the lock, `warning` for the
+/// warning (`app-ui.md` §2, §1.1).
+pub fn badge_hex(badge: Badge, dark: bool) -> u32 {
+    match (badge, dark) {
+        (Badge::Lock, false) => 0x1f_22_25,
+        (Badge::Lock, true) => 0xe6_e6_e6,
+        (Badge::Warning, false) => 0x9e_5f_09,
+        (Badge::Warning, true) => 0xe0_a2_3c,
+    }
+}
+
+/// VoiceOver label: the state label with the badge suffixes (`app-ui.md` §2).
+pub fn accessibility_label(state: IconState, warning: bool, secure: bool) -> String {
+    let mut label = state.label().to_string();
+    if warning && state != IconState::Error {
+        label.push_str(", needs attention");
+    }
+    if secure {
+        label.push_str(", secure input on");
+    }
+    label
 }
 
 /// The running status item. Main-thread only; the app owns it for its whole
@@ -170,10 +256,11 @@ mod macos_impl {
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{define_class, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSApplication, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSMenuItem,
+        NSAccessibility, NSAppearanceCustomization, NSApplication, NSColor, NSEventMask,
+        NSEventModifierFlags, NSEventType, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuItem,
         NSStatusBar, NSStatusBarButton, NSStatusItem, NSView,
     };
-    use objc2_foundation::{NSPoint, NSString};
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
     use super::*;
 
@@ -278,6 +365,92 @@ mod macos_impl {
         }
     }
 
+    /// Badge square, pt (`app-ui.md` §2).
+    const BADGE_PT: f64 = 9.0;
+
+    /// SF Symbol image by name, with the accessibility description.
+    fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(name),
+            Some(&NSString::from_str(description)),
+        )
+    }
+
+    fn rgb(hex: u32) -> Retained<NSColor> {
+        let channel = |shift: u32| f64::from((hex >> shift) & 0xff) / 255.0;
+        NSColor::colorWithSRGBRed_green_blue_alpha(channel(16), channel(8), channel(0), 1.0)
+    }
+
+    /// A symbol drawn in one colour (non-template).
+    fn colored(image: &NSImage, colour: &NSColor) -> Option<Retained<NSImage>> {
+        let config = NSImageSymbolConfiguration::configurationWithHierarchicalColor(colour);
+        image.imageWithSymbolConfiguration(&config)
+    }
+
+    /// Dark menu bar: the appearance name carries `Dark`.
+    fn is_dark(button: &NSStatusBarButton) -> bool {
+        button
+            .effectiveAppearance()
+            .name()
+            .to_string()
+            .contains("Dark")
+    }
+
+    /// Paint the state on the button: the glyph, then the badges, drawn into
+    /// one image. A plain idle or loading glyph stays a template.
+    fn paint(
+        button: &NSStatusBarButton,
+        state: IconState,
+        warning: bool,
+        secure: bool,
+        dark: bool,
+    ) {
+        let label = accessibility_label(state, warning, secure);
+        let Some(glyph) = symbol(glyph_symbol(state), state.label()) else {
+            return;
+        };
+        let tint = glyph_tint(state);
+        let marks = badges(warning, secure);
+        if tint.is_none() && marks.is_empty() {
+            glyph.setTemplate(true);
+            button.setImage(Some(&glyph));
+            return;
+        }
+        let glyph_colour = match tint {
+            Some(Tint::Dictate) => rgb(tint_hex(Tint::Dictate, dark)),
+            Some(Tint::Command) => rgb(tint_hex(Tint::Command, dark)),
+            None => NSColor::labelColor(),
+        };
+        let Some(glyph) = colored(&glyph, &glyph_colour) else {
+            return;
+        };
+        let size = glyph.size();
+        // Badge i (from the right) sits at x = width - BADGE_PT * (i + 1).
+        let placed: Vec<(Retained<NSImage>, NSRect)> = marks
+            .iter()
+            .rev()
+            .enumerate()
+            .filter_map(|(i, badge)| {
+                let image = symbol(badge_symbol(*badge), &label)?;
+                let colour = rgb(badge_hex(*badge, dark));
+                let x = size.width - BADGE_PT * (i as f64 + 1.0);
+                let rect = NSRect::new(NSPoint::new(x, 0.0), NSSize::new(BADGE_PT, BADGE_PT));
+                Some((colored(&image, &colour)?, rect))
+            })
+            .collect();
+        let handler = block2::RcBlock::new(move |rect: NSRect| -> objc2::runtime::Bool {
+            glyph.drawInRect(rect);
+            for (image, at) in &placed {
+                image.drawInRect(*at);
+            }
+            objc2::runtime::Bool::YES
+        });
+        let image = NSImage::imageWithSize_flipped_drawingHandler(size, false, &handler);
+        image.setTemplate(false);
+        image.setAccessibilityDescription(Some(&NSString::from_str(&label)));
+        button.setImage(Some(&image));
+    }
+
     pub(super) struct Inner {
         item: Retained<NSStatusItem>,
         _target: Retained<MenuTarget>,
@@ -323,20 +496,14 @@ mod macos_impl {
             let Some(button) = self.item.button(self.mtm) else {
                 return;
             };
-            let mut badge = String::new();
-            if secure {
-                badge.push_str(" \u{1F512}");
-            }
-            if warning {
-                badge.push_str(" !");
-            }
-            button.setTitle(&NSString::from_str(&badge));
-            let label = match (warning, secure) {
-                (true, true) => "Jisuno, needs attention, secure input on",
-                (_, true) => "Jisuno, idle, secure input on",
-                _ => state.label(),
-            };
-            button.setToolTip(Some(&NSString::from_str(label)));
+            paint(&button, state, warning, secure, is_dark(&button));
+            button.setTitle(&NSString::from_str(""));
+            // Idle with the model out of memory: the glyph at 40 % (`app-ui.md` §2).
+            let dimmed = state == (IconState::Idle { model_warm: false });
+            button.setAlphaValue(if dimmed { 0.4 } else { 1.0 });
+            let label = NSString::from_str(&accessibility_label(state, warning, secure));
+            button.setToolTip(Some(&label));
+            button.setAccessibilityLabel(Some(&label));
         }
     }
 
@@ -349,20 +516,13 @@ mod macos_impl {
         let bar = NSStatusBar::systemStatusBar();
         let item = bar.statusItemWithLength(objc2_app_kit::NSVariableStatusItemLength);
 
-        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str("waveform"),
-            Some(&NSString::from_str("Jisuno")),
-        ) {
-            image.setTemplate(true);
-            if let Some(button) = item.button(mtm) {
-                button.setImage(Some(&image));
-                button.setTitle(&NSString::from_str(""));
-            }
-        }
         if let Some(button) = item.button(mtm) {
-            button.setToolTip(Some(&NSString::from_str(
-                IconState::Idle { model_warm: false }.label(),
-            )));
+            let idle = IconState::Idle { model_warm: false };
+            paint(&button, idle, false, false, is_dark(&button));
+            button.setTitle(&NSString::from_str(""));
+            button.setAlphaValue(0.4);
+            button.setToolTip(Some(&NSString::from_str(idle.label())));
+            button.setAccessibilityLabel(Some(&NSString::from_str(idle.label())));
             // Left-click toggles the popover; right-click pops the
             // fallback menu. The menu is no longer the button's menu, so
             // a plain click reaches the action instead of opening it.
@@ -448,5 +608,77 @@ mod macos_impl {
             menu,
             mtm,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DICTATE: IconState = IconState::ListeningDictate;
+    const COMMAND: IconState = IconState::ListeningCommand;
+    const IDLE: IconState = IconState::Idle { model_warm: true };
+
+    #[test]
+    fn each_state_has_its_symbol() {
+        assert_eq!(glyph_symbol(IDLE), "waveform");
+        assert_eq!(glyph_symbol(DICTATE), "waveform.circle.fill");
+        assert_eq!(glyph_symbol(COMMAND), "command.circle.fill");
+        assert_eq!(glyph_symbol(IconState::Loading), "waveform");
+        assert_eq!(glyph_symbol(IconState::Error), "waveform");
+    }
+
+    /// Only the two listening states carry a colour; the rest are templates.
+    #[test]
+    fn only_listening_states_are_tinted() {
+        assert_eq!(glyph_tint(DICTATE), Some(Tint::Dictate));
+        assert_eq!(glyph_tint(COMMAND), Some(Tint::Command));
+        assert_eq!(glyph_tint(IDLE), None);
+        assert_eq!(glyph_tint(IconState::Loading), None);
+        assert_eq!(glyph_tint(IconState::Error), None);
+    }
+
+    #[test]
+    fn lock_sits_left_of_the_warning() {
+        assert_eq!(badges(false, false), Vec::<Badge>::new());
+        assert_eq!(badges(true, false), vec![Badge::Warning]);
+        assert_eq!(badges(false, true), vec![Badge::Lock]);
+        assert_eq!(badges(true, true), vec![Badge::Lock, Badge::Warning]);
+        assert_eq!(badge_symbol(Badge::Lock), "lock.fill");
+        assert_eq!(
+            badge_symbol(Badge::Warning),
+            "exclamationmark.triangle.fill"
+        );
+    }
+
+    #[test]
+    fn accent_and_badge_colours_match_the_spec() {
+        assert_eq!(tint_hex(Tint::Dictate, false), 0x09_5a_d7);
+        assert_eq!(tint_hex(Tint::Dictate, true), 0x7f_af_fa);
+        assert_eq!(tint_hex(Tint::Command, false), 0x86_5c_0e);
+        assert_eq!(tint_hex(Tint::Command, true), 0xe8_a0_1c);
+        assert_eq!(badge_hex(Badge::Lock, false), 0x1f_22_25);
+        assert_eq!(badge_hex(Badge::Warning, true), 0xe0_a2_3c);
+    }
+
+    #[test]
+    fn labels_carry_the_badge_suffixes() {
+        assert_eq!(accessibility_label(IDLE, false, false), "Jisuno, idle");
+        assert_eq!(
+            accessibility_label(IDLE, false, true),
+            "Jisuno, idle, secure input on"
+        );
+        assert_eq!(
+            accessibility_label(DICTATE, false, true),
+            "Jisuno, dictating, secure input on"
+        );
+        assert_eq!(
+            accessibility_label(IconState::Error, true, true),
+            "Jisuno, needs attention, secure input on"
+        );
+        assert_eq!(
+            accessibility_label(IDLE, true, false),
+            "Jisuno, idle, needs attention"
+        );
     }
 }
