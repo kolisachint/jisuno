@@ -73,6 +73,16 @@ The fake helper backend (no model; text is the sample count) serves the lifecycl
 
 Release builds have none of these. Do not add them to `bundle.sh`.
 
+Developer variables, not in the user guide:
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `JISUNO_PROFILE=1` | `jisuno-asr` (`parakeet.rs`) | Per-stage decode timings on stderr. |
+| `JISUNO_FAKE_WORKER=1` | `jisuno-asr` worker (`dev` feature) | Fake helper backend. |
+| `JISUNO_DEBUG_WAV`, `JISUNO_DEBUG_HOLD_MS`, `JISUNO_DEBUG_OPEN` | `jisuno app` (`dev` feature) | Same as the three debug flags. |
+| `JISUNO_FIXTURES` | ignored tests in `jisuno-asr` and `jisuno-bench` | Fixture folder. Default `/tmp/fixtures`. |
+| `JISUNO_GALLERY_VIEW`, `JISUNO_GALLERY_PANE`, `JISUNO_GALLERY_DARK` | `windows_gallery` example | Which window, which pane, dark palette. |
+
 ## Bundle the app
 
 `packaging/bundle.sh` builds `jisuno` (feature `app`) and `jisuno-bench` for each target, combines them
