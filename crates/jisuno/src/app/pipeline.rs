@@ -656,6 +656,7 @@ impl AppState {
     /// playback runs on its own thread.
     pub(crate) fn play_tone(&self, tone: Tone) {
         if self.settings.sounds {
+            self.log(&format!("tone: {}", tone.log_name()));
             tones::play(tone);
         }
     }

@@ -12,6 +12,12 @@ pub const TONE_MS: u64 = 60;
 const PEAK: f32 = 0.125;
 const FADE_IN_MS: f32 = 5.0;
 const FADE_OUT_MS: f32 = 20.0;
+/// Playback budget past the tone length before giving up on the callback.
+#[cfg(feature = "mic")]
+const START_TIMEOUT_MS: u64 = 500;
+/// Device latency allowance after the callback has consumed the buffer.
+#[cfg(feature = "mic")]
+const DEVICE_TAIL_MS: u64 = 50;
 
 /// One cue. Frequencies are the v2/v3 prototype values (`app-ui.md` §3.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +37,15 @@ impl Tone {
             Self::StopDictate => 1320.0,
             Self::StopCommand => 990.0,
             Self::Cancel => 300.0,
+        }
+    }
+
+    /// Short name for the log line (`tone: start|stop|cancel`).
+    pub fn log_name(self) -> &'static str {
+        match self {
+            Self::StartDictate | Self::StartCommand => "start",
+            Self::StopDictate | Self::StopCommand => "stop",
+            Self::Cancel => "cancel",
         }
     }
 }
@@ -86,7 +101,9 @@ fn play_now(tone: Tone) -> anyhow::Result<()> {
     use anyhow::Context;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::SampleFormat;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     let device = cpal::default_host()
         .default_output_device()
@@ -99,35 +116,48 @@ fn play_now(tone: Tone) -> anyhow::Result<()> {
     let format = config.sample_format();
     let stream_config: cpal::StreamConfig = config.into();
 
+    let done = Arc::new(AtomicBool::new(false));
     let stream = match format {
-        SampleFormat::F32 => output::<f32>(&device, &stream_config, channels, samples)?,
-        SampleFormat::I16 => output::<i16>(&device, &stream_config, channels, samples)?,
-        SampleFormat::U16 => output::<u16>(&device, &stream_config, channels, samples)?,
+        SampleFormat::F32 => output::<f32>(&device, &stream_config, channels, samples, &done)?,
+        SampleFormat::I16 => output::<i16>(&device, &stream_config, channels, samples, &done)?,
+        SampleFormat::U16 => output::<u16>(&device, &stream_config, channels, samples, &done)?,
         other => anyhow::bail!("unsupported output sample format: {other:?}"),
     };
     stream.play().context("failed to start output stream")?;
-    // The stream plays the buffer once and then writes silence; keep it
-    // alive for the tone plus a small tail, then release the device.
-    std::thread::sleep(Duration::from_millis(TONE_MS + 20));
+    // Hold the stream until the callback has consumed the whole buffer (the
+    // device may start late), then a short tail for the hardware queue.
+    // Dropping earlier would cut the tone off silently.
+    let deadline = Instant::now() + Duration::from_millis(TONE_MS + START_TIMEOUT_MS);
+    while !done.load(Ordering::Acquire) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if !done.load(Ordering::Acquire) {
+        anyhow::bail!("output stream did not play the tone");
+    }
+    std::thread::sleep(Duration::from_millis(DEVICE_TAIL_MS));
     drop(stream);
     Ok(())
 }
 
 /// Output stream that plays `samples` once on every channel, then silence.
+/// `done` is set once the callback has handed out the last sample.
 #[cfg(feature = "mic")]
 fn output<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
     samples: Vec<f32>,
+    done: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<cpal::Stream>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
     use anyhow::Context;
     use cpal::traits::DeviceTrait;
+    use std::sync::atomic::Ordering;
 
     let mut pos = 0usize;
+    let done = std::sync::Arc::clone(done);
     device
         .build_output_stream(
             config,
@@ -138,6 +168,9 @@ where
                     for s in frame.iter_mut() {
                         *s = T::from_sample(v);
                     }
+                }
+                if pos >= samples.len() {
+                    done.store(true, Ordering::Release);
                 }
             },
             |e| eprintln!("[tone] stream error: {e}"),
@@ -152,6 +185,15 @@ mod tests {
 
     fn peak(samples: &[f32]) -> f32 {
         samples.iter().fold(0.0_f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn log_names_are_start_stop_cancel() {
+        assert_eq!(Tone::StartDictate.log_name(), "start");
+        assert_eq!(Tone::StartCommand.log_name(), "start");
+        assert_eq!(Tone::StopDictate.log_name(), "stop");
+        assert_eq!(Tone::StopCommand.log_name(), "stop");
+        assert_eq!(Tone::Cancel.log_name(), "cancel");
     }
 
     #[test]
