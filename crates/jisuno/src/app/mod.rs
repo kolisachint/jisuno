@@ -32,7 +32,7 @@ pub(crate) mod windows;
 pub(crate) mod worker;
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{
@@ -545,6 +545,7 @@ fn capture_chords(configured: &[Key]) -> Vec<Key> {
     use jisuno_logic::keybindings::Modifier;
     use jisuno_platform::keys::keycode_name;
     let mut out: Vec<Key> = configured.to_vec();
+    let mut seen: HashSet<Key> = configured.iter().cloned().collect();
     let combos: [Vec<Modifier>; 16] = [
         vec![],
         vec![Modifier::Ctrl],
@@ -577,7 +578,7 @@ fn capture_chords(configured: &[Key]) -> Vec<Key> {
                 modifiers: modifiers.clone(),
                 key: name.to_string(),
             };
-            if !out.contains(&key) {
+            if seen.insert(key.clone()) {
                 out.push(key);
             }
         }
