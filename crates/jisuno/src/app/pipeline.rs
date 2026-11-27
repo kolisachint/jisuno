@@ -26,6 +26,38 @@ use super::model::ModelState;
 use super::state::{AppState, ListeningUi, PendingTranscribe, RecentEntry};
 use super::worker::{AudioSource, ToWorker};
 
+/// Where a machine effect goes when there is no `&mut App`.
+/// `CloseMic`/`CancelModelLoad` run inline (no `App` needed); `OpenMic`
+/// stays suppressed (a headless reopen would transcribe without a HUD);
+/// `HideHud` is deferred to the next tick. Everything else has no headless
+/// path and is logged loudly — never silently dropped. The `match` is
+/// exhaustive over [`Effect`], so a new variant fails to compile until it
+/// is routed here.
+pub(crate) enum NoCxRoute {
+    CloseMic { discard: bool },
+    CancelLoad,
+    ReopenSuppressed,
+    HideDeferred,
+    Dropped,
+}
+
+/// Route one machine effect for the headless contexts; see [`NoCxRoute`].
+pub(crate) fn no_cx_route(effect: &Effect) -> NoCxRoute {
+    match effect {
+        Effect::CloseMic { discard } => NoCxRoute::CloseMic { discard: *discard },
+        Effect::CancelModelLoad => NoCxRoute::CancelLoad,
+        Effect::OpenMic => NoCxRoute::ReopenSuppressed,
+        Effect::HideHud => NoCxRoute::HideDeferred,
+        Effect::StartModelLoad
+        | Effect::ShowHud(_)
+        | Effect::Transcribe { .. }
+        | Effect::RunCommand
+        | Effect::ShowConfirm { .. }
+        | Effect::PassThrough
+        | Effect::Countdown { .. } => NoCxRoute::Dropped,
+    }
+}
+
 impl AppState {
     pub(crate) fn tick(&mut self, cx: &mut App) -> bool {
         if self.quit_requested {
@@ -59,7 +91,7 @@ impl AppState {
             self.log(&format!("hold tick -> {} effect(s)", effects.len()));
         }
         self.exec_effects(cx, effects);
-        self.drain_mic();
+        self.drain_mic(cx);
         self.poll_partials();
         self.drain_watch(cx);
         self.poll_secure(cx);
@@ -334,6 +366,9 @@ impl AppState {
     }
 
     pub(crate) fn close_mic(&mut self, discard: bool) {
+        // NB: the raw drain below (no VAD, no machine input) — never the
+        // effect-executing `drain_mic`, which would re-enter through
+        // CloseMic while an outer chunk loop is still iterating.
         if discard {
             // Tap / Esc / other-key: drop the utterance without decoding.
             if let Some(stream) = self.stream.take() {
@@ -346,7 +381,7 @@ impl AppState {
             self.debug_pcm = None;
             self.debug_next_at = None;
         }
-        self.drain_mic();
+        let _ = self.drain_mic_raw();
         if !discard {
             self.flush_stream_tail();
         }
@@ -416,7 +451,11 @@ impl AppState {
         }
     }
 
-    pub(crate) fn drain_mic(&mut self) {
+    /// Channel + debug-WAV audio into the buffer/stream, without VAD or
+    /// machine input: re-entrancy-safe, so `close_mic` can call it while a
+    /// `drain_mic` chunk loop is on the stack. Returns true when the
+    /// hands-free VAD judged the line silent (the caller feeds the machine).
+    pub(crate) fn drain_mic_raw(&mut self) -> bool {
         self.push_debug_chunks(false);
         let mut chunks = Vec::new();
         if let Some(capture) = &self.capture {
@@ -424,8 +463,9 @@ impl AppState {
                 chunks.push(chunk);
             }
         }
-        for chunk in chunks {
-            let rms = jisuno_logic::vad::rms(&chunk);
+        let mut silence = false;
+        for chunk in &chunks {
+            let rms = jisuno_logic::vad::rms(chunk);
             if rms > self.level {
                 self.level = rms;
             }
@@ -433,12 +473,12 @@ impl AppState {
                 self.heard_speech = true;
             }
             if let Some(vad) = &mut self.handsfree_vad {
-                if vad.push(&chunk) == jisuno_logic::vad::VadEvent::SilenceTimeout {
+                if vad.push(chunk) == jisuno_logic::vad::VadEvent::SilenceTimeout {
                     self.handsfree_vad = None;
-                    self.input_no_cx(Input::SilenceDetected, "hands-free silence");
+                    silence = true;
                 }
             }
-            self.buffer.extend_from_slice(&chunk);
+            self.buffer.extend_from_slice(chunk);
             // Stream to the helper without blocking: the worker queues it
             // for the child. A failed send means the worker thread is
             // gone; the crash surfaces through its next reply. The
@@ -447,14 +487,34 @@ impl AppState {
             if self.stream_begun {
                 if let Some(stream) = self.stream {
                     let pcm16 = match self.resampler.as_mut() {
-                        Some(r) => r.push(&chunk),
-                        None => jisuno_audio::audio::resample_to_16k(&chunk, self.mic_rate),
+                        Some(r) => r.push(chunk),
+                        None => jisuno_audio::audio::resample_to_16k(chunk, self.mic_rate),
                     };
                     if !pcm16.is_empty() {
                         let _ = self.to_worker.send(ToWorker::Push { stream, pcm: pcm16 });
                     }
                 }
             }
+        }
+        silence
+    }
+
+    /// Mic drain on the tick: audio first (re-entrancy-safe), then any
+    /// hands-free silence stop through the machine with effects executed
+    /// here via `exec_effects` — no effect is dropped, so the hands-free
+    /// `Transcribe` always runs.
+    pub(crate) fn drain_mic(&mut self, cx: &mut App) {
+        if self.drain_mic_raw() {
+            let effects = self
+                .machine
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .handle(Input::SilenceDetected, self.now_ms());
+            self.log(&format!(
+                "hold hands-free silence -> {} effect(s)",
+                effects.len()
+            ));
+            self.exec_effects(cx, effects);
         }
     }
 
@@ -549,10 +609,12 @@ impl AppState {
         }
     }
 
-    /// Machine input from a context without `&mut App` (mic drain,
-    /// secure-input poll): execute App-free effects inline. HideHud cannot
-    /// close the window without `App`, so it marks the HUD for closing on
-    /// the next tick instead.
+    /// Where a machine effect goes when there is no `&mut App` (secure-input
+    /// poll, mic-open failures): the cx-free effects run inline, the rest
+    /// are routed by [`no_cx_route`] so none is silently dropped. Silence
+    /// stops no longer come through here — `drain_mic` executes them with
+    /// effects. HideHud cannot close the window without `App`, so it marks
+    /// the HUD for closing on the next tick instead.
     pub(crate) fn input_no_cx(&mut self, ev: Input, tag: &str) {
         let effects = self
             .machine
@@ -561,11 +623,11 @@ impl AppState {
             .handle(ev, self.now_ms());
         self.log(&format!("hold {tag} -> {} effect(s)", effects.len()));
         for effect in effects {
-            match effect {
-                Effect::CloseMic { discard } => self.close_mic(discard),
-                Effect::CancelModelLoad => self.cancel_load(),
-                Effect::OpenMic => self.open_mic_no_cx(),
-                Effect::HideHud => {
+            match no_cx_route(&effect) {
+                NoCxRoute::CloseMic { discard } => self.close_mic(discard),
+                NoCxRoute::CancelLoad => self.cancel_load(),
+                NoCxRoute::ReopenSuppressed => self.open_mic_no_cx(),
+                NoCxRoute::HideDeferred => {
                     self.listening = None;
                     self.confirming = None;
                     self.pending_plan = None;
@@ -574,7 +636,9 @@ impl AppState {
                         hud.dismiss_at = Some(Instant::now());
                     }
                 }
-                _ => self.log(&format!("hold {tag}: deferred effect {effect:?} to tick")),
+                NoCxRoute::Dropped => {
+                    self.log(&format!("hold {tag}: {effect:?} has no headless path"));
+                }
             }
         }
     }
@@ -838,4 +902,63 @@ pub(crate) fn find_input_device(wanted: &str) -> Option<String> {
 pub(crate) fn is_bluetooth_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("bluetooth") || lower.contains("airpods") || lower.contains("beats")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::no_cx_route;
+    use super::NoCxRoute;
+    use jisuno_logic::hold::HudState as LogicHud;
+    use jisuno_logic::hold::{Effect, Mode};
+
+    fn is_dropped(effect: &Effect) -> bool {
+        matches!(no_cx_route(effect), NoCxRoute::Dropped)
+    }
+
+    /// Every [`Effect`] variant has an explicit headless route: cx-free
+    /// effects run inline, the rest are loudly dropped. If a variant is
+    /// added to the machine, this fails to compile until it is routed.
+    #[test]
+    fn every_effect_has_a_headless_route() {
+        assert!(matches!(
+            no_cx_route(&Effect::CloseMic { discard: true }),
+            NoCxRoute::CloseMic { discard: true }
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::CloseMic { discard: false }),
+            NoCxRoute::CloseMic { discard: false }
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::CancelModelLoad),
+            NoCxRoute::CancelLoad
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::OpenMic),
+            NoCxRoute::ReopenSuppressed
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::HideHud),
+            NoCxRoute::HideDeferred
+        ));
+        for effect in [
+            Effect::StartModelLoad,
+            Effect::ShowHud(LogicHud::Listening(Mode::Dictate)),
+            Effect::ShowHud(LogicHud::HandsFree),
+            Effect::Transcribe {
+                mode: Mode::Dictate,
+                id: 0,
+            },
+            Effect::RunCommand,
+            Effect::ShowConfirm {
+                label: String::new(),
+            },
+            Effect::PassThrough,
+            Effect::Countdown { secs_left: 3 },
+        ] {
+            assert!(
+                is_dropped(&effect),
+                "{effect:?} must be an explicit Dropped"
+            );
+        }
+    }
 }
