@@ -534,7 +534,7 @@ pub fn performance_rows(measured: &[Option<String>; 12]) -> Vec<PerfRow> {
         ("Key-up → text, cold", "no target set"),
         ("Warm decode, 2 s / 15 s clips", "no target set"),
         ("Cold load", "≤ 1.5 s"),
-        ("Memory, warm", "< 1 GB"),
+        ("Memory, warm", "< 1.2 GB"),
         ("Memory, unloaded", "< 60 MB"),
         ("Idle CPU", "no target set"),
         ("WER, LibriSpeech test-clean / own set", "no target set"),
@@ -966,7 +966,7 @@ mod tests {
         assert_eq!(perf.len(), 12);
         assert_eq!(perf[0].target, "≤ 150 ms");
         assert_eq!(perf[7].target, "≤ 1.5 s");
-        assert_eq!(perf[8].target, "< 1 GB");
+        assert_eq!(perf[8].target, "< 1.2 GB");
         assert_eq!(perf[9].target, "< 60 MB");
         assert!(perf
             .iter()

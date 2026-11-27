@@ -314,6 +314,7 @@ pub fn run(opts: AppOptions) {
         model: model_id(&settings_holder.current),
         state: "unloaded".to_string(),
         rss_mb: None,
+        busy: false,
     }));
     let socket_path = match socket::start(socket_snapshot.clone(), hook_tx.clone()) {
         Ok(path) => Some(path),

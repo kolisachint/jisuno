@@ -97,10 +97,13 @@ impl AppState {
 
     pub(crate) fn refresh_socket_snapshot(&mut self) {
         let state = state_name(&self.model_state).to_string();
+        let busy = !self.can_unload();
         if let Ok(mut snapshot) = self.socket_snapshot.lock() {
-            if snapshot.state != state || snapshot.model != self.model_name {
+            if snapshot.state != state || snapshot.model != self.model_name || snapshot.busy != busy
+            {
                 snapshot.state = state;
                 snapshot.model.clone_from(&self.model_name);
+                snapshot.busy = busy;
             }
         }
     }

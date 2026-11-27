@@ -244,7 +244,7 @@ Warning text, Bluetooth (Audio pane), new copy: `Bluetooth input: audio is compr
 | Key-up → text, cold | no target set | not measured |
 | Warm decode, 2 s and 15 s clips | no target set | not measured |
 | Cold load | ≤ 1.5 s | not measured |
-| Memory, warm | < 1 GB | not measured |
+| Memory, warm | < 1.2 GB | not measured |
 | Memory, unloaded | < 60 MB | not measured |
 | Idle CPU | no target set | not measured |
 | WER, LibriSpeech test-clean / owner set | no target set | not measured |

@@ -32,6 +32,8 @@ pub(crate) struct SocketSnapshot {
     pub(crate) model: String,
     pub(crate) state: String,
     pub(crate) rss_mb: Option<u64>,
+    /// Recording or transcribing: unload is refused (the hold would lose its audio).
+    pub(crate) busy: bool,
 }
 
 /// `warm` / `loading` / `unloaded` for the socket and the CLI.
@@ -78,6 +80,7 @@ fn answer(request: &Request, snapshot: &SocketSnapshot) -> (Response, Option<Hoo
                 (Response::err("model not installed"), None)
             }
         }
+        Request::Unload if snapshot.busy => (Response::err("busy"), None),
         Request::Unload => (Response::ok(), Some(HookRequest::UnloadModel)),
     }
 }

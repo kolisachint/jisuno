@@ -149,7 +149,7 @@ LibriSpeech test-clean plus an owner-recorded set. Shared CI runners record numb
 reference Mac is where numbers are signed off.
 
 Reference machine: MacBook Air M1 (MacBookAir10,1), 4 performance + 4 efficiency cores,
-**8 GB RAM**, macOS 27.3. A warm model at ~0.9 GB is over 10% of that RAM, which is why
+**8 GB RAM**, macOS 27.3. A warm model at ~1.1 GB is over 10% of that RAM, which is why
 on-demand loading and idle unload are the default. The 150 ms target must hold on this machine.
 
 Targets (round 6), on the reference Mac:
@@ -157,7 +157,7 @@ Targets (round 6), on the reference Mac:
 | Metric | Target |
 |--|--|
 | Cold load | ≤ 1.5 s |
-| Memory, warm | < 1 GB |
+| Memory, warm | < 1.2 GB (helper process; round 9) |
 | Memory, unloaded | < 60 MB |
 
 ## 7. Model lifecycle
@@ -294,6 +294,20 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
     (`crates/jisuno-logic/defaults/theme.json`). Every key is optional; a missing key uses its
     default.
 11. `docs/user/src/config-files.md` lists the `theme.json` keys.
+
+**2026-11-26, round 9**
+1. The model runs in a helper process (`jisuno asr-worker`) started on load and stopped on
+   unload, so unloading returns all model memory to the system. App memory with the model
+   unloaded is measured at 32-39 MB.
+2. Warm memory target is raised from < 1 GB to < 1.2 GB for v1. The Parakeet v3 int8 encoder
+   alone needs ~1.06 GB in ONNX Runtime; every runtime setting was measured
+   (`crates/jisuno-asr/PERF.md`, "Memory"). Idle unload (default 10 min) frees all of it.
+3. Streaming: audio is split at pauses during the hold and each segment is decoded in the
+   helper as its own utterance; key-up decodes only the tail. Measured key-up to text 21-22 ms
+   with natural pauses; a long burst with no pause decodes in full (~160 ms for 5.8 s).
+4. Debug hooks (`--debug-wav`, `--debug-hold-ms`, `--debug-open`, fake helper) exist only with
+   the `dev` cargo feature; release builds never include them.
+5. Logs never contain dictated, partial, or command text unless `JISUNO_LOG_TEXT=1`.
 
 ## 11. Open questions
 

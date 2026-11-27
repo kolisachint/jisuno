@@ -1296,7 +1296,7 @@ impl AppState {
             .map(|v| format!("{:.2} s · {}", v / 1000.0, pass_fail(v, 1500.0)));
         measured[8] = report.rss_warm_bytes.map(|bytes| {
             let gb = bytes as f64 / 1e9;
-            format!("{gb:.2} GB · {}", pass_fail(bytes as f64, 1e9))
+            format!("{gb:.2} GB · {}", pass_fail(bytes as f64, 1.2e9))
         });
         measured[9] = report.rss_unloaded_bytes.map(|bytes| {
             let mb = bytes as f64 / 1e6;
