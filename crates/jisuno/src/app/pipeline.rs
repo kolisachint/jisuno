@@ -255,7 +255,7 @@ impl AppState {
                         }
                         self.input(cx, Input::Cancel, "cancel (esc)");
                     } else if self.popover.is_some() {
-                        self.close_popover("esc");
+                        self.close_popover(cx, "esc");
                     }
                 }
                 KeyEvent::Return => {

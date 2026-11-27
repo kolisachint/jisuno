@@ -11,9 +11,12 @@
 //! instance): every control writes its file atomically and hot reload
 //! applies it; the tick refreshes the model from live state.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write as _;
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -48,6 +51,11 @@ use super::state::AppState;
 const TOAST_MS: u64 = 1500;
 /// Grace before an un-clicked popover may auto-close (it is never active).
 const POPOVER_GRACE_MS: u64 = 1000;
+/// How long the Settings audio picker reuses one device enumeration.
+const DEVICE_CACHE_MS: u64 = 5000;
+/// Prefix of a Recent entry that is a voice command (not dictated text).
+/// Written when the entry is pushed; read back here for the popover row.
+pub(crate) const COMMAND_RECENT_PREFIX: &str = "⌘ ";
 
 /// The live popover window and the model it last rendered.
 pub(crate) struct PopoverHandle {
@@ -56,6 +64,8 @@ pub(crate) struct PopoverHandle {
     pub(crate) shown_at: Instant,
     pub(crate) was_active: bool,
     pub(crate) last_model: PopoverModel,
+    /// [`AppState::popover_fingerprint`] at the last model rebuild.
+    pub(crate) fingerprint: u64,
 }
 
 /// The GPUI view: a rendered [`PopoverModel`] plus the intent callback.
@@ -94,7 +104,7 @@ impl AppState {
             .map(|entry| {
                 let (command, text) = entry
                     .text
-                    .strip_prefix("⌘ ")
+                    .strip_prefix(COMMAND_RECENT_PREFIX)
                     .map(|rest| (true, rest.to_string()))
                     .unwrap_or((false, entry.text.clone()));
                 RecentItem {
@@ -134,6 +144,46 @@ impl AppState {
         }
     }
 
+    /// Digest of every input [`Self::popover_model`] and [`Self::ui_theme`]
+    /// read. The tick compares it to the last rebuild and skips the rebuild
+    /// when nothing changed.
+    pub(crate) fn popover_fingerprint(&self, cx: &App) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.model_name.hash(&mut hasher);
+        self.download
+            .as_ref()
+            .map(|active| active.percent)
+            .hash(&mut hasher);
+        std::mem::discriminant(&self.model_state).hash(&mut hasher);
+        self.model_present.hash(&mut hasher);
+        self.settings.unload_after_idle_min.hash(&mut hasher);
+        self.perm_granted.hash(&mut hasher);
+        self.secure_now.hash(&mut hasher);
+        self.announced_secure.last().hash(&mut hasher);
+        for entry in self.recent.iter().rev().take(5) {
+            entry.text.hash(&mut hasher);
+            entry.tag.hash(&mut hasher);
+        }
+        self.popover_toast
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < Duration::from_millis(TOAST_MS))
+            .map(|(toast, _)| toast.clone())
+            .hash(&mut hasher);
+        let theme = self.theme_good.current();
+        theme.name.hash(&mut hasher);
+        theme.appearance.hash(&mut hasher);
+        theme.accent_dictate.hash(&mut hasher);
+        theme.accent_command.hash(&mut hasher);
+        theme.hud_style.hash(&mut hasher);
+        theme.show_latency.hash(&mut hasher);
+        matches!(
+            cx.window_appearance(),
+            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
+        )
+        .hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Current theme: `theme.json`, following the system unless `fixed`.
     pub(crate) fn ui_theme(&self, cx: &App) -> Theme {
         let current = self.theme_good.current();
@@ -159,16 +209,21 @@ impl AppState {
 
     /// Toggle the popover: close it if open, else open it under the item.
     pub(crate) fn toggle_popover(&mut self, cx: &mut App) {
-        if self.popover.take().is_some() {
-            self.log("popover closed (toggle)");
+        if self.popover.is_some() {
+            self.close_popover(cx, "toggle");
             return;
         }
         self.open_popover(cx);
     }
 
-    /// Close the popover if it is open (Esc path, focus loss).
-    pub(crate) fn close_popover(&mut self, why: &str) {
-        if self.popover.take().is_some() {
+    /// Close the popover if it is open (Esc path, focus loss). Dropping
+    /// the handle alone leaves the GPUI window alive (handles are plain
+    /// ids), so remove the window first or every cycle leaks a surface.
+    pub(crate) fn close_popover(&mut self, cx: &mut App, why: &str) {
+        if let Some(handle) = self.popover.take() {
+            let _ = handle.window.update(cx, |_, window, _| {
+                window.remove_window();
+            });
             self.log(&format!("popover closed ({why})"));
         }
     }
@@ -209,6 +264,7 @@ impl AppState {
         let model_open = model.clone();
         let theme_open = theme;
         let emit_open = emit.clone();
+        let fingerprint = self.popover_fingerprint(cx);
         match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -234,6 +290,7 @@ impl AppState {
                     shown_at: Instant::now(),
                     was_active: false,
                     last_model: model,
+                    fingerprint,
                 });
             }
             Err(e) => self.log(&format!("popover open failed: {e:#}")),
@@ -289,8 +346,7 @@ impl AppState {
         if self.popover.is_none() {
             return;
         }
-        let model = self.popover_model();
-        let theme = self.ui_theme(cx);
+        let fingerprint = self.popover_fingerprint(cx);
         let Some(handle) = self.popover.as_mut() else {
             return;
         };
@@ -303,22 +359,30 @@ impl AppState {
         } else if handle.was_active
             || handle.shown_at.elapsed() > Duration::from_millis(POPOVER_GRACE_MS)
         {
-            self.popover = None;
-            self.log("popover closed (focus lost)");
+            self.close_popover(cx, "focus lost");
             return;
         }
-        if model != handle.last_model {
-            handle.last_model = model.clone();
-            handle.view.update(cx, |view, cx| {
-                view.model = model;
-                view.theme = theme;
-                cx.notify();
-            });
+        if fingerprint != handle.fingerprint {
+            handle.fingerprint = fingerprint;
+            let model = self.popover_model();
+            let theme = self.ui_theme(cx);
+            let Some(handle) = self.popover.as_mut() else {
+                return;
+            };
+            if model != handle.last_model {
+                handle.last_model = model.clone();
+                handle.view.update(cx, |view, cx| {
+                    view.model = model;
+                    view.theme = theme;
+                    cx.notify();
+                });
+            }
         }
     }
 }
 
-/// Copy text to the system clipboard via `pbcopy` (no lingering state).
+/// Copy text to the system clipboard via `pbcopy` (no lingering state). The
+/// child is reaped on a short-lived thread so it never lingers as a zombie.
 pub(crate) fn copy_to_clipboard(text: &str) {
     let mut child = match std::process::Command::new("pbcopy")
         .stdin(Stdio::piped())
@@ -333,6 +397,9 @@ pub(crate) fn copy_to_clipboard(text: &str) {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
     }
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 /// Window height for the model: base chrome plus one row per Recent entry.
@@ -733,7 +800,10 @@ impl AppState {
                 return;
             }
         };
-        set_json_key(&mut doc, key, value);
+        if let Err(message) = set_json_key(&mut doc, key, value) {
+            self.note_config_error(cx, &format!("{file}: {message} · using last good config"));
+            return;
+        }
         let pretty = serde_json::to_string_pretty(&doc)
             .map(|text| format!("{text}\n"))
             .unwrap_or(text);
@@ -926,6 +996,21 @@ fn keybindings_file_text(bindings: &Keybindings) -> String {
 
 /// Installed input devices, system input first (Audio pane picker).
 fn audio_input_devices() -> Vec<String> {
+    // The Settings tick rebuilds the model every 20 ms; enumeration is slow,
+    // so reuse one result for DEVICE_CACHE_MS.
+    static CACHE: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, devices)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_millis(DEVICE_CACHE_MS) {
+            return devices.clone();
+        }
+    }
+    let devices = enumerate_audio_inputs();
+    *cache = Some((Instant::now(), devices.clone()));
+    devices
+}
+
+fn enumerate_audio_inputs() -> Vec<String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let mut devices = vec!["system".to_string()];
     if let Ok(list) = cpal::default_host().input_devices() {
@@ -1053,7 +1138,7 @@ impl AppState {
         }
     }
 
-    fn handle_welcome_intent(&mut self, _cx: &mut App, intent: WelcomeIntent) {
+    fn handle_welcome_intent(&mut self, cx: &mut App, intent: WelcomeIntent) {
         match intent {
             WelcomeIntent::OpenPermissionPane(kind) => {
                 let platform = match kind {
@@ -1067,7 +1152,13 @@ impl AppState {
             }
             WelcomeIntent::DownloadModel => self.start_download(self.model_name.clone()),
             WelcomeIntent::Start => {
-                self.welcome_win = None;
+                // Remove the window, not just the handle: a dropped
+                // handle leaks the live window (see close_popover).
+                if let Some(handle) = self.welcome_win.take() {
+                    let _ = handle.window.update(cx, |_, window, _| {
+                        window.remove_window();
+                    });
+                }
                 self.log("welcome dismissed (Start)");
             }
         }
@@ -1312,20 +1403,63 @@ impl AppState {
 }
 
 /// Set a (possibly dotted, e.g. `hud.show_latency`) key on a JSON document.
-fn set_json_key(doc: &mut serde_json::Value, key: &str, value: serde_json::Value) {
-    let mut parts = key.split('.');
-    let Some(first) = parts.next() else {
-        return;
-    };
+/// Missing or `null` parents are created as objects; a parent that is any
+/// other non-object value is an error, and nothing is written.
+fn set_json_key(
+    doc: &mut serde_json::Value,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
     let mut node = doc;
-    let mut current = first;
-    for part in parts {
-        if node.get(current).is_none() {
-            node[current] = serde_json::json!({});
+    let mut parts = key.split('.').peekable();
+    while let Some(part) = parts.next() {
+        let object = node
+            .as_object_mut()
+            .ok_or_else(|| format!("`{key}`: `{part}` is not inside a JSON object"))?;
+        if parts.peek().is_none() {
+            object.insert(part.to_string(), value);
+            return Ok(());
         }
-        // SAFETY: just ensured present.
-        node = node.get_mut(current).expect("settings key parent");
-        current = part;
+        node = object.entry(part).or_insert_with(|| serde_json::json!({}));
+        if node.is_null() {
+            *node = serde_json::json!({});
+        }
     }
-    node[current] = value;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set_json_key;
+    use serde_json::json;
+
+    #[test]
+    fn sets_top_and_dotted_keys_creating_parents() {
+        let mut doc = json!({ "a": 1 });
+        set_json_key(&mut doc, "a", json!(2)).unwrap();
+        set_json_key(&mut doc, "hud.show_latency", json!(true)).unwrap();
+        set_json_key(&mut doc, "hud.style", json!("x")).unwrap();
+        assert_eq!(
+            doc,
+            json!({ "a": 2, "hud": { "show_latency": true, "style": "x" } })
+        );
+    }
+
+    #[test]
+    fn null_parent_becomes_object() {
+        let mut doc = json!({ "hud": null });
+        set_json_key(&mut doc, "hud.style", json!("x")).unwrap();
+        assert_eq!(doc, json!({ "hud": { "style": "x" } }));
+    }
+
+    #[test]
+    fn non_object_roots_and_parents_are_errors() {
+        let mut root = json!([1, 2]);
+        assert!(set_json_key(&mut root, "a", json!(1)).is_err());
+        assert_eq!(root, json!([1, 2]));
+
+        let mut parent = json!({ "hud": 5 });
+        assert!(set_json_key(&mut parent, "hud.style", json!("x")).is_err());
+        assert_eq!(parent, json!({ "hud": 5 }));
+    }
 }

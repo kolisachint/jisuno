@@ -103,15 +103,19 @@ enum ModelsCommand {
 #[derive(Args, Clone, Debug)]
 #[cfg(all(feature = "app", target_os = "macos"))]
 struct AppArgs {
-    /// Substitute this WAV file for the microphone (hidden debug flag).
+    /// Substitute this WAV file for the microphone (hidden debug flag, `dev`
+    /// builds only).
+    #[cfg(feature = "dev")]
     #[arg(long, hide = true)]
     debug_wav: Option<PathBuf>,
     /// Simulate one internal dictate hold of this many ms (hidden debug
-    /// flag; bypasses the event tap).
+    /// flag, `dev` builds only; bypasses the event tap).
+    #[cfg(feature = "dev")]
     #[arg(long, hide = true)]
     debug_hold_ms: Option<u64>,
     /// Open a window right after launch for screenshots (hidden debug
-    /// flag): `popover`, `settings` or `welcome`.
+    /// flag, `dev` builds only): `popover`, `settings` or `welcome`.
+    #[cfg(feature = "dev")]
     #[arg(long, hide = true)]
     debug_open: Option<String>,
 }
@@ -193,6 +197,31 @@ enum ModelCommand {
 
 /// `jisuno model ...`: one socket round-trip. Exit 1 with
 /// `error: Jisuno is not running` when the app is down.
+/// Launch options for `jisuno app`. The hidden `--debug-*` flags exist only
+/// in `dev` builds; their env twins are read by `AppOptions::from_env`.
+#[cfg(all(feature = "app", target_os = "macos"))]
+fn app_options(args: AppArgs) -> crate::app::AppOptions {
+    #[cfg(feature = "dev")]
+    {
+        let mut opts = crate::app::AppOptions::from_env();
+        if args.debug_wav.is_some() {
+            opts.debug_wav = args.debug_wav;
+        }
+        if args.debug_hold_ms.is_some() {
+            opts.debug_hold_ms = args.debug_hold_ms;
+        }
+        if let Some(which) = args.debug_open.as_deref() {
+            opts.debug_open = crate::app::DebugOpen::parse(which);
+        }
+        opts
+    }
+    #[cfg(not(feature = "dev"))]
+    {
+        let _ = args;
+        crate::app::AppOptions::from_env()
+    }
+}
+
 fn run_model(args: ModelArgs) -> i32 {
     use crate::ipc::{self, ClientError, Request};
 
@@ -294,17 +323,7 @@ pub fn run() {
         }
         #[cfg(all(feature = "app", target_os = "macos"))]
         Some(Command::App(args)) => {
-            let mut opts = crate::app::AppOptions::from_env();
-            if args.debug_wav.is_some() {
-                opts.debug_wav = args.debug_wav;
-            }
-            if args.debug_hold_ms.is_some() {
-                opts.debug_hold_ms = args.debug_hold_ms;
-            }
-            if let Some(which) = args.debug_open.as_deref() {
-                opts.debug_open = crate::app::DebugOpen::parse(which);
-            }
-            crate::app::run(opts);
+            crate::app::run(app_options(args));
             Ok(())
         }
         None => {
