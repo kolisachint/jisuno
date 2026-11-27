@@ -179,7 +179,7 @@ impl AppState {
             },
         );
         let model_open = model.clone();
-        let theme_open = theme.clone();
+        let theme_open = theme;
         let emit_open = emit.clone();
         match cx.open_window(
             WindowOptions {
@@ -281,7 +281,7 @@ impl AppState {
         }
         if model != handle.last_model {
             handle.last_model = model.clone();
-            let _ = handle.view.update(cx, |view, cx| {
+            handle.view.update(cx, |view, cx| {
                 view.model = model;
                 view.theme = theme;
                 cx.notify();
