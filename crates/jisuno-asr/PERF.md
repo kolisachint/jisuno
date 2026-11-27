@@ -195,3 +195,39 @@ Bench: `cargo run --release -p jisuno-bench -- --fixtures-dir
 "0.2,1.0,8.0"`. Integration test:
 `cargo test --release -p jisuno-asr --test streaming -- --ignored`
 (skips without model/fixtures).
+
+## Experiment: helper process (kept: `worker/` in jisuno-asr)
+
+In-process `drop` of the sessions leaves ~650 MiB RSS (FINAL row above:
+647 MiB, ~233 MiB dirty in libmalloc/ORT globals) against the < 60 MB
+unloaded target — allocator memory the process cannot give back. Fix:
+run the model in a helper child (`AsrWorker` client +
+`run_worker_stdio` server in `crates/jisuno-asr/src/worker/`, framed
+stdin/stdout protocol, stderr for logs). UNLOAD makes the child exit 0
+and the OS reclaims everything. The app will spawn it later from a
+hidden `jisuno asr-worker` subcommand; lifecycle tests drive
+`examples/asr_worker.rs` (`--fake` = no-model backend).
+
+Measured release, same M1/8 GB machine, v3 model, 5 s fixture clip
+(`cargo test --release -p jisuno-asr --test worker -- --ignored
+--nocapture`, plus a `ps`-sampling driver for RSS):
+
+| metric | in-process | helper child | target | pass |
+|--|--|--|--|--|
+| RSS with model unloaded | 647 MiB (dirty ~233) | parent 11 MiB, fresh child 4 MiB, child gone after UNLOAD | < 60 MB | ✅ |
+| `finish()` 5 s (one PUSH + FINISH) | 390–392 ms | 370–375 ms (delta −15/−22 ms, run-to-run noise) | overhead < 5 ms | ✅ |
+| cold start | load 1287–1615 ms | spawn 1 ms + LOAD ~1260 ms (wall 1267–1530 ms) | ≈ in-process | ✅ |
+| UNLOAD latency | n/a (drop) | 40–57 ms, exit 0 | prompt | ✅ |
+| text parity | — | byte-identical on the 5 s clip (PARTIAL == FINISH too) | identical | ✅ |
+
+Child warm RSS: 1079 MiB loaded, 1116 MiB after one decode — same
+model cost, just in a disposable process. Parent (driver) RSS is 11 MiB
+before and after UNLOAD: the app process never maps the weights.
+`finish()` shows no systematic overhead (framing + two pipe hops for
+320 KB of f32 is sub-millisecond; the −20 ms delta is cache/scheduling
+noise across the two runs). No ORT/threading change: the child links
+the same sessions with the same baked-in config.
+
+Follow-up for the app wiring (not this change): spawn on first use,
+`load` on setup/install, `PARTIAL_REQ` on `--partial-ms`, `unload` on
+quit; treat `WorkerCrashed` as "re-spawn and reload".
