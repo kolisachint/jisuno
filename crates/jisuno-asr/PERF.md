@@ -270,3 +270,52 @@ mid-utterance tail (finish 44 ms ≈ 0.6 s of tail).
 Before → after: with-pauses key-up→text 360 ms (full-clip at key-up) →
 ~21 ms (tail only), −94 %. Without pauses it degrades to a full-clip
 tail decode (162 ms at 5.8 s) — the documented limit, not a regression.
+
+## Memory: helper steady state (2026-11-27, no change kept)
+
+Goal: helper warm steady-state `phys_footprint` under 1 GB (1024 MB)
+with decode no more than 10 % slower. **Not met.** Baseline is 1120 MB
+after decode, about 100 MB over. No candidate below moved it.
+
+Harness: `asr_worker` release build (`--features dev`), driven by a
+framed-protocol script: LOAD `parakeet-tdt-0.6b-v3-int8`, three
+TRANSCRIBE calls on a 5 s clip, `footprint <pid>` after LOAD, after
+the third decode, and 2 s later. Five repeats each, medians. Decode ms
+is the median of the three TRANSCRIBE replies. The bench's `warm decode
+5 s` is not a clean A/B on this machine: baseline ran 450 ms and
+candidate 2 ran 385 ms, back-to-back under load.
+
+| config | load MB | post-decode MB | idle-after-decode MB | decode 5 s ms |
+|--|--|--|--|--|
+| baseline (d3cc82e) | 1084 | 1120 | 1120 | 348 |
+| 1. `malloc_zone_pressure_relief` after FINISH/TRANSCRIBE/CANCEL | 1084 | 1120 | 1120 | 351 |
+| 2. decoder_joint prepacking off | 1082 | 1120 | 1120 | 374 (noisy) |
+
+Candidate 1 (libmalloc pressure relief after each reply) changed
+nothing: 0 MB at every point. The retained memory is live, not free
+allocator pages. Dropped without a commit.
+
+Candidate 2 (`session.disable_prepacking` on decoder_joint only, 18 MB
+file) saved 2 MB. Decode 374 vs 348 ms is inside the noise seen here.
+Dropped without a commit.
+
+Dead ends from earlier runs (not re-measured here):
+
+- Encoder prepacking off: about −35 MB but +12–28 % decode. Rejected.
+  Even with that, the post-decode footprint stays around 1085 MB, over
+  the target.
+- ORT opt level 1 or 2 vs 3, `with_memory_pattern(false)`: no change in
+  warm RSS.
+- Env allocator settings and mmap-backed loading: no help.
+- Arena off (already shipped): −33 % RSS, no decode change. Its
+  remaining cost is the live weights.
+
+Where the 1084 MB at load sits: the encoder is 652 MB on disk (int8,
+inline initializers). Earlier footprint breakdown at load: about 760 MB Malloc Large and
+about 350 MB Malloc Small. Getting under 1 GB needs a change at the
+model or session level, not allocator tuning. Options:
+
+- A smaller or re-quantized encoder export (the item in the earlier
+  "Recommended next lever" note).
+- An encoder session change, which is out of scope for this experiment.
+  The builder is shared with the decoder, so it needs a separate decision.
