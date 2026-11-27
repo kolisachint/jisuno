@@ -135,7 +135,8 @@ Turn off **Launch at login** in Settings → General first. Then delete `Jisuno.
 ~/Library/Application Support/jisuno     models (about 650 MB or more)
 ~/.config/jisuno                         settings and voice commands
 ~/Library/Caches/jisuno                  benchmark results
+~/Library/Logs/Jisuno                    app log (jisuno.log, jisuno.log.1)
 ~/Library/Preferences/dev.kolisachint.jisuno.plist
 ```
 
-The Homebrew cask lists the same paths under `zap`.
+The cask file attached to signed releases lists the same paths under `zap`.
