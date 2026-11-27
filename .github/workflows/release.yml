@@ -7,17 +7,18 @@ on:
 permissions:
   contents: write
 
-# One release at a time: a second merge waits for the first run to finish.
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
   # ── 1. Resolve the version, bump, commit, tag ─────────────────────────
   # Base version: the latest v* tag, bumped by the label. No v* tag yet: the
   # manifest version is released as is (first release). A re-run finds the
   # tag this merge already produced and only sets the outputs.
   bump-and-tag:
+    # One release at a time: a second merge waits for the first run to finish.
+    # Scoped to this job so a closed unlabelled PR (skipped here) can never
+    # replace a pending labelled release run.
+    concurrency:
+      group: release
+      cancel-in-progress: false
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' && (
