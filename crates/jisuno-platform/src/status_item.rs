@@ -31,6 +31,7 @@ pub enum MenuAction {
     UnloadModel,
     OpenPane(Pane),
     OpenSettings,
+    OpenWelcome,
     Quit,
 }
 
@@ -184,6 +185,7 @@ mod macos_impl {
     pub(super) const ITEM_HID: isize = 6;
     const ITEM_QUIT: isize = 7;
     const ITEM_SETTINGS: isize = 8;
+    const ITEM_WELCOME: isize = 9;
 
     fn tag_action(tag: isize) -> Option<MenuAction> {
         match tag {
@@ -193,6 +195,7 @@ mod macos_impl {
             ITEM_AX => Some(MenuAction::OpenPane(Pane::Accessibility)),
             ITEM_HID => Some(MenuAction::OpenPane(Pane::InputMonitoring)),
             ITEM_SETTINGS => Some(MenuAction::OpenSettings),
+            ITEM_WELCOME => Some(MenuAction::OpenWelcome),
             ITEM_QUIT => Some(MenuAction::Quit),
             _ => None,
         }
@@ -427,6 +430,7 @@ mod macos_impl {
                 ",",
                 NSEventModifierFlags::Control | NSEventModifierFlags::Option,
             );
+            add("Welcome…", ITEM_WELCOME, "", NSEventModifierFlags::empty());
             add("Quit Jisuno", ITEM_QUIT, "q", NSEventModifierFlags::empty());
         }
         // No `setMenu`: the button action reports clicks (left toggles the

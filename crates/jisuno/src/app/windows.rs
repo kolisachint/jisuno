@@ -36,6 +36,10 @@ use jisuno_ui::settings_model::{
 };
 use jisuno_ui::settings_view::{settings_view, SettingsEmit};
 use jisuno_ui::tokens::{Theme, POPOVER_W};
+use jisuno_ui::welcome_model::{
+    DownloadProgress, PermissionKind, WelcomeIntent, WelcomeModel, MODEL_TOTAL_MB,
+};
+use jisuno_ui::welcome_view::{welcome_view, WelcomeEmit};
 
 use super::model::ModelState as AppModelState;
 use super::state::AppState;
@@ -933,6 +937,161 @@ fn audio_input_devices() -> Vec<String> {
         }
     }
     devices
+}
+
+/// The live Welcome window (first run) and its intent channel drain.
+/// `last` mirrors the view's model so the tick can refresh it from live
+/// state (permissions re-check every second via `poll_secure`).
+pub(crate) struct WelcomeHandle {
+    pub(crate) window: AnyWindowHandle,
+    pub(crate) view: Entity<WelcomeRoot>,
+    pub(crate) last: WelcomeModel,
+}
+
+impl WelcomeHandle {
+    fn set_model(&mut self, cx: &mut App, model: WelcomeModel, theme: Theme) {
+        self.last = model.clone();
+        self.view.update(cx, |view, cx| {
+            view.theme = theme;
+            view.model = model;
+            cx.notify();
+        });
+    }
+}
+
+/// The GPUI view: a rendered [`WelcomeModel`] plus the intent callback.
+pub(crate) struct WelcomeRoot {
+    model: WelcomeModel,
+    theme: Theme,
+    emit: WelcomeEmit,
+}
+
+impl Render for WelcomeRoot {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        welcome_view(&self.model, &self.theme, self.emit.clone())
+    }
+}
+
+impl AppState {
+    /// Open Welcome, or bring it to the front if it is already open.
+    /// First run opens it automatically; the fallback menu re-opens it.
+    pub(crate) fn open_welcome(&mut self, cx: &mut App) {
+        if let Some(handle) = &self.welcome_win {
+            let _ = handle.window.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+            self.log("welcome already open (focused)");
+            return;
+        }
+        let model = self.welcome_model();
+        let theme = self.ui_theme(cx);
+        let sender = self.welcome_tx.clone();
+        let emit: WelcomeEmit = std::rc::Rc::new(
+            move |intent: WelcomeIntent, _window: &mut Window, _cx: &mut App| {
+                let _ = sender.send(intent);
+            },
+        );
+        let model_open = model.clone();
+        let emit_open = emit.clone();
+        match cx.open_window(
+            WindowOptions {
+                window_bounds: None,
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Welcome to Jisuno".into()),
+                    ..Default::default()
+                }),
+                focus: true,
+                show: true,
+                ..Default::default()
+            },
+            |_, cx| {
+                cx.new(|_| WelcomeRoot {
+                    model: model_open,
+                    theme,
+                    emit: emit_open,
+                })
+            },
+        ) {
+            Ok(handle) => {
+                self.log("welcome open");
+                self.welcome_win = Some(WelcomeHandle {
+                    window: handle.into(),
+                    view: handle
+                        .update(cx, |_, _, cx| cx.entity())
+                        .expect("welcome window just opened"),
+                    last: model,
+                });
+            }
+            Err(e) => self.log(&format!("welcome open failed: {e:#}")),
+        }
+    }
+
+    /// Build the [`WelcomeModel`] from live state (§6).
+    pub(crate) fn welcome_model(&self) -> WelcomeModel {
+        WelcomeModel {
+            allowed: self.perm_granted,
+            files_written: true,
+            model_present: self.model_present,
+            download: self.download.as_ref().map(|active| DownloadProgress {
+                percent: active.percent,
+                downloaded_mb: active.percent * MODEL_TOTAL_MB / 100,
+                total_mb: MODEL_TOTAL_MB,
+            }),
+        }
+    }
+
+    /// Drain Welcome button clicks.
+    pub(crate) fn drain_welcome(&mut self, cx: &mut App) {
+        let mut intents = Vec::new();
+        while let Ok(intent) = self.welcome_rx.try_recv() {
+            intents.push(intent);
+        }
+        for intent in intents {
+            self.log(&format!("welcome intent: {intent:?}"));
+            self.handle_welcome_intent(cx, intent);
+        }
+    }
+
+    fn handle_welcome_intent(&mut self, _cx: &mut App, intent: WelcomeIntent) {
+        match intent {
+            WelcomeIntent::OpenPermissionPane(kind) => {
+                let platform = match kind {
+                    PermissionKind::Microphone => PlatformPane::Microphone,
+                    PermissionKind::Accessibility => PlatformPane::Accessibility,
+                    PermissionKind::InputMonitoring => PlatformPane::InputMonitoring,
+                };
+                if let Err(e) = permissions::open_settings_pane(platform) {
+                    self.log(&format!("open settings pane: {e:#}"));
+                }
+            }
+            WelcomeIntent::DownloadModel => self.start_download(self.model_name.clone()),
+            WelcomeIntent::Start => {
+                self.welcome_win = None;
+                self.log("welcome dismissed (Start)");
+            }
+        }
+    }
+
+    /// Refresh the showing Welcome window (live permissions, download
+    /// progress). Closed at the window chrome: the handle is dead.
+    pub(crate) fn poll_welcome(&mut self, cx: &mut App) {
+        let Some(window) = self.welcome_win.as_ref().map(|handle| handle.window) else {
+            return;
+        };
+        if window.update(cx, |_, _, _| ()).is_err() {
+            self.welcome_win = None;
+            self.log("welcome closed");
+            return;
+        }
+        let fresh = self.welcome_model();
+        let stale = self.welcome_win.as_ref().map(|handle| handle.last.clone());
+        if Some(&fresh) != stale.as_ref() {
+            let theme = self.ui_theme(cx);
+            if let Some(handle) = self.welcome_win.as_mut() {
+                handle.set_model(cx, fresh, theme);
+            }
+        }
+    }
 }
 
 /// Set a (possibly dotted, e.g. `hud.show_latency`) key on a JSON document.

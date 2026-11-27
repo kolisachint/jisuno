@@ -28,12 +28,13 @@ use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
 use super::model::{ActiveDownload, DownloadEvent};
 use super::socket::SocketSnapshot;
-use super::windows::{PopoverHandle, SettingsHandle};
+use super::windows::{PopoverHandle, SettingsHandle, WelcomeHandle};
 use super::worker::{FromWorker, ToWorker};
 use super::DebugOpen;
 use jisuno_logic::keybindings::{Command as KeyCommand, When as KeyWhen};
 use jisuno_ui::popover_model::PopoverIntent;
 use jisuno_ui::settings_model::SettingsIntent;
+use jisuno_ui::welcome_model::WelcomeIntent;
 
 /// Last-good holder with show-once errors, keyed by message. `LastGood` in
 /// `jisuno-logic` fixes its error type to the settings diagnostic, so the
@@ -137,6 +138,9 @@ pub(crate) struct AppState {
     pub(crate) settings_win: Option<SettingsHandle>,
     pub(crate) settings_tx: mpsc::Sender<SettingsIntent>,
     pub(crate) settings_rx: mpsc::Receiver<SettingsIntent>,
+    pub(crate) welcome_win: Option<WelcomeHandle>,
+    pub(crate) welcome_tx: mpsc::Sender<WelcomeIntent>,
+    pub(crate) welcome_rx: mpsc::Receiver<WelcomeIntent>,
     pub(crate) popover: Option<PopoverHandle>,
     pub(crate) popover_toast: Option<(String, Instant)>,
     pub(crate) popover_tx: mpsc::Sender<PopoverIntent>,

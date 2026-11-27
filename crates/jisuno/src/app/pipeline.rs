@@ -37,13 +37,14 @@ impl AppState {
             match which {
                 super::DebugOpen::Popover => self.toggle_popover(cx),
                 super::DebugOpen::Settings => self.open_settings(cx),
-                super::DebugOpen::Welcome => self.log("welcome window comes later"),
+                super::DebugOpen::Welcome => self.open_welcome(cx),
             }
         }
         self.drain_menu(cx);
         self.drain_download();
         self.drain_popover(cx);
         self.drain_settings(cx);
+        self.drain_welcome(cx);
         self.drain_tap(cx);
         self.drain_worker(cx);
         self.drain_hook_requests(cx);
@@ -65,6 +66,7 @@ impl AppState {
         self.refresh_chrome();
         self.poll_popover(cx);
         self.poll_settings(cx);
+        self.poll_welcome(cx);
         if let Some((down, up, sent)) = self.debug_hold {
             let now = Instant::now();
             if !sent && now >= down {
@@ -101,6 +103,7 @@ impl AppState {
             match action {
                 MenuAction::TogglePopover => self.toggle_popover(cx),
                 MenuAction::OpenSettings => self.open_settings(cx),
+                MenuAction::OpenWelcome => self.open_welcome(cx),
                 MenuAction::WarmModel => self.start_load(cx, "menu"),
                 MenuAction::UnloadModel => self.unload_model("menu"),
                 MenuAction::OpenPane(pane) => {

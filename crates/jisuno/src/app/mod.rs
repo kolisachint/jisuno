@@ -114,6 +114,8 @@ pub fn run(opts: AppOptions) {
             std::process::exit(1);
         }
     };
+    // First run is a missing settings.json *before* the defaults are written.
+    let first_run = !dir.settings_path().exists();
     match dir.ensure_first_run(&embedded_app_files()) {
         Ok(written) => {
             for path in written {
@@ -375,6 +377,7 @@ pub fn run(opts: AppOptions) {
         let (popover_tx, popover_rx) = mpsc::channel();
         let (download_tx, download_rx) = mpsc::channel();
         let (settings_tx, settings_rx) = mpsc::channel();
+        let (welcome_tx, welcome_rx) = mpsc::channel();
         let state = Rc::new(RefCell::new(AppState {
             start,
             machine,
@@ -408,7 +411,10 @@ pub fn run(opts: AppOptions) {
             tap_rx,
             tap,
             menu_rx,
-            debug_open: opts.debug_open,
+            debug_open: opts.debug_open.or(first_run.then_some(DebugOpen::Welcome)),
+            welcome_win: None,
+            welcome_tx,
+            welcome_rx,
             key_capturing: None,
             tap_capture,
             settings_win: None,
