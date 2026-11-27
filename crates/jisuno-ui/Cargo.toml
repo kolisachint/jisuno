@@ -13,6 +13,8 @@ serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.14" }
+objc2-app-kit = "0.3"
+raw-window-handle = "0.6"
 
 # Window bootstrap for the gallery example only (mirrors inkuno's
 # `gpui_platform::application()`); the library itself opens no windows.
