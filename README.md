@@ -124,8 +124,9 @@ validates before it writes (exit `2` and nothing written on error). `model` talk
 over `~/Library/Application Support/jisuno/jisuno.sock` and exits `1` with `Jisuno is not running` when
 the app is down. See the [agents guide](docs/user/src/agents.md).
 
-Benchmark and WER harness: `cargo run --release -p jisuno-bench -- --help`. Settings → Performance
-has **Run benchmark**.
+Benchmark and WER harness: `cargo run --release -p jisuno-bench -- --help` (from a checkout). The
+release app has no benchmark command; its **Run benchmark** button needs a `jisuno-bench` binary next to
+the app, which the bundle does not include.
 
 ## Environment variables
 
@@ -192,7 +193,7 @@ Measured on a MacBook Air M1 with 8 GB RAM, `parakeet-tdt-0.6b-v3-int8`, release
 Targets are from [`docs/design/jisuno.md`](docs/design/jisuno.md) §6 and §6.1. Dictation is fast because
 Jisuno decodes the audio between pauses while you speak, so key-up only decodes the last short segment.
 A long burst with no pause is decoded in full at key-up, which is why that clip misses the target. Numbers
-depend on the Mac; measure your own with Settings → Performance. Full measurements and method:
+depend on the Mac; measure your own with `cargo run --release -p jisuno-bench`. Full measurements and method:
 [`crates/jisuno-asr/PERF.md`](crates/jisuno-asr/PERF.md).
 
 ## Privacy
