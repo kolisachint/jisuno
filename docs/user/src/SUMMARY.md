@@ -11,3 +11,4 @@
 - [Agents and the control CLI](agents.md)
 - [Use from a TUI](tui.md)
 - [Models](models.md)
+- [Troubleshooting](troubleshooting.md)

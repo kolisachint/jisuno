@@ -69,17 +69,28 @@ on, holds cannot fire.
 ## Microphone
 
 Choose the mic in **Settings → Audio**. The default is the system input (`input_device`:
-`system`).
+`system`). A named device must match the name macOS shows for it. Jisuno opens the device when a
+hold starts.
 
-- If the input is a Bluetooth device, a warning explains the cost: lower audio quality and more
-  latency. The warning also appears once in the HUD.
-- If the chosen device is missing, Jisuno uses the system input and shows a note in the HUD.
+- **Bluetooth.** If the input's name contains "Bluetooth", "AirPods" or "Beats", Jisuno shows a
+  warning: audio is compressed and latency is higher. Use the built-in microphone for dictation. The
+  HUD shows `Bluetooth mic: lower quality, more latency` once for each device in a session.
+- **Missing device.** If the chosen device is not connected, Jisuno uses the system input. The HUD
+  shows `Mic "<name>" not found · using system input`.
+
+## Live partials
+
+With `partials` set to `true` (default), the HUD shows the text as you speak, once the model is warm.
+This text is only a preview. It is replaced as Jisuno hears more, and only the final text is
+inserted. Set `partials` to `false` in **Settings → General** to see only the level and the final
+result.
 
 ## HUD and sounds
 
-- Where the HUD appears is set by `hud`: `notch` (default), `cursor` or `off`.
-- Live partial text is shown while you speak when `partials` is `true` (default).
-- Short tones play on start, stop and cancel when `sounds` is `true` (default).
+- Where the HUD appears is set by `hud`: `notch` (default), `cursor` or `off`. Set it in **Settings →
+  General**.
+- Short tones play on start, stop and cancel when `sounds` is `true` (default). Dictation and command
+  mode use different tones.
 
 ## What dictation does not do
 

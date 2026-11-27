@@ -6,7 +6,7 @@ Jisuno keeps its settings in four files in `~/.config/jisuno/`:
 |---|---|
 | `settings.json` | Model, language, mic, limits, insertion, HUD, sounds, login item. See the table below. |
 | `keybindings.json` | Key bindings. See [Keybindings](keybindings.md). |
-| `theme.json` | Theme. Documented with the UI spec. |
+| `theme.json` | Theme, accent colors and HUD look. See the `theme.json` section below. |
 | `voice-control-config.json` | Voice commands and workspaces. See [Voice commands](commands.md). |
 
 The Settings window edits these files. You can also edit them by hand in any editor.
@@ -31,7 +31,8 @@ Errors name the file, the line and the problem:
 keybindings.json:12: unknown key "hald" · using last good config
 ```
 
-Keys you leave out of `settings.json` use their defaults.
+Keys you leave out of `settings.json` use their defaults. A key Jisuno does not know is an error: the file
+is rejected, and the last good version stays live.
 
 ## settings.json
 
@@ -39,19 +40,19 @@ Keys you leave out of `settings.json` use their defaults.
 |---|---|---|---|
 | `$schema` | string | none | Path to the local schema. Keep it. |
 | `model` | string | `parakeet-tdt-0.6b-v3-int8` | `parakeet-tdt-0.6b-v3-int8` (multilingual) or `parakeet-tdt-0.6b-v2-int8` (English only). See [Models](models.md). |
-| `language` | string | `auto` | Recognition language. `auto` detects it for each utterance. |
+| `language` | string | `auto` | Stored, not read by the app. The model detects the language of each utterance. |
 | `model_load` | enum | `on_demand` | `on_demand` loads when you start speaking. `at_login` loads at login. |
 | `unload_after_idle_min` | integer, 0 or more | `10` | Minutes without use before the model unloads. `0` means never. |
-| `input_device` | string | `system` | `system` for the system input, or a device name. |
+| `input_device` | string | `system` | `system` for the system input, or the exact name of a device. If the device is not connected, Jisuno uses the system input and shows a HUD note. Pick it in Settings → Audio. |
 | `dictation_limit_s` | integer, 10 to 600 | `120` | Longest dictation in seconds, hands-free included. At the cap Jisuno transcribes as if released. |
 | `hands_free_silence_ms` | integer, 200 to 5000 | `500` | Silence in milliseconds that ends a hands-free session. |
-| `partials` | boolean | `true` | Show live partial text in the HUD. |
+| `partials` | boolean | `true` | Show live partial text in the HUD while you speak. Also in Settings → General. |
 | `insert` | enum | `paste` | `paste` (with clipboard save and restore) or `type` (key events). |
 | `insert_type_apps` | array of bundle IDs | `[]` | Apps that always get typed text instead of paste. |
 | `restore_clipboard` | boolean | `true` | Restore the clipboard after a paste. |
 | `sounds` | boolean | `true` | Short tones on start, stop and cancel. |
 | `hud` | enum | `notch` | Where the HUD appears: `notch`, `cursor` or `off`. |
-| `login_item` | boolean | `false` | Launch Jisuno at login. |
+| `login_item` | boolean | `false` | Shown as **Launch at login** in Settings. Not yet applied: Jisuno does not register itself to start at login, so this has no effect. Open Jisuno at login by adding it under System Settings → General → Login Items. |
 
 ## keybindings.json
 

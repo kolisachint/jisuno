@@ -1,113 +1,172 @@
 # jisuno
 
-Local, offline **voice-to-text for the terminal**. A small Rust binary that
-captures your microphone, stops automatically when you go quiet, and streams
-recognized text on stdout using a simple line protocol — designed to drop into
-a TUI (e.g. hoocode) as a push-to-talk input. **No audio ever leaves the
-machine.**
+Local, offline voice-to-text for macOS. Jisuno is a menu bar app and a `jisuno` command-line tool.
+Hold a key, speak, let go: the text goes into the app you were using. Hold the other key and say a
+command phrase: Jisuno runs the steps you set for it. Speech recognition runs on your Mac with
+Parakeet TDT 0.6B (ONNX). **No audio leaves the machine.**
 
-```bash
-jisuno setup --model parakeet-tdt-0.6b-v3-int8   # once — ~650 MB, 25 languages
-jisuno transcribe                  # speak; stops after ~600ms of silence
-```
+- **Dictate:** hold Right ⌥, speak, release.
+- **Command:** hold Right ⌘, say a phrase from `voice-control-config.json`, release.
+- **CLI:** `jisuno transcribe` streams text on stdout. `jisuno serve` keeps the model loaded for a
+  terminal app (see [Editor / TUI integration](#editor--tui-integration)).
 
-- **Parakeet-TDT** (NVIDIA) via ONNX Runtime — fast, multilingual, int8.
-- Models are pre-exported and downloaded on first run — no Python/NeMo needed.
-- ~Single static binary; models live in your user data dir.
+[Install](#install) · [Usage](#usage) · [Commands](#command-line) · [Environment](#environment-variables) ·
+[Output protocol](#output-protocol) · [Performance](#performance) · [Privacy](#privacy) ·
+[Architecture](#architecture)
 
-[Install](#install) · [Output protocol](#output-protocol) ·
-[Architecture](#architecture) · [Status](#status)
+Docs: [user guide](docs/user/src/SUMMARY.md) (mdBook) · [design](docs/design/jisuno.md) ·
+[CI and release](ci/README.md) · [packaging](packaging/README.md)
 
 ## Install
 
-Grab a binary from [Releases](../../releases), or build from source:
+**Menu bar app (macOS, Apple silicon or Intel):**
+
+- Download the Jisuno zip from [Releases](../../releases), unzip it, and move `Jisuno.app` to
+  `/Applications`.
+- Or: `brew install --cask jisuno`.
+
+**CLI only:**
 
 ```bash
-# Linux needs ALSA headers for mic capture
-sudo apt-get install -y libasound2-dev   # Debian/Ubuntu
-
-cargo build --release -p jisuno
-# binary at target/release/jisuno
+cargo install jisuno          # from crates.io; no menu bar app
 ```
 
-## First run: download a model
+**From source:**
 
 ```bash
-jisuno setup --model parakeet-tdt-0.6b-v3-int8     # recommended, ~650MB, 25 languages
-# or
-jisuno setup --model parakeet-tdt-0.6b-v2-int8     # English-only, ~631MB
-
-jisuno models                        # list models and what's installed
-jisuno models download <id>          # (re)download a model
-jisuno models verify <id>            # full sha256 check of installed files
-jisuno models remove <id>            # delete an installed model
+cargo build --release -p jisuno                      # CLI: target/release/jisuno
+cargo build --release -p jisuno --features app       # app build (macOS)
+packaging/bundle.sh --arch arm64 --out target/packaging   # Jisuno.app, unsigned
 ```
 
-Models are stored under your platform data directory, e.g.
-`~/.local/share/jisuno/models/` on Linux
-(`~/Library/Application Support/jisuno/models/` on macOS). Set
-`JISUNO_MODELS_DIR` to relocate them. Downloads are resumable, every file is
-verified against a pinned sha256, and installs are atomic — an interrupted
-download never leaves a half model behind.
+`bundle.sh` builds the app itself. Its default `--arch universal` needs both Rust Apple targets.
+Signing and notarization: `packaging/sign-notarize.sh`. Linux builds the CLI only and needs ALSA
+headers for mic capture: `sudo apt-get install -y libasound2-dev`.
 
-## Transcribe
+## Usage
 
-```bash
-# From the mic — records until ~600ms of silence, then transcribes:
-jisuno transcribe
+Grant Microphone, Accessibility and Input Monitoring when the Welcome window asks. Then:
 
-# Tune the trailing-silence auto-stop:
-jisuno transcribe --silence-ms 800
+| Key | What it does |
+|---|---|
+| Hold **Right ⌥** | Dictate. Release to insert the text into the focused app. |
+| Hold **Right ⌘** | Command. Release to run the phrase. |
+| **⌃⌥Space** | Start or stop hands-free dictation. Stops after 500 ms of silence. |
+| **⌃⌥W** | Load the model ahead of time. |
+| **⌃⌥,** | Open Settings. |
+| **Esc** | Cancel while listening or confirming. |
+| **Return** | Run a command that is waiting for confirmation. |
 
-# From a WAV file (any rate/channels; great for validating a model):
-jisuno transcribe --wav recording.wav
+Holds under 150 ms are taps and do nothing. A hold counts only if no other key is pressed during it.
+The first hold key wins. Dictation is capped at 2 minutes. Keys are rebindable in
+`~/.config/jisuno/keybindings.json` or in Settings → Keybindings.
+
+The model loads when you first hold a key, or on **⌃⌥W**. It unloads after 10 minutes without use.
+
+Settings has eight panes: General, Audio, Model, Keybindings, Commands, Appearance, Performance and
+Files. The menu bar popover shows the model state, the permissions and the last five results (Recent,
+in memory only).
+
+### Config files
+
+Four files in `~/.config/jisuno/`, written with every key set to its default on first run:
+
+| File | Holds |
+|---|---|
+| `settings.json` | Model, mic, limits, insertion, HUD, sounds, login item. |
+| `keybindings.json` | Key bindings. |
+| `theme.json` | Theme, accent colors, HUD style. |
+| `voice-control-config.json` | Voice commands and workspaces. |
+
+Each file has a `$schema` key that points to a local JSON Schema in `~/.config/jisuno/schemas/`. Files
+reload when saved. An invalid file is rejected and the last good version stays in use. See the
+[config file reference](docs/user/src/config-files.md).
+
+## Models
+
+| Model | Id | Size | Languages |
+|---|---|---|---|
+| Parakeet TDT 0.6B v3 int8 (default) | `parakeet-tdt-0.6b-v3-int8` | about 650 MB | 25 European languages |
+| Parakeet TDT 0.6B v2 int8 (optional) | `parakeet-tdt-0.6b-v2-int8` | about 630 MB | English |
+
+Models are stored in `~/Library/Application Support/jisuno/models/`. Set `JISUNO_MODELS_DIR` to move
+them. Downloads come from HuggingFace, with a fallback mirror on the `kolisachint/jisuno` `models-v1`
+release. Every file is checked against a pinned sha256 and size, and installed atomically. Weights
+are NVIDIA's, under CC-BY-4.0 (see [MODELS_NOTICE.md](MODELS_NOTICE.md)).
+
+## Command line
+
+```text
+jisuno                       macOS app build: start the menu bar app. Other builds: same as transcribe.
+jisuno setup [--model <id>]  download a model (default v3); --ca-cert <pem>, --insecure for TLS
+jisuno models                list models and whether they are installed
+jisuno models download <id>  download a model: resumable, hash-verified, atomic install
+jisuno models verify <id>    check installed files against their pinned sha256
+jisuno models remove <id>    delete an installed model (refused while it downloads)
+jisuno transcribe            capture from the mic until silence, then print the text
+                             [--model <id>] [--silence-ms <ms>] [--wav <file>]
+jisuno serve                 load the model once; answer START/CANCEL/SHUTDOWN on stdin
+                             [--model <id>] [--silence-ms <ms>] [--partial-ms <ms>]
+jisuno control list          list voice commands (table, or --json)
+jisuno control add           add a one-step command; flags per action (see docs)
+jisuno control remove <id>   remove a command by id
+jisuno control validate      check voice-control-config.json; prints errors and warnings
+jisuno model status          print the app's model state: warm, loading or unloaded
+jisuno model warm            ask the running app to load the model
+jisuno model unload          ask the running app to unload the model
+jisuno app                   start the menu bar app (app build only)
 ```
 
-Environment variables: `JISUNO_MODEL`, `JISUNO_SILENCE_MS`.
+`jisuno asr-worker` is hidden. The app runs it as the model's helper process.
 
-## Serve (persistent daemon)
+`control` and `model` are for scripts and agents. `control` edits `voice-control-config.json` and
+validates before it writes (exit `2` and nothing written on error). `model` talks to the running app
+over `~/Library/Application Support/jisuno/jisuno.sock` and exits `1` with `Jisuno is not running` when
+the app is down. See the [agents guide](docs/user/src/agents.md).
 
-`transcribe` reloads the ONNX models on every invocation and only decodes
-*after* you stop talking. `serve` loads the models once and then answers
-commands on stdin, so repeated captures are instant — and it transcribes
-**live**, streaming interim text as you speak rather than dumping it all at
-the end:
+Benchmark and WER harness: `cargo run --release -p jisuno-bench -- --help` (from a checkout). The
+release app has no benchmark command; its **Run benchmark** button needs a `jisuno-bench` binary next to
+the app, which the bundle does not include.
 
-```bash
-jisuno serve
-# stdin:  START            begin mic capture + VAD
-#         CANCEL           stop the current capture without transcribing
-#         SHUTDOWN         exit gracefully
-```
+## Environment variables
 
-While listening it re-decodes the audio-so-far on a short interval and emits a
-`PARTIAL` line; at the end it emits one authoritative `FINAL`. Flags:
-`--model`, `--silence-ms`, and `--partial-ms` (min gap between partials,
-default 400; `0` disables partials). Env vars `JISUNO_MODEL`,
-`JISUNO_SILENCE_MS`, `JISUNO_PARTIAL_MS`. One capture runs at a time; the mic
-opens on `START` and closes when it stops.
+| Variable | Used by | Meaning |
+|---|---|---|
+| `JISUNO_CONFIG_DIR` | app, `control` | Config folder. Default `~/.config/jisuno`. |
+| `JISUNO_MODELS_DIR` | all | Model folder. Default: the platform data directory (`~/Library/Application Support/jisuno/models` on macOS). |
+| `JISUNO_MODEL` | `transcribe`, `serve` | Model id. Default `parakeet-tdt-0.6b-v3-int8`. |
+| `JISUNO_SILENCE_MS` | `transcribe`, `serve` | Trailing silence before auto-stop, ms. Default `600`. |
+| `JISUNO_PARTIAL_MS` | `serve` | Minimum gap between `PARTIAL` lines, ms. Default `400`; `0` disables partials. |
+| `JISUNO_LOG_TEXT` | app | `1` puts dictated and partial text in the logs. Default: counts only. |
+| `JISUNO_BIN` | hoocode TUI | Path to the `jisuno` binary the TUI starts. See [Use from a TUI](docs/user/src/tui.md). |
+| `SSL_CERT_FILE` | downloads | Extra PEM bundle of trusted CA certificates. |
+
+Flags override their variables. Developer-only variables (`JISUNO_PROFILE`, `JISUNO_FAKE_WORKER`, and the
+`JISUNO_DEBUG_*` hooks in `dev` builds) are not listed here.
 
 ## Output protocol
 
-Every line on **stdout** is one event; **stderr** carries human logs and
-download progress, so a consumer can parse stdout cleanly:
+Every line on **stdout** is one event. **stderr** carries logs and download progress, so a consumer can
+parse stdout cleanly.
+
+`transcribe`:
 
 ```text
-STATUS recording        # capture started (mic only; no capture for --wav)
+STATUS recording        # mic capture started (not printed for --wav)
 STATUS transcribing     # final decode running
-SEGMENT hello           # a chunk of recognized text (usually one word)
+SEGMENT hello           # a chunk of recognized text
 SEGMENT world
 DONE                    # finished
 ERROR <message>         # fatal; process exits non-zero
 ```
 
-`serve` speaks the same protocol plus daemon-only lines for the live UI:
+`serve` adds the live lines:
 
 ```text
 READY                    # models finished loading; ready for START
 STATUS listening         # capture started
-LEVEL 0.0123             # live RMS energy per audio chunk, while listening
-PARTIAL hello wor        # interim transcript so far; replaces the last PARTIAL
+LEVEL 0.0123             # RMS energy per audio chunk, while listening
+PARTIAL hello wor        # interim transcript; replaces the previous PARTIAL
 PHASE silence            # trailing silence just started, while listening
 STATUS transcribing      # final decode running
 FINAL hello world        # committed transcript; DONE follows
@@ -115,109 +174,176 @@ DONE                     # capture finished
 ERROR <message>          # fatal
 ```
 
-`PARTIAL` streams the best guess while you speak and is superseded by the next
-one (overwrite, don't append); `FINAL` is the text to insert. `serve` uses
-`PARTIAL`/`FINAL` in place of the batch `SEGMENT` that `transcribe` streams.
+`PARTIAL` is a best guess and is replaced by the next one: overwrite it, do not append. `FINAL` is the
+text to insert. `serve` re-decodes the audio captured so far for each `PARTIAL`.
+
+## Performance
+
+Measured on a MacBook Air M1 with 8 GB RAM, `parakeet-tdt-0.6b-v3-int8`, release build. Numbers come from
+[`crates/jisuno-asr/PERF.md`](crates/jisuno-asr/PERF.md).
+
+| Measure | Result | Target |
+|---|---|---|
+| Key-up → text, warm, 7 s and 17 s clips with pauses | 21–22 ms (median) | ≤ 150 ms |
+| Key-up → text, warm, 5.8 s clip with no pause | about 160 ms | ≤ 150 ms (not met) |
+| Cold load | about 1.2–1.3 s | ≤ 1.5 s |
+| Memory, model warm (helper process) | about 1.1 GB | < 1.2 GB |
+| Memory, model unloaded (app) | 32–39 MB | < 60 MB |
+
+Targets are from [`docs/design/jisuno.md`](docs/design/jisuno.md) §6 and §6.1. Dictation is fast because
+Jisuno decodes the audio between pauses while you speak, so key-up only decodes the last short segment.
+A long burst with no pause is decoded in full at key-up, which is why that clip misses the target. Numbers
+depend on the Mac; measure your own with `cargo run --release -p jisuno-bench`. Full measurements and method:
+[`crates/jisuno-asr/PERF.md`](crates/jisuno-asr/PERF.md).
+
+## Privacy
+
+- Recognition is local. Audio is not sent anywhere.
+- The last 5 results are kept in memory only (Recent). They are gone when you quit.
+- Logs hold counts, not speech, unless you set `JISUNO_LOG_TEXT=1`.
+- No telemetry. No update check.
+- The only network use is downloading a model.
 
 ## Architecture
 
 ```
 crates/
-├── jisuno/            the binary
+├── jisuno/            the binary: CLI and the macOS menu bar app (feature `app`)
 │   └── src/
-│       ├── main.rs        module declarations, entry point
-│       ├── cli.rs         CLI + subcommands, mic→VAD→transcribe pipeline
-│       └── serve.rs       persistent daemon: streaming START/CANCEL/SHUTDOWN over stdin
-├── jisuno-logic/      pure, no audio/ONNX/network deps
+│       ├── main.rs        module declarations, entry point (cli::run)
+│       ├── cli.rs         subcommands: setup, models, transcribe, serve, control, model, asr-worker, app
+│       ├── serve.rs       daemon: START/CANCEL/SHUTDOWN on stdin, PARTIAL and FINAL on stdout
+│       ├── control.rs     `jisuno control`: add/remove/list/validate voice commands
+│       ├── ipc.rs         `jisuno model`: one-line JSON over the app's control socket
+│       ├── runtime.rs     voice-command runtime values: slot lists and host inventory
+│       ├── watch.rs       config file watcher (poll mtime and size)
+│       └── app/           menu bar app (macOS, `app` feature)
+│           ├── mod.rs       startup, permissions, event tap, run loop
+│           ├── state.rs     AppState and its value types
+│           ├── pipeline.rs hold → mic → transcribe → insert; tones
+│           ├── worker.rs    ASR helper client: streaming and full-clip decodes
+│           ├── model.rs     model load, unload, idle unload, helper respawn
+│           ├── config.rs    config reload, secure-input poll, tap restart
+│           ├── command.rs   voice-command execution
+│           ├── hud.rs       HUD show, hide, level
+│           ├── status.rs    menu bar icon state, model line, permission rows
+│           ├── windows.rs   popover, Settings and Welcome windows
+│           └── socket.rs    control socket server
+├── jisuno-logic/      pure Rust, no audio, ONNX or network deps
 │   └── src/
-│       ├── vad.rs         energy VAD with auto-stop on trailing silence
-│       └── protocol.rs    the stdout line protocol
+│       ├── hold.rs          hold-key and utterance state machine
+│       ├── keybindings.rs   keybindings.json: parse, validate, display
+│       ├── settings.rs      settings.json: types, parse, first-run writes
+│       ├── matcher.rs       voice-command phrase matcher
+│       ├── runner.rs        command steps as data: plans and failure messages
+│       ├── voice_control/   voice-control-config.json: types, scan, validate
+│       ├── vad.rs           energy VAD with auto-stop on trailing silence
+│       └── protocol.rs      the stdout line protocol
 ├── jisuno-audio/      audio helpers and mic capture
 │   └── src/
-│       ├── audio.rs       mono downmix, anti-aliased resample → 16 kHz, WAV loading
-│       └── mic.rs         cpal capture (native-rate mono chunks); feature `mic`
-└── jisuno-asr/        speech recognition and model files
-    └── src/
-        ├── setup.rs       model registry + HuggingFace download wizard
-        ├── tls.rs         TLS trust for model downloads
-        └── transcribe/
-            ├── mod.rs         Transcriber trait + model loading
-            └── parakeet.rs    ONNX Runtime: nemo128 → encoder → decoder_joint (TDT)
+│       ├── audio.rs       mono downmix, anti-aliased resample to 16 kHz, WAV loading
+│       ├── mic.rs         cpal capture at the device's native rate; feature `mic`
+│       └── tones.rs      start, stop and cancel cues
+├── jisuno-asr/        speech recognition, model files, helper process
+│   └── src/
+│       ├── transcribe/      Transcriber trait; parakeet.rs is the ONNX TDT decode
+│       ├── worker/          helper process: client (parent), server (child), frame protocol
+│       ├── setup.rs         model registry, install, remove, list
+│       ├── download.rs      resumable, hash-verified downloads
+│       └── tls.rs           TLS trust for downloads
+├── jisuno-platform/   macOS glue: event tap, insert, AX actions, windows, permissions
+│   └── src/                 keys, insert, frontmost, permissions, secure_input, status_item,
+│                            hud_placement, actions/ (app, ax, window, workspace, shell, keys, wait)
+├── jisuno-ui/         GPUI views and view models: HUD, popover, Settings, Welcome, theme tokens
+└── jisuno-bench/      ASR latency, memory and WER harness (binary jisuno-bench; not published)
 ```
 
-Audio is captured at the device's native rate, VAD runs on those chunks (RMS
-is rate-independent), and the buffer is resampled to 16 kHz before inference.
-Resampling is anti-aliased — a windowed-sinc low-pass runs before decimation
-so high frequencies aren't folded back into the speech band (which garbles
-recognition). `transcribe` resamples and decodes the whole utterance once at
-the end; `serve` re-runs that pipeline on the audio-so-far at intervals to
-stream live `PARTIAL`s, then decodes the full buffer once more for `FINAL`.
+`jisuno-logic` builds and tests on Linux. The macOS-only crates (`jisuno-platform`, `jisuno-ui`, and the
+`app` module) are checked on macOS.
+
+### Helper process
+
+The app does not load the model in its own process. It starts `jisuno asr-worker` when the model loads,
+and streams audio to it over a framed stdin/stdout protocol. Unloading stops the helper, so the operating
+system takes back all of the model's memory. This is why the app stays small while the model is unloaded.
+If the helper crashes, the app marks the model unloaded and starts a new helper on the next hold. The HUD
+says `speech helper exited … · restarts on next hold`.
+
+`transcribe` and `serve` load the model in their own process.
+
+### Streaming
+
+While the key is held, the app cuts the audio at pauses (a pause of 0.2 s after at least 1 s of speech)
+and decodes each segment in the helper as its own utterance. Key-up decodes only the tail after the last
+cut. If 8 s pass without a pause, the audio is cut at the quietest 20 ms frame of the last 2 s. The text of
+finished segments is shown as the live partial. Settings → General turns partials off.
+
+`transcribe` and `serve` do not do this. They decode the whole capture at the end (`transcribe`) or
+re-decode the audio so far for each `PARTIAL` (`serve`).
 
 ### Parakeet decoding
 
-`nemo128.onnx` produces a 128-bin mel spectrogram, `encoder.int8.onnx` encodes
-it, and the combined `decoder_joint.int8.onnx` runs greedy Token-and-Duration
-Transducer (TDT) decoding. The token/duration logit split is derived from the
-joint output width at runtime (`width − NUM_DURATIONS`), so the same code works
-for v2 and v3 without hardcoded vocab sizes.
+`nemo128.onnx` produces a 128-bin mel spectrogram, `encoder.int8.onnx` encodes it, and the combined
+`decoder_joint.int8.onnx` runs greedy Token-and-Duration Transducer (TDT) decoding. The last 5 joint
+logits are the duration classes (`NUM_DURATIONS`); the rest are token classes. The vocabulary is read from
+`vocab.txt`, so the vocab size is not hard-coded.
 
-The ONNX input/output tensor names are `const`s at the top of
-`crates/jisuno-asr/src/transcribe/parakeet.rs`. They match the istupakov/PalatineVision export;
-if you use a differently-named export, inspect it with
-[Netron](https://netron.app) and adjust those constants — the decode logic
-itself is export-agnostic. Decode flow is adapted from
+The ONNX input and output tensor names are `const`s at the top of
+`crates/jisuno-asr/src/transcribe/parakeet.rs`. They match the istupakov and PalatineVision exports. For a
+different export, inspect it with [Netron](https://netron.app) and change those constants. The decode logic
+itself does not depend on the export. The greedy decode follows
 [`jason-ni/parakeet-rs`](https://github.com/jason-ni/parakeet-rs).
 
-## Status
-
-**v0.1.** The mic → VAD → resample pipeline, the setup/download wizard, the CLI
-and the stdout protocol are implemented and unit-tested. The Parakeet TDT decode
-has been validated end-to-end against the real `parakeet-tdt-0.6b-v3` int8
-weights — a clean transcription of a reference speech clip — but CI cannot run
-it, because the models are large and gated, so validate locally with `--wav`.
-
-ONNX sessions run **single-threaded on purpose**: multi-threaded int8 inference
-is non-deterministic and makes the greedy decode drop or garble words (see
-`build_session` in `crates/jisuno-asr/src/transcribe/parakeet.rs`).
+ONNX sessions use two intra-op threads with deterministic compute, and the CPU memory arena is off. These
+settings were chosen by measurement (see `PERF.md`).
 
 ## Cargo features
 
-| Crate          | Feature | Default | Effect                                  |
-|----------------|---------|:-------:|-----------------------------------------|
-| `jisuno-audio` | `mic`   |   ✓     | `cpal` mic capture; off = no ALSA build |
-
-Parakeet (ONNX) is always built; the whisper backend was dropped.
+| Crate | Feature | Default | Effect |
+|---|---|:-:|---|
+| `jisuno` | `app` | | macOS menu bar app, GPUI and `jisuno-platform`/`jisuno-ui`. Off = CLI only. |
+| `jisuno` | `dev` | | Debug hooks: `--debug-wav`, `--debug-hold-ms`, `--debug-open`, the fake helper. Never in release builds. |
+| `jisuno-audio` | `mic` | ✓ | `cpal` mic capture. Off = no ALSA build. |
+| `jisuno-asr` | `dev` | | Fake helper backend for tests. Enabled by `jisuno`'s `dev`. |
 
 ```bash
-cargo build --release -p jisuno                              # with mic
-cargo build -p jisuno-audio --no-default-features            # no mic, no ALSA
+cargo build --release -p jisuno                                # CLI with mic
+cargo build --release -p jisuno --features app                 # menu bar app
+cargo test -p jisuno --features app,dev                        # app tests with debug hooks (macOS)
+cargo build -p jisuno-audio --no-default-features              # no mic, no ALSA
 ```
 
 ## Releases
 
-CI (`cargo fmt`/`clippy`/`test`) and release automation live in
-[`.github/workflows/`](.github/workflows/) (`ci.yml`, `release.yml`); see
-[`ci/README.md`](ci/README.md) for the workflow reference. Releases are cut via
-the `/pr <patch|minor|major>` slash command: merging the labeled PR bumps the
-version, tags, publishes to crates.io, and attaches macOS/Linux/Windows
-binaries. Requires the `CRATES_IO_TOKEN` secret.
+CI (`cargo fmt`, `clippy`, `test`) and release automation live in
+[`.github/workflows/`](.github/workflows/). See [`ci/README.md`](ci/README.md) for the workflow reference.
+Releases are cut with the `/pr <patch|minor|major>` slash command. Merging the labeled PR bumps the version,
+tags it, publishes the crates to crates.io, and attaches the macOS app zip, the CLI archives and the
+Homebrew cask. Publishing needs the `CRATES_IO_TOKEN` secret.
 
 ## Editor / TUI integration
 
-Reference files for wiring `jisuno` into the hoocode TUI as a `ctrl+r`
-push-to-talk input live in [`docs/user/src/tui/`](docs/user/src/tui/):
-[`tui.md`](docs/user/src/tui.md) and `voice-transcribe.ts`.
+The hoocode TUI can use `jisuno serve` as push-to-talk input on `ctrl+r`. The reference files are
+[`docs/user/src/tui.md`](docs/user/src/tui.md) and [`docs/user/src/tui/voice-transcribe.ts`](docs/user/src/tui/voice-transcribe.ts).
+
+## Status
+
+Pre-1.0. The app, the CLI, the voice commands and the release automation are implemented. The
+design decisions are in [`docs/design/jisuno.md`](docs/design/jisuno.md) §10. CI does not decode audio on
+every push. The `bench` job runs the v3 model on `main` and on manual dispatch, and records numbers without
+gating. Validate locally with `--wav`:
+
+```bash
+jisuno transcribe --wav recording.wav
+```
 
 ## Related
 
 A small set of offline-first tools for agents:
 
-- **[hoocode](https://github.com/kolisachint/hoocode)** — deterministic terminal
-  coding agent (TypeScript, on npm)
-- **[embeddingsearchtools](https://github.com/kolisachint/embeddingsearchtools)** —
-  semantic + BM25 retrieval, HNSW from scratch (Rust)
-- **[webtools](https://github.com/kolisachint/webtools)** — token-efficient web
-  fetch and search (Rust)
+- **[hoocode](https://github.com/kolisachint/hoocode)**: deterministic terminal coding agent (TypeScript, on npm)
+- **[embeddingsearchtools](https://github.com/kolisachint/embeddingsearchtools)**: semantic and BM25 retrieval, HNSW from scratch (Rust)
+- **[webtools](https://github.com/kolisachint/webtools)**: token-efficient web fetch and search (Rust)
 
 Built by [Sachin Koli](https://kolisachint.github.io).
 

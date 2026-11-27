@@ -25,6 +25,13 @@ Flags (defaults shown):
 - `--partial-ms 400`: minimum gap between `PARTIAL` lines. `0` turns partials off, so you get only
   `FINAL`.
 
+The environment variables `JISUNO_MODEL`, `JISUNO_SILENCE_MS` and `JISUNO_PARTIAL_MS` set the same
+values. A flag overrides its variable.
+
+`serve` loads the model into its own process and keeps it until it exits. Each `PARTIAL` decodes all
+the audio captured so far. `FINAL` decodes the whole capture once more. The menu bar app is separate:
+it streams partials with a helper process and does not use `serve`.
+
 Commands on stdin, one per line:
 
 ```
