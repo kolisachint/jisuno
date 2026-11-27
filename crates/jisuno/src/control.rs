@@ -11,15 +11,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use jisuno_logic::embedded;
 use jisuno_logic::settings::{write_atomic, ConfigDir, EmbeddedFile};
 use jisuno_logic::voice_control::{self, CommandDef, Config, Diagnostic, Step};
 use serde_json::{json, Value};
 
 const FILE_NAME: &str = "voice-control-config.json";
-const DEFAULTS_TEXT: &str = include_str!("../../jisuno-logic/defaults/voice-control-config.json");
 const SCHEMA_PATH: &str = "schemas/voice-control-config.schema.json";
-const SCHEMA_TEXT: &str =
-    include_str!("../../jisuno-logic/schemas/voice-control-config.schema.json");
 
 const EXIT_OK: i32 = 0;
 const EXIT_OTHER: i32 = 1;
@@ -170,7 +168,9 @@ fn add(args: &AddArgs) -> Result<i32> {
     let path = dir.voice_control_path();
     let existing = read_config(&path)?;
     // A missing file starts from the embedded defaults (§1).
-    let base = existing.as_deref().unwrap_or(DEFAULTS_TEXT);
+    let base = existing
+        .as_deref()
+        .unwrap_or(embedded::VOICE_CONTROL_DEFAULTS);
     let (config, _) = match voice_control::parse(base) {
         Ok(parsed) => parsed,
         Err(errors) => return Ok(reject_file(&errors)),
@@ -195,7 +195,7 @@ fn add(args: &AddArgs) -> Result<i32> {
     if existing.is_none() {
         dir.ensure_first_run(&[EmbeddedFile {
             name: SCHEMA_PATH,
-            contents: SCHEMA_TEXT,
+            contents: embedded::VOICE_CONTROL_SCHEMA,
         }])?;
     }
     if save(&path, &config)? != EXIT_OK {

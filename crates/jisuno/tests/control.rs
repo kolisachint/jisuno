@@ -5,8 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const SCHEMA_TEXT: &str =
-    include_str!("../../jisuno-logic/schemas/voice-control-config.schema.json");
+use jisuno_logic::embedded;
+
+const SCHEMA_TEXT: &str = embedded::VOICE_CONTROL_SCHEMA;
 
 /// §8 starting point: `menu` and `settings` only.
 const SEED: &str = r#"{
