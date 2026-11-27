@@ -480,9 +480,19 @@ impl AppState {
         );
         let model_open = model.clone();
         let emit_open = emit.clone();
+        let screen = Self::display_metrics(cx);
+        let win_w = 800.0f32;
+        let win_h = 520.0f32;
+        let win_bounds = Bounds {
+            origin: Point {
+                x: px(((screen.width - f64::from(win_w)) / 2.0).max(0.0) as f32),
+                y: px((screen.usable_top + ((screen.height - screen.usable_top - f64::from(win_h)) / 2.0)).max(screen.usable_top) as f32),
+            },
+            size: size(px(win_w), px(win_h)),
+        };
         match cx.open_window(
             WindowOptions {
-                window_bounds: None,
+                window_bounds: Some(WindowBounds::Windowed(win_bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Settings".into()),
                     ..Default::default()
@@ -1079,9 +1089,19 @@ impl AppState {
         );
         let model_open = model.clone();
         let emit_open = emit.clone();
+        let screen = Self::display_metrics(cx);
+        let win_w = 540.0f32;
+        let win_h = 580.0f32;
+        let win_bounds = Bounds {
+            origin: Point {
+                x: px(((screen.width - f64::from(win_w)) / 2.0).max(0.0) as f32),
+                y: px((screen.usable_top + ((screen.height - screen.usable_top - f64::from(win_h)) / 2.0)).max(screen.usable_top) as f32),
+            },
+            size: size(px(win_w), px(win_h)),
+        };
         match cx.open_window(
             WindowOptions {
-                window_bounds: None,
+                window_bounds: Some(WindowBounds::Windowed(win_bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Welcome to Jisuno".into()),
                     ..Default::default()
