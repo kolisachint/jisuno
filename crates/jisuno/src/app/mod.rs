@@ -63,6 +63,28 @@ pub struct AppOptions {
     /// Simulate one internal dictate hold of this many ms, starting ~1 s
     /// after launch (hidden debug flag; bypasses the event tap).
     pub debug_hold_ms: Option<u64>,
+    /// Open a window right after launch for screenshots (hidden debug
+    /// flag, `JISUNO_DEBUG_OPEN` or `--debug-open`).
+    pub debug_open: Option<DebugOpen>,
+}
+
+/// Which window `--debug-open` opens after launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugOpen {
+    Popover,
+    Settings,
+    Welcome,
+}
+
+impl DebugOpen {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "popover" => Some(Self::Popover),
+            "settings" => Some(Self::Settings),
+            "welcome" => Some(Self::Welcome),
+            _ => None,
+        }
+    }
 }
 
 impl AppOptions {
@@ -72,6 +94,9 @@ impl AppOptions {
             debug_hold_ms: std::env::var("JISUNO_DEBUG_HOLD_MS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
+            debug_open: std::env::var("JISUNO_DEBUG_OPEN")
+                .ok()
+                .and_then(|s| DebugOpen::parse(&s)),
         }
     }
 }
@@ -375,6 +400,7 @@ pub fn run(opts: AppOptions) {
             tap_rx,
             tap,
             menu_rx,
+            debug_open: opts.debug_open,
             key_capturing: None,
             settings_win: None,
             settings_tx,

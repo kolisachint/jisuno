@@ -30,6 +30,7 @@ use super::model::{ActiveDownload, DownloadEvent};
 use super::socket::SocketSnapshot;
 use super::windows::{PopoverHandle, SettingsHandle};
 use super::worker::{FromWorker, ToWorker};
+use super::DebugOpen;
 use jisuno_logic::keybindings::{Command as KeyCommand, When as KeyWhen};
 use jisuno_ui::popover_model::PopoverIntent;
 use jisuno_ui::settings_model::SettingsIntent;
@@ -127,6 +128,7 @@ pub(crate) struct AppState {
     /// Keybinding recording: the Settings Keybindings pane is waiting for
     /// the next chord/hold (Esc cancels). While set, the tap runs in
     /// capture mode and forwards keys to `feed_recorded_key`.
+    pub(crate) debug_open: Option<DebugOpen>,
     pub(crate) key_capturing: Option<(KeyCommand, Option<KeyWhen>)>,
     pub(crate) settings_win: Option<SettingsHandle>,
     pub(crate) settings_tx: mpsc::Sender<SettingsIntent>,

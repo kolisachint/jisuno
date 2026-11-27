@@ -107,6 +107,10 @@ struct AppArgs {
     /// flag; bypasses the event tap).
     #[arg(long, hide = true)]
     debug_hold_ms: Option<u64>,
+    /// Open a window right after launch for screenshots (hidden debug
+    /// flag): `popover`, `settings` or `welcome`.
+    #[arg(long, hide = true)]
+    debug_open: Option<String>,
 }
 
 #[derive(Args, Clone)]
@@ -284,6 +288,9 @@ pub fn run() {
             }
             if args.debug_hold_ms.is_some() {
                 opts.debug_hold_ms = args.debug_hold_ms;
+            }
+            if let Some(which) = args.debug_open.as_deref() {
+                opts.debug_open = crate::app::DebugOpen::parse(which);
             }
             crate::app::run(opts);
             Ok(())

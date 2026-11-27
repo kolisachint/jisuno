@@ -33,6 +33,13 @@ impl AppState {
             cx.quit();
             return true;
         }
+        if let Some(which) = self.debug_open.take() {
+            match which {
+                super::DebugOpen::Popover => self.toggle_popover(cx),
+                super::DebugOpen::Settings => self.open_settings(cx),
+                super::DebugOpen::Welcome => self.log("welcome window comes later"),
+            }
+        }
         self.drain_menu(cx);
         self.drain_download();
         self.drain_popover(cx);
