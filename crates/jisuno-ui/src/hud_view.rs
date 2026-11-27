@@ -69,7 +69,15 @@ impl HudView {
 
 impl Render for HudView {
     fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        hud_island(&self.state)
+        // Transparent margins around the island: the window is the fixed
+        // HUD_WINDOW_SIZE, the island sizes to its content and the rest
+        // shows the desktop through (the window background is transparent).
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(hud_island(&self.state).flex_none())
     }
 }
 
