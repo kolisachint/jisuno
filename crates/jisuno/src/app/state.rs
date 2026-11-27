@@ -161,6 +161,8 @@ pub(crate) struct AppState {
     /// The crash HUD has been shown since the last successful Warm.
     pub(crate) worker_crash_shown: bool,
     pub(crate) last_active: Instant,
+    /// Last log-size check (`poll_log_size`).
+    pub(crate) log_checked_at: Instant,
     pub(crate) target: Option<AppInfo>,
     pub(crate) to_worker: mpsc::Sender<ToWorker>,
     pub(crate) from_worker: mpsc::Receiver<FromWorker>,

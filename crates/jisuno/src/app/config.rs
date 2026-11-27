@@ -134,8 +134,17 @@ pub(crate) fn stamp(start: Instant, msg: &str) {
     );
 }
 
-/// The log file rotates to `jisuno.log.1` at startup above this size.
+/// The log file rotates to `jisuno.log.1` above this size: at startup, and
+/// while running (`poll_log_size`).
 const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// How often the running app checks the log size.
+const LOG_CHECK_EVERY: Duration = Duration::from_secs(600);
+
+const LOG_FILE: &str = "jisuno.log";
+
+/// The log file stderr was redirected to, set once by `redirect_stderr_to_log`.
+static LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 
 /// `~/Library/Logs/Jisuno` under `home`. Pure: unit-tested below.
 fn log_dir(home: &std::path::Path) -> std::path::PathBuf {
@@ -147,7 +156,6 @@ fn log_dir(home: &std::path::Path) -> std::path::PathBuf {
 /// `jisuno.log.1` first. A terminal keeps stderr as it is. Best effort: a
 /// failure here leaves stderr where it was.
 pub(crate) fn redirect_stderr_to_log() {
-    use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
 
     // SAFETY: a pure query on fd 2.
@@ -161,21 +169,56 @@ pub(crate) fn redirect_stderr_to_log() {
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
-    let path = dir.join("jisuno.log");
+    let path = dir.join(LOG_FILE);
     let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES);
     if too_big {
         let _ = std::fs::rename(&path, dir.join("jisuno.log.1"));
     }
-    let Ok(file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&path)
-    else {
+    let Some(file) = open_log(&path) else {
         return;
     };
     // SAFETY: both descriptors are open; dup2 copies the file into fd 2, and
     // `file` can close afterwards.
+    unsafe {
+        libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+    }
+    let _ = LOG_PATH.set(path);
+}
+
+fn open_log(path: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .ok()
+}
+
+/// Rotate while running: over `LOG_MAX_BYTES`, the file moves to
+/// `jisuno.log.1` and a new `jisuno.log` is opened on fd 2. No-op when stderr
+/// is not the log file (a terminal, or a failed redirect).
+pub(crate) fn rotate_log_if_big() {
+    use std::os::unix::io::AsRawFd;
+
+    let Some(path) = LOG_PATH.get() else {
+        return;
+    };
+    if !std::fs::metadata(path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+        return;
+    }
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if std::fs::rename(path, dir.join("jisuno.log.1")).is_err() {
+        return;
+    }
+    let Some(file) = open_log(path) else {
+        return;
+    };
+    // SAFETY: as in `redirect_stderr_to_log`; the old fd 2 target is closed
+    // by dup2.
     unsafe {
         libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
     }
@@ -185,6 +228,15 @@ pub(crate) fn redirect_stderr_to_log() {
 
 impl AppState {
     // --- Polls ---
+
+    /// Size check for the log, every `LOG_CHECK_EVERY`: one metadata call.
+    pub(crate) fn poll_log_size(&mut self) {
+        if self.log_checked_at.elapsed() < LOG_CHECK_EVERY {
+            return;
+        }
+        self.log_checked_at = Instant::now();
+        rotate_log_if_big();
+    }
 
     /// Drain the background watcher: re-parse each changed file, keep last
     /// good on error (first error shows once via `LastGood`), apply live.

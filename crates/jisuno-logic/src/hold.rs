@@ -252,6 +252,12 @@ impl HoldMachine {
         self.load == LoadState::Warm
     }
 
+    /// Whether a hold, hands-free session, utterance or confirm is in
+    /// progress (any state but idle). The host logs other keys only then.
+    pub fn in_session(&self) -> bool {
+        self.state != State::Idle
+    }
+
     /// Whether the tap must capture `key` right now (`keybindings.md` §5):
     /// Esc only in `listening`/`confirming`, Return only in `confirming`.
     /// Everywhere else both pass through to the app untouched.
@@ -759,6 +765,17 @@ mod tests {
         );
         // And only once: the next tick is quiet.
         assert!(m.tick(200).is_empty());
+    }
+
+    #[test]
+    fn in_session_only_during_a_hold() {
+        // The host logs other keys only while a session is live.
+        let mut m = warm();
+        assert!(!m.in_session());
+        m.handle(Input::HoldDown(HoldKind::Dictate), 0);
+        assert!(m.in_session());
+        m.handle(Input::OtherKeyDown, 50);
+        assert!(!m.in_session());
     }
 
     #[test]
