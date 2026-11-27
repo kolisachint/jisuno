@@ -209,16 +209,21 @@ impl AppState {
 
     /// Toggle the popover: close it if open, else open it under the item.
     pub(crate) fn toggle_popover(&mut self, cx: &mut App) {
-        if self.popover.take().is_some() {
-            self.log("popover closed (toggle)");
+        if self.popover.is_some() {
+            self.close_popover(cx, "toggle");
             return;
         }
         self.open_popover(cx);
     }
 
-    /// Close the popover if it is open (Esc path, focus loss).
-    pub(crate) fn close_popover(&mut self, why: &str) {
-        if self.popover.take().is_some() {
+    /// Close the popover if it is open (Esc path, focus loss). Dropping
+    /// the handle alone leaves the GPUI window alive (handles are plain
+    /// ids), so remove the window first or every cycle leaks a surface.
+    pub(crate) fn close_popover(&mut self, cx: &mut App, why: &str) {
+        if let Some(handle) = self.popover.take() {
+            let _ = handle.window.update(cx, |_, window, _| {
+                window.remove_window();
+            });
             self.log(&format!("popover closed ({why})"));
         }
     }
@@ -354,8 +359,7 @@ impl AppState {
         } else if handle.was_active
             || handle.shown_at.elapsed() > Duration::from_millis(POPOVER_GRACE_MS)
         {
-            self.popover = None;
-            self.log("popover closed (focus lost)");
+            self.close_popover(cx, "focus lost");
             return;
         }
         if fingerprint != handle.fingerprint {
@@ -1134,7 +1138,7 @@ impl AppState {
         }
     }
 
-    fn handle_welcome_intent(&mut self, _cx: &mut App, intent: WelcomeIntent) {
+    fn handle_welcome_intent(&mut self, cx: &mut App, intent: WelcomeIntent) {
         match intent {
             WelcomeIntent::OpenPermissionPane(kind) => {
                 let platform = match kind {
@@ -1148,7 +1152,13 @@ impl AppState {
             }
             WelcomeIntent::DownloadModel => self.start_download(self.model_name.clone()),
             WelcomeIntent::Start => {
-                self.welcome_win = None;
+                // Remove the window, not just the handle: a dropped
+                // handle leaks the live window (see close_popover).
+                if let Some(handle) = self.welcome_win.take() {
+                    let _ = handle.window.update(cx, |_, window, _| {
+                        window.remove_window();
+                    });
+                }
                 self.log("welcome dismissed (Start)");
             }
         }
