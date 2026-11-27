@@ -2,6 +2,7 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -12,19 +13,109 @@ use jisuno_logic::hold::{CapturedKey, Effect, HoldKind, Input, Mode};
 use jisuno_logic::keybindings::{Command, Key};
 use jisuno_logic::settings::{self};
 use jisuno_platform::{
-    frontmost::{self},
+    frontmost::{self, AppInfo},
     insert::{self, FocusLost, InsertMode},
     keys::KeyEvent,
     permissions::{self},
-    secure_input,
+    secure_input::{self, SecureInputHolder},
     status_item::MenuAction,
 };
 use jisuno_ui::hud_model::HudState as UiHud;
 
+use super::config::take_tap_restart_failed;
 use super::hold_kind_for;
 use super::model::ModelState;
-use super::state::{AppState, ListeningUi, PendingTranscribe, RecentEntry};
+use super::state::{text_summary, AppState, ListeningUi, PendingTranscribe, RecentEntry};
 use super::worker::{AudioSource, ToWorker};
+
+/// Where a machine effect goes when there is no `&mut App`.
+/// `CloseMic`/`CancelModelLoad` run inline (no `App` needed); `OpenMic`
+/// stays suppressed (a headless reopen would transcribe without a HUD);
+/// `HideHud` is deferred to the next tick. Everything else has no headless
+/// path and is logged loudly — never silently dropped. The `match` is
+/// exhaustive over [`Effect`], so a new variant fails to compile until it
+/// is routed here.
+/// Secure-input holder lookup (spawns `ioreg` + `ps`): cached for 5 s.
+static SECURE_HOLDER_CACHE: OnceLock<Mutex<(Option<Instant>, Option<SecureInputHolder>)>> =
+    OnceLock::new();
+
+pub(crate) fn cached_secure_input_holder() -> Option<SecureInputHolder> {
+    if !secure_input::is_secure_input_enabled() {
+        return None;
+    }
+    let now = Instant::now();
+    if let Ok(cache) = SECURE_HOLDER_CACHE
+        .get_or_init(|| Mutex::new((None, None)))
+        .lock()
+    {
+        if let (Some(at), holder) = (&cache.0, &cache.1) {
+            if now.duration_since(*at) < Duration::from_secs(5) {
+                return holder.clone();
+            }
+        }
+    }
+    let holder = secure_input::secure_input_holder();
+    if let Ok(mut cache) = SECURE_HOLDER_CACHE
+        .get_or_init(|| Mutex::new((None, None)))
+        .lock()
+    {
+        *cache = (Some(now), holder.clone());
+    }
+    holder
+}
+
+/// `cpal` input-device enumeration: cached for 5 s.
+static INPUT_DEVICE_CACHE: OnceLock<Mutex<(Option<Instant>, Vec<String>)>> = OnceLock::new();
+
+pub(crate) fn cached_input_device_names() -> Vec<String> {
+    let now = Instant::now();
+    if let Ok(cache) = INPUT_DEVICE_CACHE
+        .get_or_init(|| Mutex::new((None, Vec::new())))
+        .lock()
+    {
+        if let (Some(at), names) = (&cache.0, &cache.1) {
+            if now.duration_since(*at) < Duration::from_secs(5) {
+                return names.clone();
+            }
+        }
+    }
+    let names: Vec<String> = cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
+    if let Ok(mut cache) = INPUT_DEVICE_CACHE
+        .get_or_init(|| Mutex::new((None, Vec::new())))
+        .lock()
+    {
+        *cache = (Some(now), names.clone());
+    }
+    names
+}
+
+pub(crate) enum NoCxRoute {
+    CloseMic { discard: bool },
+    CancelLoad,
+    ReopenSuppressed,
+    HideDeferred,
+    Dropped,
+}
+
+/// Route one machine effect for the headless contexts; see [`NoCxRoute`].
+pub(crate) fn no_cx_route(effect: &Effect) -> NoCxRoute {
+    match effect {
+        Effect::CloseMic { discard } => NoCxRoute::CloseMic { discard: *discard },
+        Effect::CancelModelLoad => NoCxRoute::CancelLoad,
+        Effect::OpenMic => NoCxRoute::ReopenSuppressed,
+        Effect::HideHud => NoCxRoute::HideDeferred,
+        Effect::StartModelLoad
+        | Effect::ShowHud(_)
+        | Effect::Transcribe { .. }
+        | Effect::RunCommand
+        | Effect::ShowConfirm { .. }
+        | Effect::PassThrough
+        | Effect::Countdown { .. } => NoCxRoute::Dropped,
+    }
+}
 
 impl AppState {
     pub(crate) fn tick(&mut self, cx: &mut App) -> bool {
@@ -59,9 +150,11 @@ impl AppState {
             self.log(&format!("hold tick -> {} effect(s)", effects.len()));
         }
         self.exec_effects(cx, effects);
-        self.drain_mic();
+        self.drain_mic(cx);
         self.poll_partials();
         self.drain_watch(cx);
+        self.apply_pending_timing();
+        self.apply_pending_model(cx);
         self.poll_secure(cx);
         self.poll_idle_unload();
         self.refresh_hud_level(cx);
@@ -121,6 +214,16 @@ impl AppState {
     // --- Event tap ---
 
     pub(crate) fn drain_tap(&mut self, cx: &mut App) {
+        if take_tap_restart_failed() {
+            self.show_ephemeral(
+                cx,
+                UiHud::ConfigError {
+                    location: "Keys paused".to_string(),
+                    message: "Input Monitoring is off".to_string(),
+                },
+                "tap restart failed",
+            );
+        }
         let mut events = Vec::new();
         if let Some(rx) = &self.tap_rx {
             while let Ok(ev) = rx.try_recv() {
@@ -134,16 +237,10 @@ impl AppState {
                 continue;
             }
             match ev {
-                KeyEvent::HoldDown(key) => {
-                    self.target = frontmost::frontmost_app();
-                    if let Some(app) = &self.target {
-                        self.log(&format!("frontmost on hold: {app:?}"));
-                    }
-                    match hold_kind_for(&self.bindings, key) {
-                        Some(kind) => self.begin_hold(cx, kind),
-                        None => self.log("tap: hold key with no dictate/command binding — ignored"),
-                    }
-                }
+                KeyEvent::HoldDown(key) => match hold_kind_for(&self.bindings, key) {
+                    Some(kind) => self.begin_hold(cx, kind),
+                    None => self.log("tap: hold key with no dictate/command binding — ignored"),
+                },
                 KeyEvent::HoldUp(key) => {
                     if let Some(kind) = hold_kind_for(&self.bindings, key) {
                         self.input(cx, Input::HoldUp(kind), "up");
@@ -177,7 +274,6 @@ impl AppState {
     pub(crate) fn on_chord(&mut self, cx: &mut App, key: &Key) {
         match self.bindings.lookup(key, None) {
             Some(Command::HandsFreeToggle) => {
-                self.target = frontmost::frontmost_app();
                 if self.check_hold_ready(cx) {
                     self.handsfree_armed = true;
                     self.input(cx, Input::HandsFreeToggle, "hands-free toggle");
@@ -208,7 +304,7 @@ impl AppState {
 
     pub(crate) fn check_hold_ready(&mut self, cx: &mut App) -> bool {
         if secure_input::is_secure_input_enabled() {
-            let holder = secure_input::secure_input_holder();
+            let holder = cached_secure_input_holder();
             let name = holder
                 .as_ref()
                 .and_then(|h| h.name.clone())
@@ -246,7 +342,14 @@ impl AppState {
 
     // --- Mic ---
 
-    pub(crate) fn open_mic(&mut self, _cx: &mut App) {
+    pub(crate) fn open_mic(&mut self, cx: &mut App) {
+        // Captured only here: OpenMic runs exactly when the machine
+        // accepted the press, so ignored presses can no longer overwrite
+        // the target the utterance will insert into.
+        self.target = frontmost::frontmost_app();
+        if let Some(app) = &self.target {
+            self.log(&format!("frontmost on hold: {app:?}"));
+        }
         self.mic_open = true;
         self.buffer.clear();
         self.heard_speech = false;
@@ -276,7 +379,18 @@ impl AppState {
                 }
             }
         } else {
-            match jisuno_audio::mic::start() {
+            // Measure the synchronous open; it only moves off the tick with
+            // evidence (> 10 ms).
+            let started = Instant::now();
+            let opened = jisuno_audio::mic::start();
+            let elapsed = started.elapsed();
+            if elapsed > Duration::from_millis(10) {
+                self.log(&format!(
+                    "mic start blocked tick for {} ms",
+                    elapsed.as_millis()
+                ));
+            }
+            match opened {
                 Ok(capture) => {
                     self.mic_rate = capture.input_rate;
                     self.capture = Some(capture);
@@ -317,8 +431,12 @@ impl AppState {
                 self.last_partial_poll = Instant::now();
                 self.log(&format!("stream {stream} begun (warm)"));
             } else {
-                self.stream = None;
-                self.log("model worker gone — stream dropped");
+                // The worker thread is gone: respawn it and reload. The
+                // stream stays reserved and starts when the load lands
+                // (flush on Warm); a key-up before then decodes from
+                // fallback audio instead.
+                self.log("model worker gone at mic open — respawning");
+                self.recover_worker(cx, "mic open");
             }
         }
     }
@@ -334,19 +452,17 @@ impl AppState {
     }
 
     pub(crate) fn close_mic(&mut self, discard: bool) {
+        // NB: the raw drain below (no VAD, no machine input) — never the
+        // effect-executing `drain_mic`, which would re-enter through
+        // CloseMic while an outer chunk loop is still iterating.
         if discard {
             // Tap / Esc / other-key: drop the utterance without decoding.
-            if let Some(stream) = self.stream.take() {
-                let _ = self.to_worker.send(ToWorker::CancelStream { stream });
-            }
-            self.stream_begun = false;
-            self.partial_in_flight = false;
-            self.partial_text = None;
+            self.cancel_stream();
             self.resampler = None;
             self.debug_pcm = None;
             self.debug_next_at = None;
         }
-        self.drain_mic();
+        let _ = self.drain_mic_raw();
         if !discard {
             self.flush_stream_tail();
         }
@@ -362,6 +478,20 @@ impl AppState {
         } else {
             self.log(&format!("mic closed ({} samples kept)", self.buffer.len()));
         }
+    }
+
+    /// Drop the helper stream without decoding (silent hold, failed load):
+    /// cancel only what was begun — cancelling a never-begun stream would
+    /// error the helper child — then clear the local stream state.
+    pub(crate) fn cancel_stream(&mut self) {
+        let begun = std::mem::replace(&mut self.stream_begun, false);
+        if let Some(stream) = self.stream.take() {
+            if begun {
+                let _ = self.to_worker.send(ToWorker::CancelStream { stream });
+            }
+        }
+        self.partial_in_flight = false;
+        self.partial_text = None;
     }
 
     /// Push any filter remainder still held by the streaming resampler
@@ -407,7 +537,9 @@ impl AppState {
             if rms > self.level {
                 self.level = rms;
             }
-            self.buffer.extend_from_slice(&chunk);
+            if !self.stream_begun {
+                self.buffer.extend_from_slice(&chunk);
+            }
             if self.stream_begun {
                 if let Some(stream) = self.stream {
                     let _ = self.to_worker.send(ToWorker::Push { stream, pcm: chunk });
@@ -416,7 +548,11 @@ impl AppState {
         }
     }
 
-    pub(crate) fn drain_mic(&mut self) {
+    /// Channel + debug-WAV audio into the buffer/stream, without VAD or
+    /// machine input: re-entrancy-safe, so `close_mic` can call it while a
+    /// `drain_mic` chunk loop is on the stack. Returns true when the
+    /// hands-free VAD judged the line silent (the caller feeds the machine).
+    pub(crate) fn drain_mic_raw(&mut self) -> bool {
         self.push_debug_chunks(false);
         let mut chunks = Vec::new();
         if let Some(capture) = &self.capture {
@@ -424,8 +560,9 @@ impl AppState {
                 chunks.push(chunk);
             }
         }
-        for chunk in chunks {
-            let rms = jisuno_logic::vad::rms(&chunk);
+        let mut silence = false;
+        for chunk in &chunks {
+            let rms = jisuno_logic::vad::rms(chunk);
             if rms > self.level {
                 self.level = rms;
             }
@@ -433,28 +570,48 @@ impl AppState {
                 self.heard_speech = true;
             }
             if let Some(vad) = &mut self.handsfree_vad {
-                if vad.push(&chunk) == jisuno_logic::vad::VadEvent::SilenceTimeout {
+                if vad.push(chunk) == jisuno_logic::vad::VadEvent::SilenceTimeout {
                     self.handsfree_vad = None;
-                    self.input_no_cx(Input::SilenceDetected, "hands-free silence");
+                    silence = true;
                 }
             }
-            self.buffer.extend_from_slice(&chunk);
-            // Stream to the helper without blocking: the worker queues it
-            // for the child. A failed send means the worker thread is
-            // gone; the crash surfaces through its next reply. The
-            // streaming resampler keeps filter state across chunks (a
-            // per-chunk one-shot would corrupt edges).
+            // Resample once per chunk into 16 kHz: the buffer stays at the
+            // decode rate, so a later Warm flush sends it without a
+            // whole-buffer resample on the tick. The streaming resampler
+            // keeps filter state across chunks (a per-chunk one-shot would
+            // corrupt edges).
+            let pcm16 = match self.resampler.as_mut() {
+                Some(r) => r.push(chunk),
+                None => jisuno_audio::audio::resample_to_16k(chunk, self.mic_rate),
+            };
+            self.buffer.extend_from_slice(&pcm16);
             if self.stream_begun {
                 if let Some(stream) = self.stream {
-                    let pcm16 = match self.resampler.as_mut() {
-                        Some(r) => r.push(&chunk),
-                        None => jisuno_audio::audio::resample_to_16k(&chunk, self.mic_rate),
-                    };
                     if !pcm16.is_empty() {
                         let _ = self.to_worker.send(ToWorker::Push { stream, pcm: pcm16 });
                     }
                 }
             }
+        }
+        silence
+    }
+
+    /// Mic drain on the tick: audio first (re-entrancy-safe), then any
+    /// hands-free silence stop through the machine with effects executed
+    /// here via `exec_effects` — no effect is dropped, so the hands-free
+    /// `Transcribe` always runs.
+    pub(crate) fn drain_mic(&mut self, cx: &mut App) {
+        if self.drain_mic_raw() {
+            let effects = self
+                .machine
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .handle(Input::SilenceDetected, self.now_ms());
+            self.log(&format!(
+                "hold hands-free silence -> {} effect(s)",
+                effects.len()
+            ));
+            self.exec_effects(cx, effects);
         }
     }
 
@@ -549,10 +706,12 @@ impl AppState {
         }
     }
 
-    /// Machine input from a context without `&mut App` (mic drain,
-    /// secure-input poll): execute App-free effects inline. HideHud cannot
-    /// close the window without `App`, so it marks the HUD for closing on
-    /// the next tick instead.
+    /// Where a machine effect goes when there is no `&mut App` (secure-input
+    /// poll, mic-open failures): the cx-free effects run inline, the rest
+    /// are routed by [`no_cx_route`] so none is silently dropped. Silence
+    /// stops no longer come through here — `drain_mic` executes them with
+    /// effects. HideHud cannot close the window without `App`, so it marks
+    /// the HUD for closing on the next tick instead.
     pub(crate) fn input_no_cx(&mut self, ev: Input, tag: &str) {
         let effects = self
             .machine
@@ -561,11 +720,11 @@ impl AppState {
             .handle(ev, self.now_ms());
         self.log(&format!("hold {tag} -> {} effect(s)", effects.len()));
         for effect in effects {
-            match effect {
-                Effect::CloseMic { discard } => self.close_mic(discard),
-                Effect::CancelModelLoad => self.cancel_load(),
-                Effect::OpenMic => self.open_mic_no_cx(),
-                Effect::HideHud => {
+            match no_cx_route(&effect) {
+                NoCxRoute::CloseMic { discard } => self.close_mic(discard),
+                NoCxRoute::CancelLoad => self.cancel_load(),
+                NoCxRoute::ReopenSuppressed => self.open_mic_no_cx(),
+                NoCxRoute::HideDeferred => {
                     self.listening = None;
                     self.confirming = None;
                     self.pending_plan = None;
@@ -574,7 +733,9 @@ impl AppState {
                         hud.dismiss_at = Some(Instant::now());
                     }
                 }
-                _ => self.log(&format!("hold {tag}: deferred effect {effect:?} to tick")),
+                NoCxRoute::Dropped => {
+                    self.log(&format!("hold {tag}: {effect:?} has no headless path"));
+                }
             }
         }
     }
@@ -627,11 +788,17 @@ impl AppState {
     /// the buffered clip behind the in-flight load (cold, or wav-debug).
     pub(crate) fn begin_transcribe(&mut self, cx: &mut App, mode: Mode, id: u64) {
         let key_up = Instant::now();
-        self.pending = Some(PendingTranscribe { id, mode, key_up });
+        self.pending = Some(PendingTranscribe {
+            id,
+            mode,
+            key_up,
+            target: self.target.clone(),
+        });
         self.last_active = Instant::now();
         if mode == Mode::Dictate && !self.heard_speech && self.debug_wav.is_none() {
             self.log("no speech captured — skipping decode");
             self.pending = None;
+            self.cancel_stream();
             self.input(cx, Input::Finished { hud: None, id }, "finished (silence)");
             return;
         }
@@ -660,7 +827,7 @@ impl AppState {
                 None => (
                     self.stream.unwrap_or(0),
                     Some(AudioSource::Mic {
-                        rate: self.mic_rate,
+                        rate: jisuno_audio::audio::TARGET_RATE,
                         pcm: std::mem::take(&mut self.buffer),
                     }),
                 ),
@@ -682,14 +849,27 @@ impl AppState {
             })
             .is_err()
         {
-            self.log("model worker gone");
-            self.pending = None;
-            self.input(
-                cx,
-                Input::Finished { hud: None, id },
-                "finished (worker gone)",
-            );
+            // The worker thread is gone: respawn it and re-drive this
+            // utterance from the fallback audio, which the cold path decodes
+            // behind the fresh load. The buffer still holds the whole clip
+            // here (cleared only after a successful handoff).
+            self.log("model worker gone — respawning, decoding from fallback audio");
+            let fallback = match &self.debug_wav {
+                Some(path) => Some(AudioSource::Wav { path: path.clone() }),
+                None => Some(AudioSource::Mic {
+                    rate: jisuno_audio::audio::TARGET_RATE,
+                    pcm: std::mem::take(&mut self.buffer),
+                }),
+            };
+            self.clear_stream();
+            self.recover_worker(cx, "worker gone");
+            let _ = self.to_worker.send(ToWorker::Finish {
+                stream: 0,
+                reply: id,
+                fallback,
+            });
         }
+        self.buffer.clear();
     }
 
     pub(crate) fn on_transcript(
@@ -720,15 +900,38 @@ impl AppState {
         self.last_active = Instant::now();
         match pending.mode {
             Mode::Dictate => {
-                if text.trim().is_empty() {
-                    self.input(cx, Input::Finished { hud: None, id }, "finished (empty)");
+                // Probe the machine first: if the transcribe timeout already
+                // fired (or the utterance moved on), the reply is ignored —
+                // never insert stale text. Acceptance releases the machine,
+                // so the text below needs no second feed.
+                if !self.input_checked(
+                    cx,
+                    Input::TranscriptReady {
+                        text: String::new(),
+                        id,
+                    },
+                    "transcript ready",
+                ) {
+                    self.log(&format!(
+                        "stale transcript {id} (machine moved on) — kept in Recent"
+                    ));
+                    self.push_recent(text, Some("not inserted".to_string()));
                     return;
                 }
-                match self.insert_text(&text) {
+                if text.trim().is_empty() {
+                    return;
+                }
+                if pending.target.is_none() {
+                    self.log("focus lost: text in Recent");
+                    self.push_recent(text.clone(), Some("not inserted".to_string()));
+                    self.show_ephemeral(cx, UiHud::FocusLost, "insert failed");
+                    return;
+                }
+                let (pid, bundle) = Self::insert_dest(&pending.target);
+                match self.insert_text(&text, pid, bundle) {
                     Ok(()) => {
                         let words = text.split_whitespace().count();
                         self.push_recent(text.clone(), None);
-                        self.input(cx, Input::TranscriptReady { text, id }, "transcript ready");
                         let latency = self.show_latency.then_some(key_up_ms as u64);
                         self.show_ephemeral(
                             cx,
@@ -740,14 +943,6 @@ impl AppState {
                         );
                     }
                     Err(kind) => {
-                        self.input(
-                            cx,
-                            Input::TranscriptReady {
-                                text: String::new(),
-                                id,
-                            },
-                            "transcript ready (insert failed)",
-                        );
                         let hud = match kind {
                             InsertFailure::FocusLost => UiHud::FocusLost,
                             InsertFailure::Blocked => UiHud::InsertBlocked,
@@ -756,13 +951,29 @@ impl AppState {
                     }
                 }
             }
-            Mode::Command => self.resolve_command(cx, id, text),
+            Mode::Command => {
+                let frontmost = pending.target.as_ref().and_then(|t| t.bundle_id.clone());
+                self.resolve_command(cx, id, text, frontmost);
+            }
         }
     }
 
-    pub(crate) fn insert_text(&mut self, text: &str) -> Result<(), InsertFailure> {
-        let pid = self.target.as_ref().map(|t| t.pid);
-        let bundle = self.target.as_ref().and_then(|t| t.bundle_id.clone());
+    /// Key-down target resolved to an insert destination: the app focused
+    /// when the machine accepted the press, or nowhere (focus was already
+    /// lost at key-down) — never the app focused at key-up.
+    pub(crate) fn insert_dest(target: &Option<AppInfo>) -> (Option<i32>, Option<String>) {
+        match target {
+            Some(t) => (Some(t.pid), t.bundle_id.clone()),
+            None => (None, None),
+        }
+    }
+
+    pub(crate) fn insert_text(
+        &mut self,
+        text: &str,
+        pid: Option<i32>,
+        bundle: Option<String>,
+    ) -> Result<(), InsertFailure> {
         let mut mode = match self.settings.insert {
             settings::Insert::Paste => InsertMode::Paste,
             settings::Insert::Type => InsertMode::Type,
@@ -803,10 +1014,11 @@ impl AppState {
     /// popover reads this once it exists; until then it is logged.
     pub(crate) fn push_recent(&mut self, text: String, tag: Option<String>) {
         self.log(&format!(
-            "recent{}: {text:?}",
+            "recent{}: {}",
             tag.as_deref()
                 .map(|t| format!(" [{t}]"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            text_summary(&text)
         ));
         self.recent.push_back(RecentEntry { text, tag });
         while self.recent.len() > 5 {
@@ -828,14 +1040,89 @@ pub(crate) fn default_input_name() -> Option<String> {
 }
 
 pub(crate) fn find_input_device(wanted: &str) -> Option<String> {
-    let host = cpal::default_host();
-    host.input_devices().ok()?.find_map(|device| {
-        let name = device.name().ok()?;
-        (name == wanted).then_some(name)
-    })
+    cached_input_device_names()
+        .into_iter()
+        .find(|name| name == wanted)
 }
 
 pub(crate) fn is_bluetooth_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("bluetooth") || lower.contains("airpods") || lower.contains("beats")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::no_cx_route;
+    use super::NoCxRoute;
+    use jisuno_logic::hold::HudState as LogicHud;
+    use jisuno_logic::hold::{Effect, Mode};
+
+    fn is_dropped(effect: &Effect) -> bool {
+        matches!(no_cx_route(effect), NoCxRoute::Dropped)
+    }
+
+    /// The utterance inserts into the app focused at key-down (captured
+    /// when the machine accepted the press), never the key-up frontmost
+    /// app; `None` means focus was already lost.
+    #[test]
+    fn insert_uses_key_down_target() {
+        use super::AppState;
+        use jisuno_platform::frontmost::AppInfo;
+        assert_eq!(
+            AppState::insert_dest(&Some(AppInfo {
+                bundle_id: Some("com.example.App".to_string()),
+                name: "App".to_string(),
+                pid: 123,
+            })),
+            (Some(123), Some("com.example.App".to_string()))
+        );
+        assert_eq!(AppState::insert_dest(&None), (None, None));
+    }
+
+    /// Every [`Effect`] variant has an explicit headless route: cx-free
+    /// effects run inline, the rest are loudly dropped. If a variant is
+    /// added to the machine, this fails to compile until it is routed.
+    #[test]
+    fn every_effect_has_a_headless_route() {
+        assert!(matches!(
+            no_cx_route(&Effect::CloseMic { discard: true }),
+            NoCxRoute::CloseMic { discard: true }
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::CloseMic { discard: false }),
+            NoCxRoute::CloseMic { discard: false }
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::CancelModelLoad),
+            NoCxRoute::CancelLoad
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::OpenMic),
+            NoCxRoute::ReopenSuppressed
+        ));
+        assert!(matches!(
+            no_cx_route(&Effect::HideHud),
+            NoCxRoute::HideDeferred
+        ));
+        for effect in [
+            Effect::StartModelLoad,
+            Effect::ShowHud(LogicHud::Listening(Mode::Dictate)),
+            Effect::ShowHud(LogicHud::HandsFree),
+            Effect::Transcribe {
+                mode: Mode::Dictate,
+                id: 0,
+            },
+            Effect::RunCommand,
+            Effect::ShowConfirm {
+                label: String::new(),
+            },
+            Effect::PassThrough,
+            Effect::Countdown { secs_left: 3 },
+        ] {
+            assert!(
+                is_dropped(&effect),
+                "{effect:?} must be an explicit Dropped"
+            );
+        }
+    }
 }

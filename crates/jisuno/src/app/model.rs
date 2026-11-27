@@ -3,6 +3,7 @@
 //! Split from `app.rs` with no behavior change (step 1).
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,8 +12,8 @@ use jisuno_logic::hold::Input;
 use jisuno_logic::settings::{self, Settings};
 use jisuno_ui::hud_model::{tail_text, HudState as UiHud, PARTIAL_TAIL_CHARS};
 
-use super::state::AppState;
-use super::worker::{FromWorker, ToWorker};
+use super::state::{text_summary, AppState};
+use super::worker::{worker_main, FromWorker, ToWorker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelState {
@@ -191,7 +192,32 @@ impl AppState {
         }
     }
 
+    /// Unload is only safe with the mic closed and no transcribe pending:
+    /// unloading mid-hold drops the utterance being dictated. The socket
+    /// handler (socket.rs) maps this to a `busy` reply via the tick-
+    /// refreshed snapshot; menu/key/command paths just refuse and log.
+    pub(crate) fn can_unload(&self) -> bool {
+        !self.mic_open && self.pending.is_none()
+    }
+
+    /// The model id changed while idle: drop the old load (a still-running
+    /// load is cancelled) and start the new one.
+    pub(crate) fn switch_model(&mut self, cx: &mut App, why: &str) {
+        if self.model_state == ModelState::Warm {
+            self.unload_model(why);
+        } else if matches!(self.model_state, ModelState::Loading { .. }) {
+            self.cancel_load();
+        }
+        self.start_load(cx, why);
+    }
+
     pub(crate) fn unload_model(&mut self, why: &str) {
+        if !self.can_unload() {
+            self.log(&format!(
+                "unload ({why}) refused: busy (mic open or transcribe pending)"
+            ));
+            return;
+        }
         if self.model_state == ModelState::Warm {
             let _ = self.to_worker.send(ToWorker::Unload);
             self.model_state = ModelState::Unloaded;
@@ -216,11 +242,7 @@ impl AppState {
 
     pub(crate) fn poll_idle_unload(&mut self) {
         let mins = self.settings.unload_after_idle_min;
-        if mins == 0
-            || self.model_state != ModelState::Warm
-            || self.pending.is_some()
-            || self.mic_open
-        {
+        if mins == 0 || !self.can_unload() || self.model_state != ModelState::Warm {
             return;
         }
         if self.last_active.elapsed() >= Duration::from_secs(u64::from(mins) * 60) {
@@ -248,18 +270,11 @@ impl AppState {
             self.log("model worker gone — stream dropped");
             return;
         }
-        // Debug WAV is already 16 kHz; the mic buffer needs one-shot
-        // resampling (the streaming resampler restarts fresh after this).
-        let pcm16 = if self.debug_wav.is_some() {
-            std::mem::take(&mut self.buffer)
-        } else {
-            let pcm16 = jisuno_audio::audio::resample_to_16k(&self.buffer, self.mic_rate);
-            self.resampler = Some(jisuno_audio::audio::StreamingResampler::new(
-                self.mic_rate,
-                jisuno_audio::audio::TARGET_RATE,
-            ));
-            pcm16
-        };
+        // The buffer is already 16 kHz (drained incrementally per chunk),
+        // debug WAV included: send it as-is instead of resampling the
+        // whole clip on the tick. The resampler keeps its state so the
+        // following chunks continue with the right filter context.
+        let pcm16 = std::mem::take(&mut self.buffer);
         if self
             .to_worker
             .send(ToWorker::Push { stream, pcm: pcm16 })
@@ -274,7 +289,32 @@ impl AppState {
         self.log(&format!("stream {stream} begun (warm flush)"));
     }
 
-    fn clear_stream(&mut self) {
+    /// Spawn a fresh worker thread on new channels, replacing the dead one.
+    pub(crate) fn respawn_worker(&mut self) {
+        let (to_worker, worker_rx) = mpsc::channel();
+        let (worker_tx, from_worker) = mpsc::channel();
+        self.to_worker = to_worker;
+        self.from_worker = from_worker;
+        std::thread::spawn(move || worker_main(worker_rx, worker_tx));
+        self.log("model worker respawned");
+    }
+
+    /// The worker thread is gone (a `to_worker` send failed): respawn it,
+    /// forget the load, and start it again. The caller re-drives its
+    /// utterance from fallback audio, which the cold path decodes behind
+    /// the fresh load — dictation survives the restart.
+    pub(crate) fn recover_worker(&mut self, cx: &mut App, why: &str) {
+        self.respawn_worker();
+        self.model_state = ModelState::Unloaded;
+        self.machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_model_warm(false);
+        self.child_rss_mb = None;
+        self.start_load(cx, why);
+    }
+
+    pub(crate) fn clear_stream(&mut self) {
         self.stream = None;
         self.stream_begun = false;
         self.partial_in_flight = false;
@@ -320,100 +360,151 @@ impl AppState {
         }
     }
 
+    /// The worker thread is gone (channel disconnect): forget the load and
+    /// resolve any pending transcribe as finished-with-error, like a crash.
+    /// Quiet once handled — the disconnect recurs every tick until a
+    /// respawn replaces the channel.
+    pub(crate) fn on_worker_disconnected(&mut self, cx: &mut App) {
+        self.clear_stream();
+        self.child_rss_mb = None;
+        self.set_socket_rss(None);
+        if self.model_state != ModelState::Unloaded {
+            self.model_state = ModelState::Unloaded;
+            self.model_gen = self.model_gen.wrapping_add(1);
+            self.machine
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_model_warm(false);
+            self.log("model worker thread exited");
+        }
+        if let Some(pending) = self.pending.take() {
+            let id = pending.id;
+            self.input(
+                cx,
+                Input::Finished { hud: None, id },
+                "finished (worker gone)",
+            );
+            if !self.worker_crash_shown {
+                self.worker_crash_shown = true;
+                self.show_ephemeral(
+                    cx,
+                    UiHud::ConfigError {
+                        location: "transcribe".to_string(),
+                        message: "model worker exited · restarts on next hold".to_string(),
+                    },
+                    "worker gone",
+                );
+            }
+        }
+    }
+
     pub(crate) fn drain_worker(&mut self, cx: &mut App) {
-        while let Ok(msg) = self.from_worker.try_recv() {
-            match msg {
-                FromWorker::Warm {
-                    gen,
-                    load_ms,
-                    child_rss_mb,
-                } => {
-                    if gen != self.model_gen {
-                        continue;
-                    }
-                    self.model_state = ModelState::Warm;
-                    self.last_active = Instant::now();
-                    self.machine
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .handle(Input::ModelWarm, self.now_ms());
-                    self.child_rss_mb = Some(child_rss_mb);
-                    self.set_socket_rss(Some(child_rss_mb));
-                    self.worker_crash_shown = false;
-                    self.log(&format!(
-                        "model warm (load {load_ms} ms, child {child_rss_mb} MB)"
-                    ));
-                    self.flush_cold_stream();
-                    if !self.mic_open && self.pending.is_none() {
-                        self.show_ephemeral(cx, UiHud::ModelReady, "model ready");
-                    }
+        loop {
+            match self.from_worker.try_recv() {
+                Ok(msg) => self.handle_worker_msg(cx, msg),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.on_worker_disconnected(cx);
+                    break;
                 }
-                FromWorker::LoadFailed { gen, err } => {
-                    if gen != self.model_gen {
-                        continue;
-                    }
-                    self.model_state = ModelState::Failed;
-                    self.machine
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .handle(Input::LoadFailed, self.now_ms());
-                    self.log(&format!("model load failed: {err}"));
+            }
+        }
+    }
+
+    pub(crate) fn handle_worker_msg(&mut self, cx: &mut App, msg: FromWorker) {
+        match msg {
+            FromWorker::Warm {
+                gen,
+                load_ms,
+                child_rss_mb,
+            } => {
+                if gen != self.model_gen {
+                    return;
                 }
-                FromWorker::Partial { stream, text } => {
-                    self.partial_in_flight = false;
-                    if self.settings.partials && self.stream == Some(stream) && self.mic_open {
-                        let tail = tail_text(text.trim(), PARTIAL_TAIL_CHARS).to_string();
-                        if !tail.is_empty() {
-                            self.partial_text = Some(tail.clone());
-                            if let Some(listening) = &mut self.listening {
-                                listening.partial = Some(tail.clone());
-                            }
-                            self.log(&format!("partial: {tail}"));
-                            self.refresh_hud_now(cx);
+                self.model_state = ModelState::Warm;
+                self.last_active = Instant::now();
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .handle(Input::ModelWarm, self.now_ms());
+                self.child_rss_mb = Some(child_rss_mb);
+                self.set_socket_rss(Some(child_rss_mb));
+                self.worker_crash_shown = false;
+                self.log(&format!(
+                    "model warm (load {load_ms} ms, child {child_rss_mb} MB)"
+                ));
+                self.flush_cold_stream();
+                if !self.mic_open && self.pending.is_none() {
+                    self.show_ephemeral(cx, UiHud::ModelReady, "model ready");
+                }
+            }
+            FromWorker::LoadFailed { gen, err } => {
+                if gen != self.model_gen {
+                    return;
+                }
+                self.model_state = ModelState::Failed;
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .handle(Input::LoadFailed, self.now_ms());
+                self.log(&format!("model load failed: {err}"));
+            }
+            FromWorker::Partial { stream, text } => {
+                self.partial_in_flight = false;
+                if self.settings.partials && self.stream == Some(stream) && self.mic_open {
+                    let tail = tail_text(text.trim(), PARTIAL_TAIL_CHARS).to_string();
+                    if !tail.is_empty() {
+                        self.partial_text = Some(tail.clone());
+                        if let Some(listening) = &mut self.listening {
+                            listening.partial = Some(tail.clone());
                         }
+                        self.log(&format!("partial: {}", text_summary(&tail)));
+                        self.refresh_hud_now(cx);
                     }
                 }
-                FromWorker::PartialFailed { stream } => {
-                    if self.stream == Some(stream) {
-                        self.partial_in_flight = false;
-                    }
+            }
+            FromWorker::PartialFailed { stream } => {
+                if self.stream == Some(stream) {
+                    self.partial_in_flight = false;
                 }
-                FromWorker::Transcript {
-                    id,
-                    text,
-                    decode_ms,
-                    child_rss_mb,
-                } => {
-                    self.on_transcript(cx, id, text, decode_ms, child_rss_mb);
-                    self.set_socket_rss(self.child_rss_mb);
+            }
+            FromWorker::Transcript {
+                id,
+                text,
+                decode_ms,
+                child_rss_mb,
+            } => {
+                self.on_transcript(cx, id, text, decode_ms, child_rss_mb);
+                self.set_socket_rss(self.child_rss_mb);
+            }
+            FromWorker::NotReady { id } => {
+                self.log(&format!("worker not ready for {id}"));
+                self.clear_stream();
+                if self.pending.take().is_some_and(|pending| pending.id == id)
+                    && self.input_checked(
+                        cx,
+                        Input::Finished { hud: None, id },
+                        "finished (not ready)",
+                    )
+                {
+                    self.show_ephemeral(cx, UiHud::ModelMissing, "model not ready");
                 }
-                FromWorker::NotReady { id } => {
-                    self.log(&format!("worker not ready for {id}"));
-                    self.clear_stream();
-                    if self.pending.take().is_some() {
-                        self.input(
-                            cx,
-                            Input::Finished { hud: None, id },
-                            "finished (not ready)",
-                        );
-                        self.show_ephemeral(cx, UiHud::ModelMissing, "model not ready");
-                    }
+            }
+            FromWorker::PendingFailed { id, err } => {
+                self.log(&format!("transcribe {id} failed: {err}"));
+                self.clear_stream();
+                if self.pending.take().is_some_and(|pending| pending.id == id)
+                    && self.input_checked(
+                        cx,
+                        Input::Finished { hud: None, id },
+                        "finished (decode failed)",
+                    )
+                {
+                    self.show_ephemeral(cx, UiHud::ModelMissing, "decode failed");
                 }
-                FromWorker::PendingFailed { id, err } => {
-                    self.log(&format!("transcribe {id} failed: {err}"));
-                    self.clear_stream();
-                    if self.pending.take().is_some() {
-                        self.input(
-                            cx,
-                            Input::Finished { hud: None, id },
-                            "finished (decode failed)",
-                        );
-                        self.show_ephemeral(cx, UiHud::ModelMissing, "decode failed");
-                    }
-                }
-                FromWorker::Crashed { err } => {
-                    self.on_worker_crashed(cx, &err);
-                }
+            }
+            FromWorker::Crashed { err } => {
+                self.on_worker_crashed(cx, &err);
             }
         }
     }

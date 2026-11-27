@@ -65,6 +65,10 @@ pub(crate) struct PendingTranscribe {
     pub(crate) id: u64,
     pub(crate) mode: Mode,
     pub(crate) key_up: Instant,
+    /// App focused at key-down, captured when the machine accepted the
+    /// press: the utterance inserts here even if focus moved by key-up.
+    /// `None` means focus was already lost at key-down.
+    pub(crate) target: Option<AppInfo>,
 }
 
 pub(crate) struct HudWindow {
@@ -104,6 +108,8 @@ pub(crate) struct AppState {
     pub(crate) capture: Option<Capture>,
     pub(crate) mic_open: bool,
     pub(crate) mic_rate: u32,
+    /// 16 kHz mono samples accumulated while the stream is not begun (the
+    /// cold path decodes this buffer when the load lands).
     pub(crate) buffer: Vec<f32>,
     pub(crate) heard_speech: bool,
     pub(crate) handsfree_vad: Option<jisuno_logic::vad::Vad>,
@@ -232,6 +238,23 @@ impl AppState {
         self.exec_effects(cx, effects);
     }
 
+    /// Feed the machine and execute the effects, reporting whether the
+    /// machine accepted the input (non-empty effects). A reply the machine
+    /// ignores — id mismatch, or the transcribe timeout already fired —
+    /// must not drive host action: no stale insert, no stale command run.
+    pub(crate) fn input_checked(&mut self, cx: &mut App, ev: Input, tag: &str) -> bool {
+        let now = self.now_ms();
+        let effects = self
+            .machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .handle(ev, now);
+        self.log(&format!("hold {tag} -> {} effect(s)", effects.len()));
+        let accepted = !effects.is_empty();
+        self.exec_effects(cx, effects);
+        accepted
+    }
+
     pub(crate) fn now_ms(&self) -> u64 {
         self.start.elapsed().as_millis() as u64
     }
@@ -241,5 +264,46 @@ impl AppState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .captures(key)
+    }
+}
+
+/// Full dictated/partial/command text reaches the logs only when
+/// `JISUNO_LOG_TEXT=1`; by default logs carry lengths/word counts only.
+pub(crate) fn log_full_text() -> bool {
+    std::env::var_os("JISUNO_LOG_TEXT").is_some_and(|v| v == "1")
+}
+
+/// Log-safe rendering of user speech: the full text with
+/// `JISUNO_LOG_TEXT=1`, otherwise `N chars, M words`.
+pub(crate) fn text_summary(text: &str) -> String {
+    if log_full_text() {
+        format!("{text:?}")
+    } else {
+        format!(
+            "{} chars, {} words",
+            text.chars().count(),
+            text.split_whitespace().count()
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{log_full_text, text_summary};
+
+    #[test]
+    fn speech_stays_out_of_logs_by_default() {
+        let prev = std::env::var_os("JISUNO_LOG_TEXT");
+        std::env::remove_var("JISUNO_LOG_TEXT");
+        assert!(!log_full_text());
+        assert_eq!(text_summary("hello brave world"), "17 chars, 3 words");
+        assert_eq!(text_summary(""), "0 chars, 0 words");
+        std::env::set_var("JISUNO_LOG_TEXT", "1");
+        assert!(log_full_text());
+        assert_eq!(text_summary("hello brave world"), "\"hello brave world\"");
+        match prev {
+            Some(v) => std::env::set_var("JISUNO_LOG_TEXT", v),
+            None => std::env::remove_var("JISUNO_LOG_TEXT"),
+        }
     }
 }

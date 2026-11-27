@@ -2,6 +2,8 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
+use std::sync::{Mutex, OnceLock};
+
 use jisuno_platform::{permissions::Pane, status_item::IconState};
 
 use super::model::ModelState;
@@ -9,6 +11,11 @@ use super::socket::state_name;
 use super::state::AppState;
 
 // --- Menu bar chrome ---
+
+/// Last icon state pushed to the menu bar: `set_icon` rewrites the button
+/// title/tooltip every call, so only push on change. Process-global: one
+/// app instance owns the status item.
+static LAST_ICON: OnceLock<Mutex<Option<(IconState, bool, bool)>>> = OnceLock::new();
 
 impl AppState {
     // --- Menu bar chrome ---
@@ -31,7 +38,22 @@ impl AppState {
                 model_warm: self.model_state == ModelState::Warm,
             }
         };
-        self.status.set_icon(state, warning, self.secure_now);
+        let icon = (state, warning, self.secure_now);
+        let changed = LAST_ICON
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map(|mut last| {
+                if *last == Some(icon) {
+                    false
+                } else {
+                    *last = Some(icon);
+                    true
+                }
+            })
+            .unwrap_or(true);
+        if changed {
+            self.status.set_icon(state, warning, self.secure_now);
+        }
 
         let line = match self.model_state {
             ModelState::Warm => {

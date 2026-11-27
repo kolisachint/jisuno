@@ -14,13 +14,14 @@ use std::time::{Duration, Instant};
 
 use gpui::App;
 use jisuno_logic::hold::Input;
-use jisuno_logic::runner::{self, Commands, Outcome, Resolution};
+use jisuno_logic::runner::{self, Commands, Outcome, Plan, Resolution};
 use jisuno_logic::settings::ConfigDir;
 use jisuno_logic::voice_control::{self, Config, WindowDef};
 use jisuno_platform::actions::{self, MacActions};
 use jisuno_ui::hud_model::HudState as UiHud;
 
-use super::state::AppState;
+use super::state::{text_summary, AppState};
+use super::windows::COMMAND_RECENT_PREFIX;
 use crate::runtime::{build_runtime, scan_installed_apps, THEMES};
 
 /// Installed-apps cache TTL: re-scanned at most once an hour.
@@ -223,13 +224,34 @@ impl AppState {
     }
 
     /// Replace decoding with the H10 confirm prompt and arm the timeout.
+    /// The confirm HUD shows the runner's exact prompt copy
+    /// (`Plan::confirm_prompt`, voice-control.md §6): `detail_lines`
+    /// renders `Run "<command>"? <first_step> · …`, so `first_step` is the
+    /// prompt's summary part verbatim, not just `steps[0]`.
+    pub(crate) fn confirm_summary(plan: &Plan) -> String {
+        let prompt = plan.confirm_prompt();
+        let prefix = format!("Run \"{}\"? ", plan.label);
+        let suffix = " · Return to run · Esc to cancel";
+        prompt
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                plan.steps
+                    .iter()
+                    .map(|step| step.summary())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+    }
+
     pub(crate) fn show_confirm(&mut self, cx: &mut App, label: String) {
         self.confirming = self.pending_plan.clone();
         let first_step = self
             .confirming
             .as_ref()
-            .and_then(|plan| plan.steps.first())
-            .map(|step| step.summary())
+            .map(Self::confirm_summary)
             .unwrap_or_default();
         self.log(&format!("confirm prompt: {label}"));
         if !self.hud_enabled() {
@@ -262,7 +284,7 @@ impl AppState {
         while let Ok(done) = self.cmd_rx.try_recv() {
             match done.outcome {
                 Outcome::Done => {
-                    self.push_recent(format!("⌚ {}", done.label), None);
+                    self.push_recent(format!("{COMMAND_RECENT_PREFIX}{}", done.label), None);
                     self.show_ephemeral(cx, UiHud::RanCommand { label: done.label }, "command ran");
                 }
                 Outcome::Failed {
@@ -273,7 +295,10 @@ impl AppState {
                     hud,
                 } => {
                     self.log(&format!("hud: {hud}"));
-                    self.push_recent(format!("⌚ {}", done.label), Some("failed".to_string()));
+                    self.push_recent(
+                        format!("{COMMAND_RECENT_PREFIX}{}", done.label),
+                        Some("failed".to_string()),
+                    );
                     self.show_ephemeral(
                         cx,
                         UiHud::StepFailed {
@@ -290,13 +315,22 @@ impl AppState {
     }
 
     /// Resolve one command utterance: feed the machine and show the HUD.
-    pub(crate) fn resolve_command(&mut self, cx: &mut App, id: u64, text: String) {
+    pub(crate) fn resolve_command(
+        &mut self,
+        cx: &mut App,
+        id: u64,
+        text: String,
+        frontmost: Option<String>,
+    ) {
         use Resolution as R;
-        let frontmost = self.target.as_ref().and_then(|t| t.bundle_id.clone());
+        // The machine pairs replies by id: if the transcribe timeout already
+        // fired, it ignores the reply — drop the plan/result instead of
+        // running or showing anything stale. Recent keeps the utterance
+        // either way; it is host history, not machine state.
         match self.voice_commands().resolve(&text, frontmost.as_deref()) {
             R::Run(plan) => {
                 self.pending_plan = Some(plan.clone());
-                self.input(
+                if !self.input_checked(
                     cx,
                     Input::CommandResolved {
                         needs_confirm: false,
@@ -304,11 +338,14 @@ impl AppState {
                         id,
                     },
                     "command resolved",
-                );
+                ) {
+                    self.log(&format!("stale command {id} (machine moved on) — dropped"));
+                    self.pending_plan = None;
+                }
             }
             R::Confirm(plan) => {
                 self.pending_plan = Some(plan.clone());
-                self.input(
+                if !self.input_checked(
                     cx,
                     Input::CommandResolved {
                         needs_confirm: true,
@@ -316,32 +353,104 @@ impl AppState {
                         id,
                     },
                     "command resolved (confirm)",
-                );
+                ) {
+                    self.log(&format!("stale command {id} (machine moved on) — dropped"));
+                    self.pending_plan = None;
+                }
             }
             R::DidYouMean(copy) => {
-                self.input(cx, Input::Finished { hud: None, id }, "finished (no match)");
-                self.push_recent(text.clone(), Some("failed".to_string()));
-                let suggestion = extract_suggestion(&copy).unwrap_or(copy);
-                self.show_ephemeral(cx, UiHud::NoMatch { suggestion }, "no match");
+                if self.input_checked(cx, Input::Finished { hud: None, id }, "finished (no match)")
+                {
+                    self.push_recent(text.clone(), Some("failed".to_string()));
+                    let suggestion = extract_suggestion(&copy).unwrap_or(copy);
+                    self.show_ephemeral(cx, UiHud::NoMatch { suggestion }, "no match");
+                } else {
+                    self.push_recent(text.clone(), Some("failed".to_string()));
+                }
             }
             R::NoMatch { hud } => {
-                self.input(cx, Input::Finished { hud: None, id }, "finished (no match)");
-                self.log(&format!("{hud} for {text:?}"));
+                self.log(&format!("{hud} for {}", text_summary(&text)));
                 self.push_recent(text.clone(), Some("failed".to_string()));
-                self.show_ephemeral(cx, UiHud::NoCommandMatched, "no command matched");
+                if self.input_checked(cx, Input::Finished { hud: None, id }, "finished (no match)")
+                {
+                    self.show_ephemeral(cx, UiHud::NoCommandMatched, "no command matched");
+                }
             }
             R::Failed { hud } => {
-                self.input(
-                    cx,
-                    Input::Finished { hud: None, id },
-                    "finished (resolve failed)",
-                );
-                // Unreachable with a validated config: log + Recent + HUD.
+                // Unreachable with a validated config: log + Recent either
+                // way, HUD only while the machine is still waiting.
                 self.log(&hud);
                 self.push_recent(text.clone(), Some("failed".to_string()));
                 let (label, reason) = split_resolve_failed(&hud);
-                self.show_ephemeral(cx, UiHud::ResolveFailed { label, reason }, "resolve failed");
+                if self.input_checked(
+                    cx,
+                    Input::Finished { hud: None, id },
+                    "finished (resolve failed)",
+                ) {
+                    self.show_ephemeral(
+                        cx,
+                        UiHud::ResolveFailed { label, reason },
+                        "resolve failed",
+                    );
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppState;
+    use jisuno_logic::runner::{Plan, ResolvedStep};
+
+    fn plan(label: &str, steps: Vec<ResolvedStep>) -> Plan {
+        Plan {
+            command_id: "test".to_string(),
+            label: label.to_string(),
+            steps,
+        }
+    }
+
+    /// The confirm HUD carries the runner's exact prompt summary
+    /// (voice-control.md §6), not just `steps[0]`.
+    #[test]
+    fn confirm_shows_runner_prompt_summary() {
+        let shell = plan(
+            "clean build",
+            vec![ResolvedStep::ShellRun {
+                cmd: "cargo clean".to_string(),
+                cwd: None,
+            }],
+        );
+        assert_eq!(AppState::confirm_summary(&shell), "cargo clean");
+
+        let shell_cwd = plan(
+            "clean build",
+            vec![ResolvedStep::ShellRun {
+                cmd: "cargo clean".to_string(),
+                cwd: Some("~/github/jisuno".to_string()),
+            }],
+        );
+        assert_eq!(
+            AppState::confirm_summary(&shell_cwd),
+            "cargo clean (in ~/github/jisuno)"
+        );
+
+        let multi = plan(
+            "tidy",
+            vec![
+                ResolvedStep::ShellRun {
+                    cmd: "cargo clean".to_string(),
+                    cwd: None,
+                },
+                ResolvedStep::ThemeSet {
+                    theme: "dark".to_string(),
+                },
+            ],
+        );
+        assert_eq!(
+            AppState::confirm_summary(&multi),
+            "shell.run cargo clean, theme.set dark"
+        );
     }
 }

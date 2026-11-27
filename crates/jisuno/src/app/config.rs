@@ -2,7 +2,10 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -18,9 +21,61 @@ use jisuno_platform::{
 };
 use jisuno_ui::hud_model::HudState as UiHud;
 
-use super::model::model_id;
+use super::model::{model_id, ModelState};
 use super::state::{AppState, SECURE_POLL_MS};
 use super::tap_config_for;
+
+/// Dictation-limit change seen while a session is live: applied when the
+/// machine is back to Idle (never mid-hold). 0 = none (the valid range is
+/// 10..=600, so 0 is never a real limit). Process-global: one app instance
+/// owns the mic, and `AppState` gains no field for it (see mod.rs).
+static PENDING_DICTATION_LIMIT_S: AtomicU64 = AtomicU64::new(0);
+
+/// A failed tap restart leaves the old tap running and asks the tick to
+/// show the keys-paused HUD once. Process-global for the same reason.
+static TAP_RESTART_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Model switch seen while busy: the new model id, applied once idle.
+static PENDING_MODEL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// What a model change does: switch now, defer until idle, or just rename
+/// (nothing loaded yet — the next hold loads on demand).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelSwitch {
+    Now,
+    Defer,
+    RenameOnly,
+}
+
+/// Pure decision for [`ModelSwitch`]: switch while idle and something is
+/// loaded/loading, defer while busy, rename when unloaded.
+pub(crate) fn model_switch_action(state: &ModelState, busy: bool) -> ModelSwitch {
+    if busy {
+        return ModelSwitch::Defer;
+    }
+    match state {
+        ModelState::Warm | ModelState::Loading { .. } => ModelSwitch::Now,
+        ModelState::Unloaded | ModelState::Failed => ModelSwitch::RenameOnly,
+    }
+}
+
+/// Take a pending tap-restart failure for one HUD report.
+pub(crate) fn take_tap_restart_failed() -> bool {
+    TAP_RESTART_FAILED.swap(false, Ordering::SeqCst)
+}
+
+/// Take a deferred timing change once the machine is Idle: returns the
+/// pending limit and clears the slot, or `None` while a session is live.
+/// Pure apart from the process-global slot; unit-tested below.
+pub(crate) fn pending_timing_take(session_active: bool) -> Option<u64> {
+    if session_active {
+        return None;
+    }
+    match PENDING_DICTATION_LIMIT_S.swap(0, Ordering::SeqCst) {
+        0 => None,
+        limit_s => Some(limit_s),
+    }
+}
 
 // --- Startup: config files, permissions -----------------------------------
 
@@ -129,17 +184,98 @@ impl AppState {
         let fresh = self.settings_good.current().clone();
         if fresh != self.settings {
             self.log("settings reloaded");
-            if fresh.dictation_limit_s != self.settings.dictation_limit_s {
-                *self.machine.lock().unwrap_or_else(|e| e.into_inner()) =
-                    HoldMachine::new(Timing {
-                        dictation_limit_s: u64::from(fresh.dictation_limit_s),
-                        ..Timing::default()
-                    });
+            let limit_s = u64::from(fresh.dictation_limit_s);
+            if limit_s != u64::from(self.settings.dictation_limit_s) {
+                // Never swap the machine mid-hold: the timing change waits
+                // for Idle, and the load state is carried over, not reset.
+                if self.session_active() {
+                    PENDING_DICTATION_LIMIT_S.store(limit_s, Ordering::SeqCst);
+                    self.log("dictation limit change deferred until idle");
+                } else {
+                    self.apply_timing(limit_s);
+                }
             }
-            self.model_name = model_id(&fresh);
+            let new_model = model_id(&fresh);
+            if new_model != self.model_name {
+                self.model_name.clone_from(&new_model);
+                match model_switch_action(&self.model_state, !self.can_unload()) {
+                    ModelSwitch::Now => self.switch_model(cx, "model switch"),
+                    ModelSwitch::Defer => {
+                        if let Ok(mut pending) =
+                            PENDING_MODEL.get_or_init(|| Mutex::new(None)).lock()
+                        {
+                            *pending = Some(new_model);
+                        }
+                        self.log("model switch deferred until idle");
+                    }
+                    ModelSwitch::RenameOnly => {}
+                }
+            }
             self.settings = fresh;
         }
         self.last_config_error = None;
+    }
+
+    /// A live session (or a pending reply/confirm) means the machine is not
+    /// Idle: timing changes wait.
+    pub(crate) fn session_active(&self) -> bool {
+        self.mic_open || self.pending.is_some() || self.confirming.is_some()
+    }
+
+    /// Rebuild the machine with a new dictation limit, carrying the load
+    /// state (warm/unloaded) instead of resetting it.
+    pub(crate) fn apply_timing(&mut self, limit_s: u64) {
+        let warm = self
+            .machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_model_warm();
+        *self.machine.lock().unwrap_or_else(|e| e.into_inner()) = HoldMachine::new(Timing {
+            dictation_limit_s: limit_s,
+            ..Timing::default()
+        });
+        self.machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_model_warm(warm);
+        PENDING_DICTATION_LIMIT_S.store(0, Ordering::SeqCst);
+        self.log(&format!("dictation limit now {limit_s}s"));
+    }
+
+    /// Apply a deferred [`Self::reload_settings`] timing change once Idle.
+    pub(crate) fn apply_pending_timing(&mut self) {
+        if let Some(limit_s) = pending_timing_take(self.session_active()) {
+            self.apply_timing(limit_s);
+        }
+    }
+
+    /// Apply a deferred model switch once idle. A newer reload supersedes
+    /// the pending name; if the model already unloaded meanwhile, the
+    /// rename stands and the next hold loads on demand.
+    pub(crate) fn apply_pending_model(&mut self, cx: &mut App) {
+        let pending = PENDING_MODEL
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map(|mut slot| slot.take())
+            .unwrap_or(None);
+        let Some(name) = pending else {
+            return;
+        };
+        if name != self.model_name {
+            return;
+        }
+        if !self.can_unload() {
+            if let Ok(mut slot) = PENDING_MODEL.get_or_init(|| Mutex::new(None)).lock() {
+                *slot = Some(name);
+            }
+            return;
+        }
+        if matches!(
+            self.model_state,
+            ModelState::Warm | ModelState::Loading { .. }
+        ) {
+            self.switch_model(cx, "model switch");
+        }
     }
 
     pub(crate) fn reload_keybindings(&mut self, cx: &mut App, dir: &ConfigDir) {
@@ -304,11 +440,6 @@ impl AppState {
     }
 
     pub(crate) fn restart_tap(&mut self) {
-        if let Some(tap) = self.tap.take() {
-            if let Err(e) = tap.shutdown() {
-                self.log(&format!("tap shutdown: {e:#}"));
-            }
-        }
         let machine_w = Arc::clone(&self.machine);
         let tap_capture_w = Arc::clone(&self.tap_capture);
         let should_capture: ShouldCapture = Arc::new(move |captured: Captured| {
@@ -327,14 +458,66 @@ impl AppState {
             should_capture,
         ) {
             Ok((tap, rx)) => {
+                if let Some(old) = self.tap.take() {
+                    if let Err(e) = old.shutdown() {
+                        self.log(&format!("tap shutdown: {e:#}"));
+                    }
+                }
                 self.tap = Some(tap);
                 self.tap_rx = Some(rx);
                 self.log("tap restarted");
             }
             Err(e) => {
-                self.tap_rx = None;
-                self.log(&format!("tap restart failed: {e:#}"));
+                self.log(&format!("tap restart failed, keeping old tap: {e:#}"));
+                TAP_RESTART_FAILED.store(true, Ordering::SeqCst);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pending_timing_take, PENDING_DICTATION_LIMIT_S};
+    use std::sync::atomic::Ordering;
+
+    /// A model change switches at once while idle and loaded, waits while
+    /// busy, and renames only when nothing is loaded.
+    #[test]
+    fn model_switch_decision() {
+        use super::model_switch_action;
+        use super::ModelState;
+        use super::ModelSwitch;
+        assert_eq!(
+            model_switch_action(&ModelState::Warm, false),
+            ModelSwitch::Now
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Loading { gen: 1 }, false),
+            ModelSwitch::Now
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Warm, true),
+            ModelSwitch::Defer
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Unloaded, false),
+            ModelSwitch::RenameOnly
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Failed, false),
+            ModelSwitch::RenameOnly
+        );
+    }
+
+    /// A timing change waits while a session is live and is taken exactly
+    /// once when Idle.
+    #[test]
+    fn deferred_timing_waits_for_idle() {
+        PENDING_DICTATION_LIMIT_S.store(0, Ordering::SeqCst);
+        assert_eq!(pending_timing_take(false), None);
+        PENDING_DICTATION_LIMIT_S.store(90, Ordering::SeqCst);
+        assert_eq!(pending_timing_take(true), None);
+        assert_eq!(pending_timing_take(false), Some(90));
+        assert_eq!(pending_timing_take(false), None);
     }
 }
