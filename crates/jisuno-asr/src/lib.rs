@@ -5,3 +5,4 @@ pub mod download;
 pub mod setup;
 pub mod tls;
 pub mod transcribe;
+pub mod worker;

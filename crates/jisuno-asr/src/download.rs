@@ -299,10 +299,10 @@ fn finalize(part: &Path, dest: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::io::{BufRead, BufReader};
-    use std::net::TcpListener;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// Deterministic pseudo-random blob.
     fn blob(len: usize, seed: u8) -> Vec<u8> {
@@ -318,127 +318,153 @@ mod tests {
     }
 
     fn agent() -> ureq::Agent {
-        ureq::AgentBuilder::new().build()
+        // A hung request fails the test instead of blocking the run.
+        ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(30))
+            .build()
     }
 
-    /// Minimal HTTP/1.1 server on localhost. Serves `routes` (path -> body);
-    /// when `honor_range`, answers `Range: bytes=N-` with 206. Records the
-    /// Range header seen per request in `seen`. Stops after `max_requests`
-    /// or a 30 s deadline so a stuck test fails instead of hanging.
+    /// Localhost HTTP/1.1 server. Serves `routes` (path -> body); when
+    /// `honor_range`, answers `Range: bytes=N-` with 206. Every real GET
+    /// records its Range header (or None) in `seen`. Accepts connections
+    /// until the returned [`TestServer`] is joined or dropped. Every
+    /// response carries `Connection: close`, so the client never pools a
+    /// socket across requests.
     fn spawn_server(
-        name: &str,
         routes: HashMap<String, (Vec<u8>, bool)>,
-        max_requests: usize,
         seen: Arc<Mutex<Vec<Option<String>>>>,
-    ) -> (String, std::thread::JoinHandle<()>) {
-        let name = name.to_owned();
+    ) -> (String, TestServer) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let addr = listener.local_addr().expect("test server addr");
         listener.set_nonblocking(true).expect("nonblocking");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
         let handle = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            let mut served = 0;
-            while served < max_requests && Instant::now() < deadline {
-                let (stream, peer) = match listener.accept() {
-                    Ok(s) => s,
+            while !stop_flag.load(Ordering::Relaxed) {
+                let stream = match listener.accept() {
+                    Ok((stream, _peer)) => stream,
                     Err(_) => {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     }
                 };
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
-                let mut request_line = String::new();
-                let read_outcome = reader.read_line(&mut request_line);
-                // Stray empty connections (localhost scanners, closed
-                // dials) carry no request: close them without consuming a
-                // request slot, so they can never starve the real client.
-                if read_outcome.as_ref().is_err() || request_line.trim().is_empty() {
-                    if let Ok(log) = std::env::var("JISUNO_DEBUG_TEST_SERVER") {
-                        use std::io::Write as _;
-                        let mut f = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&log)
-                            .expect("open server log");
-                        let _ = writeln!(
-                            f,
-                            "test={name} peer={peer:?} STRAY request_line={request_line:?} outcome={read_outcome:?}"
-                        );
-                    }
+                // Accepted sockets inherit O_NONBLOCK from the listener on
+                // macOS/BSD. Left set, the request read races the client's
+                // send and fails with WouldBlock, the live request gets
+                // dropped, and the client sees a connection reset.
+                if stream.set_nonblocking(false).is_err() {
                     continue;
                 }
-                served += 1;
-                let path = request_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/")
-                    .to_owned();
-                let mut range: Option<String> = None;
-                loop {
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {}
-                    }
-                    if line == "\r\n" || line == "\n" {
-                        break;
-                    }
-                    if let Some(v) = line.strip_prefix("Range:") {
-                        range = Some(v.trim().to_owned());
-                    }
-                    // Case-insensitive fallback for the header name.
-                    if range.is_none() {
-                        let lower = line.to_ascii_lowercase();
-                        if let Some(v) = lower.strip_prefix("range:") {
-                            range = Some(v.trim().to_owned());
-                        }
-                    }
-                }
-                seen.lock().expect("seen").push(range.clone());
-                if let Ok(log) = std::env::var("JISUNO_DEBUG_TEST_SERVER") {
-                    use std::io::Write as _;
-                    let mut f = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&log)
-                        .expect("open server log");
-                    let _ = writeln!(
-                        f,
-                        "test={name} served={served} request_line={request_line:?} path={path:?} range={range:?}"
-                    );
-                }
-                let (body, honor) = routes.get(&path).cloned().unwrap_or_default();
-                let offset = match &range {
-                    Some(r) if honor => r
-                        .strip_prefix("bytes=")
-                        .and_then(|s| s.strip_suffix('-'))
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(0),
-                    _ => usize::MAX, // full body (or Range ignored)
-                };
-                let mut stream = reader.into_inner();
-                if offset < body.len() {
-                    let rest = &body[offset..];
-                    let head = format!(
-                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {offset}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len() - 1,
-                        body.len(),
-                        rest.len()
-                    );
-                    let _ = stream.write_all(head.as_bytes());
-                    let _ = stream.write_all(rest);
-                } else {
-                    let head = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    let _ = stream.write_all(head.as_bytes());
-                    let _ = stream.write_all(&body);
-                }
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                serve_connection(stream, &routes, &seen);
             }
         });
-        (format!("http://{addr}"), handle)
+        (
+            format!("http://{addr}"),
+            TestServer {
+                stop,
+                handle: Some(handle),
+            },
+        )
+    }
+
+    /// Handle to a [`spawn_server`] thread. `join` (or drop) stops the
+    /// accept loop and waits for the thread to exit.
+    struct TestServer {
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl TestServer {
+        fn join(mut self) -> std::thread::Result<()> {
+            self.stop.store(true, Ordering::Relaxed);
+            self.handle.take().map_or(Ok(()), |h| h.join())
+        }
+    }
+
+    impl Drop for TestServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    /// Read one request head from `stream` and answer it. A connection that
+    /// closes before a request line is a stray probe: it is dropped without
+    /// being counted.
+    fn serve_connection(
+        stream: TcpStream,
+        routes: &HashMap<String, (Vec<u8>, bool)>,
+        seen: &Mutex<Vec<Option<String>>>,
+    ) {
+        let mut reader = BufReader::new(stream);
+        let mut request_line = String::new();
+        match reader.read_line(&mut request_line) {
+            Ok(n) if n > 0 => {}
+            _ => return,
+        }
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or("/").to_owned();
+        let mut range: Option<String> = None;
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.trim().eq_ignore_ascii_case("range") {
+                    range = Some(value.trim().to_owned());
+                }
+            }
+        }
+        let out = reader.get_mut();
+        if method != "GET" {
+            let _ = out.write_all(
+                b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return;
+        }
+        seen.lock().expect("seen").push(range.clone());
+        let Some((body, honor)) = routes.get(&path) else {
+            let _ = out.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return;
+        };
+        let partial = match range.as_deref().and_then(parse_range_start) {
+            Some(start) if *honor && start < body.len() => Some(start),
+            _ => None,
+        };
+        let head = match partial {
+            Some(start) => format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len() - 1,
+                body.len(),
+                body.len() - start
+            ),
+            None => format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            ),
+        };
+        let _ = out.write_all(head.as_bytes());
+        let _ = out.write_all(&body[partial.unwrap_or(0)..]);
+    }
+
+    /// Start offset from a `bytes=N-` Range header.
+    fn parse_range_start(range: &str) -> Option<usize> {
+        range
+            .strip_prefix("bytes=")?
+            .strip_suffix('-')?
+            .parse()
+            .ok()
     }
 
     fn route(blob: Vec<u8>, honor_range: bool) -> HashMap<String, (Vec<u8>, bool)> {
@@ -494,7 +520,7 @@ mod tests {
         let _proxy = ProxyGuard::hold();
         let data = blob(300_000, 7);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let (base, server) = spawn_server("full", route(data.clone(), true), 1, Arc::clone(&seen));
+        let (base, server) = spawn_server(route(data.clone(), true), Arc::clone(&seen));
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = dir.path().join("model.onnx");
         let cancel = AtomicBool::new(false);
@@ -525,8 +551,7 @@ mod tests {
         let _proxy = ProxyGuard::hold();
         let data = blob(300_000, 13);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let (base, server) =
-            spawn_server("resume", route(data.clone(), true), 1, Arc::clone(&seen));
+        let (base, server) = spawn_server(route(data.clone(), true), Arc::clone(&seen));
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = dir.path().join("model.onnx");
         // Simulate an interrupted run: first half sits in the .part file.
@@ -554,8 +579,7 @@ mod tests {
         let _proxy = ProxyGuard::hold();
         let data = blob(200_000, 29);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let (base, server) =
-            spawn_server("restart", route(data.clone(), false), 1, Arc::clone(&seen));
+        let (base, server) = spawn_server(route(data.clone(), false), Arc::clone(&seen));
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = dir.path().join("model.onnx");
         // Garbage prefix: appending to it could never verify, so success
@@ -583,14 +607,9 @@ mod tests {
         let good = blob(120_000, 2);
         let seen_bad = Arc::new(Mutex::new(Vec::new()));
         let seen_good = Arc::new(Mutex::new(Vec::new()));
-        let (bad_base, bad_server) =
-            spawn_server("fall-bad", route(bad, false), 1, Arc::clone(&seen_bad));
-        let (good_base, good_server) = spawn_server(
-            "fall-good",
-            route(good.clone(), true),
-            1,
-            Arc::clone(&seen_good),
-        );
+        let (bad_base, bad_server) = spawn_server(route(bad, false), Arc::clone(&seen_bad));
+        let (good_base, good_server) =
+            spawn_server(route(good.clone(), true), Arc::clone(&seen_good));
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = dir.path().join("model.onnx");
         let cancel = AtomicBool::new(false);
@@ -619,7 +638,7 @@ mod tests {
         let bad = blob(50_000, 3);
         let good = blob(50_000, 4);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let (base, server) = spawn_server("allbad", route(bad.clone(), true), 1, Arc::clone(&seen));
+        let (base, server) = spawn_server(route(bad.clone(), true), Arc::clone(&seen));
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = dir.path().join("encoder.int8.onnx");
         let cancel = AtomicBool::new(false);
@@ -646,8 +665,7 @@ mod tests {
         let _proxy = ProxyGuard::hold();
         let data = blob(500_000, 5);
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let (base, server) =
-            spawn_server("cancel", route(data.clone(), true), 1, Arc::clone(&seen));
+        let (base, server) = spawn_server(route(data.clone(), true), Arc::clone(&seen));
         let dir = tempfile::tempdir().expect("tempdir");
         let dest = dir.path().join("model.onnx");
         let cancel = AtomicBool::new(false);
