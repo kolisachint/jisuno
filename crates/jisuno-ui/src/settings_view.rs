@@ -587,19 +587,6 @@ fn model_pane(model: &ModelPaneModel, theme: &Theme, on_intent: &SettingsEmit) -
             on_intent,
         ),
     ))
-    .child(field_row(
-        "Language",
-        Some("language · auto = the model detects"),
-        theme,
-        options(
-            &[("auto", "auto")],
-            &model.language,
-            theme,
-            "settings",
-            "language",
-            on_intent,
-        ),
-    ))
 }
 
 fn progress_bar(percent: u32, theme: &Theme) -> Div {
@@ -902,7 +889,7 @@ fn appearance_pane(appearance: &AppearanceModel, theme: &Theme, on_intent: &Sett
 
 fn performance_pane(model: &SettingsModel, theme: &Theme, on_intent: &SettingsEmit) -> Div {
     let mut pane = div().flex().flex_col()
-        .child(pane_title("Performance", "Targets from jisuno.md §6 and §6.1. Measured values come from jisuno bench on the reference Mac.", theme));
+        .child(pane_title("Performance", "Targets from jisuno.md §6 and §6.1. Measured values come from jisuno-bench on the reference Mac.", theme));
     pane = pane.child(perf_table(&model.perf, theme));
     pane = pane.child(caption(
         "Reference machine: MacBook Air M1, 8 GB, macOS 27.3. Numbers are recorded, not gated."
@@ -911,7 +898,7 @@ fn performance_pane(model: &SettingsModel, theme: &Theme, on_intent: &SettingsEm
     ));
     pane.child(div().py(px(6.0)).child(intent_button(
         if model.bench_running {
-            "Running…"
+            "Measuring…"
         } else {
             "Run benchmark"
         },

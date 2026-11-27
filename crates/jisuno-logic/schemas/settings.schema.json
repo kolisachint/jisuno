@@ -16,11 +16,6 @@
       "enum": ["parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8"],
       "default": "parakeet-tdt-0.6b-v3-int8"
     },
-    "language": {
-      "type": "string",
-      "description": "Recognition language; \"auto\" detects it per utterance.",
-      "default": "auto"
-    },
     "model_load": {
       "type": "string",
       "description": "When the model loads: on_demand starts loading at key-down and runs under speech; at_login loads at login.",

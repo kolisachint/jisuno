@@ -6,7 +6,7 @@
 #   --arch  default universal (needs both rustup targets installed)
 #   --out   default <repo>/target/packaging
 #
-# Output: DIR/Jisuno.app/Contents/{MacOS/jisuno,Info.plist,Resources/,Frameworks/}
+# Output: DIR/Jisuno.app/Contents/{MacOS/{jisuno,jisuno-bench},Info.plist,Resources/,Frameworks/}
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,6 +14,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 APP_NAME="Jisuno.app"
 BIN_NAME="jisuno"
+BENCH_NAME="jisuno-bench"
 RPATH_FLAG="@executable_path/../Frameworks"
 
 usage() {
@@ -104,6 +105,8 @@ export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-headerpad_max_install_names"
 for t in "${TARGETS[@]}"; do
   echo "==> cargo build --release --locked -p jisuno --features app --target $t"
   (cd "$REPO_ROOT" && cargo build --release --locked -p jisuno --features app --target "$t")
+  echo "==> cargo build --release --locked -p jisuno-bench --target $t"
+  (cd "$REPO_ROOT" && cargo build --release --locked -p jisuno-bench --target "$t")
 done
 
 APP="$OUT/$APP_NAME"
@@ -111,6 +114,7 @@ MACOS_DIR="$APP/Contents/MacOS"
 RES_DIR="$APP/Contents/Resources"
 FW_DIR="$APP/Contents/Frameworks"
 BIN="$MACOS_DIR/$BIN_NAME"
+BENCH="$MACOS_DIR/$BENCH_NAME"
 
 echo "==> assembling $APP"
 rm -rf "$APP"
@@ -137,6 +141,7 @@ if ((${#DYLIBS[@]} > 0)); then
     d="$STAGE/$t"
     mkdir -p "$d"
     cp "$TARGET_DIR/$t/release/$BIN_NAME" "$d/$BIN_NAME"
+    cp "$TARGET_DIR/$t/release/$BENCH_NAME" "$d/$BENCH_NAME"
     for name in "${DYLIBS[@]}"; do
       src="$TARGET_DIR/$t/release/$name"
       [[ -f "$src" ]] || die "$name missing for $t (needed for universal)"
@@ -146,6 +151,8 @@ if ((${#DYLIBS[@]} > 0)); then
     done
     rewrite_bin "$d/$BIN_NAME"
     codesign --force --sign - "$d/$BIN_NAME" >/dev/null
+    rewrite_bin "$d/$BENCH_NAME"
+    codesign --force --sign - "$d/$BENCH_NAME" >/dev/null
     SRC_DIRS+=("$d")
   done
 else
@@ -154,17 +161,24 @@ else
   done
 fi
 
-BIN_SRCS=()
-for d in "${SRC_DIRS[@]}"; do
-  BIN_SRCS+=("$d/$BIN_NAME")
-done
-if ((${#BIN_SRCS[@]} > 1)); then
-  lipo -create -output "$BIN" "${BIN_SRCS[@]}"
-else
-  cp "${BIN_SRCS[0]}" "$BIN"
-fi
-chmod 755 "$BIN"
+# One executable from every target dir: lipo'd for universal, copied otherwise.
+combine_bin() {
+  local name="$1" dest="$2" srcs=() d
+  for d in "${SRC_DIRS[@]}"; do
+    srcs+=("$d/$name")
+  done
+  if ((${#srcs[@]} > 1)); then
+    lipo -create -output "$dest" "${srcs[@]}"
+  else
+    cp "${srcs[0]}" "$dest"
+  fi
+  chmod 755 "$dest"
+}
+
+combine_bin "$BIN_NAME" "$BIN"
 echo "    binary: $(lipo -archs "$BIN")"
+combine_bin "$BENCH_NAME" "$BENCH"
+echo "    bench: $(lipo -archs "$BENCH")"
 
 if ((${#DYLIBS[@]} > 0)); then
   mkdir -p "$FW_DIR"

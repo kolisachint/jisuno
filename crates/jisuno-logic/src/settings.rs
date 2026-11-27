@@ -26,7 +26,6 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const KNOWN_KEYS: &[&str] = &[
     "$schema",
     "model",
-    "language",
     "model_load",
     "unload_after_idle_min",
     "input_device",
@@ -48,7 +47,6 @@ pub struct Settings {
     #[serde(rename = "$schema")]
     pub schema: String,
     pub model: Model,
-    pub language: String,
     pub model_load: ModelLoad,
     pub unload_after_idle_min: u32,
     pub input_device: String,
@@ -102,7 +100,6 @@ impl Default for Settings {
         Self {
             schema: "./schemas/settings.schema.json".to_string(),
             model: Model::default(),
-            language: "auto".to_string(),
             model_load: ModelLoad::default(),
             unload_after_idle_min: 10,
             input_device: "system".to_string(),
@@ -570,7 +567,7 @@ mod tests {
 
     #[test]
     fn unknown_key_is_not_confused_with_value() {
-        let text = "{\n  \"language\": \"model\",\n  \"nope\": true\n}";
+        let text = "{\n  \"partials\": true,\n  \"nope\": true\n}";
         let diagnostic = parse_err(text);
         assert_eq!(diagnostic.line, 3);
         assert_eq!(diagnostic.message, "unknown key \"nope\"");

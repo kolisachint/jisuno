@@ -7,7 +7,7 @@ weights. The model weights are NVIDIA's, redistributed as ONNX exports under CC-
 
 | Model | Settings name | Size | Languages |
 |---|---|---|---|
-| Parakeet TDT 0.6B v3 int8 (default) | `parakeet-tdt-0.6b-v3-int8` | about 650 MB | Multilingual. `language: auto` detects the language for each utterance. |
+| Parakeet TDT 0.6B v3 int8 (default) | `parakeet-tdt-0.6b-v3-int8` | about 650 MB | Multilingual. The model detects the language of each utterance. |
 | Parakeet TDT 0.6B v2 int8 (optional) | `parakeet-tdt-0.6b-v2-int8` | about 630 MB | English only. |
 
 Choose the model in **Settings → Model**, or set `model` in `settings.json`. Only one model is
@@ -81,9 +81,9 @@ The speed target is key-up to text in 150 ms or less, with a warm model, on the 
 MacBook Air M1 with 8 GB of RAM. Measured on that machine, key-up to text is about 21 ms when you pause
 while speaking. A long burst with no pause takes longer, because the whole tail is decoded at key-up.
 Settings → Performance shows the targets. To measure your own Mac, run the benchmark from a checkout:
-`cargo run --release -p jisuno-bench`. The **Run benchmark** button in Settings looks for a
-`jisuno-bench` binary next to the app, and the release app does not include one, so it reports an
-error there.
+`cargo run --release -p jisuno-bench`. The app bundle ships `jisuno-bench` next to `jisuno`, so the
+**Run benchmark** button in Settings works in the installed app. Results are cached in
+`~/Library/Caches/jisuno/bench/`.
 
 ## Check the model from the command line
 

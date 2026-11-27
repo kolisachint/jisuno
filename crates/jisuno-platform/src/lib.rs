@@ -13,6 +13,7 @@ pub mod frontmost;
 pub mod hud_placement;
 pub mod insert;
 pub mod keys;
+pub mod login_item;
 pub mod permissions;
 pub mod secure_input;
 pub mod status_item;
