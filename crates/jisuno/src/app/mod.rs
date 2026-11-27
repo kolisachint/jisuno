@@ -73,12 +73,14 @@ pub struct AppOptions {
 
 /// Which window `--debug-open` opens after launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "dev"), allow(dead_code))]
 pub enum DebugOpen {
     Popover,
     Settings,
     Welcome,
 }
 
+#[cfg(feature = "dev")]
 impl DebugOpen {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
@@ -91,15 +93,24 @@ impl DebugOpen {
 }
 
 impl AppOptions {
+    /// Launch options from the environment. The `JISUNO_DEBUG_*` hooks are
+    /// read only in `dev` builds; release always gets the defaults.
     pub fn from_env() -> Self {
-        Self {
-            debug_wav: std::env::var("JISUNO_DEBUG_WAV").ok().map(PathBuf::from),
-            debug_hold_ms: std::env::var("JISUNO_DEBUG_HOLD_MS")
-                .ok()
-                .and_then(|s| s.parse().ok()),
-            debug_open: std::env::var("JISUNO_DEBUG_OPEN")
-                .ok()
-                .and_then(|s| DebugOpen::parse(&s)),
+        #[cfg(feature = "dev")]
+        {
+            Self {
+                debug_wav: std::env::var("JISUNO_DEBUG_WAV").ok().map(PathBuf::from),
+                debug_hold_ms: std::env::var("JISUNO_DEBUG_HOLD_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok()),
+                debug_open: std::env::var("JISUNO_DEBUG_OPEN")
+                    .ok()
+                    .and_then(|s| DebugOpen::parse(&s)),
+            }
+        }
+        #[cfg(not(feature = "dev"))]
+        {
+            Self::default()
         }
     }
 }

@@ -34,7 +34,15 @@ fn example_bin() -> PathBuf {
     let bin = profile.join("examples").join("asr_worker");
     if !bin.exists() {
         let status = std::process::Command::new("cargo")
-            .args(["build", "--example", "asr_worker", "-p", "jisuno-asr"])
+            .args([
+                "build",
+                "--example",
+                "asr_worker",
+                "-p",
+                "jisuno-asr",
+                "--features",
+                "dev",
+            ])
             .status()
             .expect("cargo build --example");
         assert!(status.success(), "building the fake worker example");

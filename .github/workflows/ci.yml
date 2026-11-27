@@ -47,6 +47,8 @@ jobs:
         run: cargo clippy -p jisuno --features app --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Test (app + dev debug hooks)
+        run: cargo test -p jisuno --features app,dev
       - name: Build app
         run: cargo build --release -p jisuno --features app
       - name: Bundle unsigned app

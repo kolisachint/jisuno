@@ -220,14 +220,25 @@ impl Server {
 }
 
 /// Run the worker on stdio. Returns on UNLOAD (exit 0) or clean EOF.
-/// `JISUNO_FAKE_WORKER=1` selects the fake backend (tests / `--fake`).
 pub fn run_worker_stdio() -> anyhow::Result<()> {
-    let fake = std::env::var_os("JISUNO_FAKE_WORKER").is_some();
+    let fake = fake_backend_requested();
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut input = BufReader::new(stdin.lock());
     let mut output = BufWriter::new(stdout.lock());
     run_loop(&mut input, &mut output, fake)
+}
+
+/// `JISUNO_FAKE_WORKER=1` selects the fake backend (tests / `--fake`). Only
+/// `dev` builds read it; release always loads the real model.
+#[cfg(feature = "dev")]
+fn fake_backend_requested() -> bool {
+    std::env::var_os("JISUNO_FAKE_WORKER").is_some()
+}
+
+#[cfg(not(feature = "dev"))]
+fn fake_backend_requested() -> bool {
+    false
 }
 
 fn run_loop(input: &mut impl Read, output: &mut impl Write, fake: bool) -> anyhow::Result<()> {

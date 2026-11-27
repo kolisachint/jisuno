@@ -15,7 +15,7 @@ per workflow and ref; a new run cancels the older one in progress.
 | Job | Runner | Steps |
 |--|--|--|
 | `core` | ubuntu-latest | installs `libasound2-dev`; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace` |
-| `macos` | macos-14 (Apple silicon) | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p jisuno --features app --all-targets -- -D warnings`; `cargo test --workspace`; `cargo build --release -p jisuno --features app`; `packaging/bundle.sh --version 0.0.0 --arch arm64 --out dist`; uploads the unsigned app zip as `Jisuno-app-unsigned-arm64` (7 days) |
+| `macos` | macos-14 (Apple silicon) | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p jisuno --features app --all-targets -- -D warnings`; `cargo test --workspace`; `cargo test -p jisuno --features app,dev` (debug hooks); `cargo build --release -p jisuno --features app`; `packaging/bundle.sh --version 0.0.0 --arch arm64 --out dist`; uploads the unsigned app zip as `Jisuno-app-unsigned-arm64` (7 days) |
 | `bench` | macos-14 | only on `workflow_dispatch` and on push to `main`. Restores the model cache (`jisuno-models-<model id>-v1`, `JISUNO_MODELS_DIR=$GITHUB_WORKSPACE/models`) and downloads the pinned model on a miss. Generates two `say` fixtures (converted to 16 kHz mono WAV with `afconvert`), runs `cargo run --release -p jisuno-bench -- --json --model parakeet-tdt-0.6b-v3-int8 --fixtures-dir <fixtures>`, uploads `jisuno-bench` (JSON, 7 days). Never gated: no `--gate`. |
 
 `--version 0.0.0` is used for CI bundles because `bundle.sh` accepts only

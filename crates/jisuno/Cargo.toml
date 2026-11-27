@@ -18,6 +18,11 @@ app = [
     "dep:jisuno-ui",
 ]
 
+# Debug hooks: `--debug-wav`, `--debug-hold-ms`, `--debug-open` and the
+# `JISUNO_DEBUG_*` env vars. Off in release builds (packaging/bundle.sh does
+# not enable it).
+dev = ["jisuno-asr/dev"]
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
