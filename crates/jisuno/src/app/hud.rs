@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use gpui::App;
 use jisuno_logic::settings;
-use jisuno_platform::hud_placement::{hud_origin, mouse_position_gpui, HudSize, Screen};
+use jisuno_platform::hud_placement::{
+    hud_origin, menu_bar_height, mouse_position_gpui, HudSize, Screen,
+};
 use jisuno_ui::hud_model::{render_model, HudState as UiHud, Mode as UiMode};
 use jisuno_ui::hud_window::{
     close_hud_window, open_hud_window, update_hud_window, HUD_WINDOW_SIZE,
@@ -38,6 +40,7 @@ impl AppState {
             width,
             height,
             usable_top: top,
+            menu_bar_h: menu_bar_height(),
         }
     }
 
