@@ -53,13 +53,14 @@ PHASE silence            # trailing silence started, while listening
 STATUS transcribing      # final decode running
 FINAL hello world        # committed text; DONE follows
 DONE                     # capture finished
-ERROR <message>          # fatal
+ERROR <message>          # the capture failed; a startup error exits serve
 ```
 
 `PARTIAL` is a best guess that changes while you speak. Overwrite it, do not append. `FINAL` is the
-text to insert.
+text to insert. A capture that is cancelled, or that heard no speech, ends with `DONE` and no `FINAL`.
 
-Each line is one event. Read stdout only. Stderr carries logs and is not part of the protocol.
+Each line is one event. Read stdout only. Stderr carries logs and is not part of the protocol. The full
+protocol, with the rules for each line, is in the [developer guide](../../dev/src/protocols.md).
 
 The command `jisuno transcribe` uses an older form of the protocol for one-off capture. It writes
 `STATUS recording`, `SEGMENT <text>` lines, then `DONE`. Use it only where `serve` is not available.
