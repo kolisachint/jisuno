@@ -1137,6 +1137,7 @@ impl AppState {
         WelcomeModel {
             allowed: self.perm_granted,
             files_written: true,
+            config_path: Self::config_display(),
             model_present: self.model_present,
             download: self.download.as_ref().map(|active| DownloadProgress {
                 percent: active.percent,
@@ -1144,6 +1145,27 @@ impl AppState {
                 total_mb: MODEL_TOTAL_MB,
             }),
         }
+    }
+
+    /// Display form of the config dir, with `~` for `$HOME` and a
+    /// trailing slash (e.g. `~/.config/jisuno/`).
+    fn config_display() -> String {
+        let root = ConfigDir::resolve().map(|d| d.root().to_path_buf());
+        let mut text = match root {
+            Ok(d) => {
+                let under_home =
+                    std::env::var_os("HOME").and_then(|h| d.strip_prefix(h).ok().map(|r| r.to_path_buf()));
+                match under_home {
+                    Some(rel) => format!("~/{}", rel.display()),
+                    None => d.display().to_string(),
+                }
+            }
+            Err(_) => "~/.config/jisuno".to_string(),
+        };
+        if !text.ends_with('/') {
+            text.push('/');
+        }
+        text
     }
 
     /// Drain Welcome button clicks.

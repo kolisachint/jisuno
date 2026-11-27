@@ -77,6 +77,9 @@ pub struct WelcomeModel {
     pub allowed: [bool; 3],
     /// The four config files + `schemas/` were written first (§6.1).
     pub files_written: bool,
+    /// Display form of the config dir, `~` for `$HOME`
+    /// (e.g. `~/.config/jisuno/`).
+    pub config_path: String,
     /// The model file is fully downloaded.
     pub model_present: bool,
     /// A download in progress, if any.
@@ -119,6 +122,7 @@ impl WelcomeModel {
         Self {
             allowed: [true, true, false],
             files_written: true,
+            config_path: "~/.config/jisuno/".into(),
             model_present: false,
             download: None,
         }
@@ -129,6 +133,7 @@ impl WelcomeModel {
         Self {
             allowed: [true, true, true],
             files_written: true,
+            config_path: "~/.config/jisuno/".into(),
             model_present: false,
             download: Some(DownloadProgress {
                 percent: 42,
