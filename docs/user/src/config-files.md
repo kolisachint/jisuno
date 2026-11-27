@@ -126,7 +126,7 @@ Flags override their variables. `transcribe` and `serve` also read the model and
 
 | Variable | Used by | Meaning |
 |---|---|---|
-| `JISUNO_CONFIG_DIR` | app, `control`, `model` | Config folder. Default `~/.config/jisuno`. |
+| `JISUNO_CONFIG_DIR` | app, `control` | Config folder. Default `~/.config/jisuno`. |
 | `JISUNO_MODELS_DIR` | all | Model folder. Default `~/Library/Application Support/jisuno/models` on macOS. |
 | `JISUNO_MODEL` | `transcribe`, `serve` | Model id. Default `parakeet-tdt-0.6b-v3-int8`. |
 | `JISUNO_SILENCE_MS` | `transcribe`, `serve` | Trailing silence before the capture ends, in ms. Default `600`. |
