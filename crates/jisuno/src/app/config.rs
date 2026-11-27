@@ -2,7 +2,10 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -21,6 +24,25 @@ use jisuno_ui::hud_model::HudState as UiHud;
 use super::model::model_id;
 use super::state::{AppState, SECURE_POLL_MS};
 use super::tap_config_for;
+
+/// Dictation-limit change seen while a session is live: applied when the
+/// machine is back to Idle (never mid-hold). 0 = none (the valid range is
+/// 10..=600, so 0 is never a real limit). Process-global: one app instance
+/// owns the mic, and `AppState` gains no field for it (see mod.rs).
+static PENDING_DICTATION_LIMIT_S: AtomicU64 = AtomicU64::new(0);
+
+/// Take a deferred timing change once the machine is Idle: returns the
+/// pending limit and clears the slot, or `None` while a session is live.
+/// Pure apart from the process-global slot; unit-tested below.
+pub(crate) fn pending_timing_take(session_active: bool) -> Option<u64> {
+    if session_active {
+        return None;
+    }
+    match PENDING_DICTATION_LIMIT_S.swap(0, Ordering::SeqCst) {
+        0 => None,
+        limit_s => Some(limit_s),
+    }
+}
 
 // --- Startup: config files, permissions -----------------------------------
 
@@ -129,17 +151,54 @@ impl AppState {
         let fresh = self.settings_good.current().clone();
         if fresh != self.settings {
             self.log("settings reloaded");
-            if fresh.dictation_limit_s != self.settings.dictation_limit_s {
-                *self.machine.lock().unwrap_or_else(|e| e.into_inner()) =
-                    HoldMachine::new(Timing {
-                        dictation_limit_s: u64::from(fresh.dictation_limit_s),
-                        ..Timing::default()
-                    });
+            let limit_s = u64::from(fresh.dictation_limit_s);
+            if limit_s != u64::from(self.settings.dictation_limit_s) {
+                // Never swap the machine mid-hold: the timing change waits
+                // for Idle, and the load state is carried over, not reset.
+                if self.session_active() {
+                    PENDING_DICTATION_LIMIT_S.store(limit_s, Ordering::SeqCst);
+                    self.log("dictation limit change deferred until idle");
+                } else {
+                    self.apply_timing(limit_s);
+                }
             }
             self.model_name = model_id(&fresh);
             self.settings = fresh;
         }
         self.last_config_error = None;
+    }
+
+    /// A live session (or a pending reply/confirm) means the machine is not
+    /// Idle: timing changes wait.
+    pub(crate) fn session_active(&self) -> bool {
+        self.mic_open || self.pending.is_some() || self.confirming.is_some()
+    }
+
+    /// Rebuild the machine with a new dictation limit, carrying the load
+    /// state (warm/unloaded) instead of resetting it.
+    pub(crate) fn apply_timing(&mut self, limit_s: u64) {
+        let warm = self
+            .machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_model_warm();
+        *self.machine.lock().unwrap_or_else(|e| e.into_inner()) = HoldMachine::new(Timing {
+            dictation_limit_s: limit_s,
+            ..Timing::default()
+        });
+        self.machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_model_warm(warm);
+        PENDING_DICTATION_LIMIT_S.store(0, Ordering::SeqCst);
+        self.log(&format!("dictation limit now {limit_s}s"));
+    }
+
+    /// Apply a deferred [`Self::reload_settings`] timing change once Idle.
+    pub(crate) fn apply_pending_timing(&mut self) {
+        if let Some(limit_s) = pending_timing_take(self.session_active()) {
+            self.apply_timing(limit_s);
+        }
     }
 
     pub(crate) fn reload_keybindings(&mut self, cx: &mut App, dir: &ConfigDir) {
@@ -336,5 +395,23 @@ impl AppState {
                 self.log(&format!("tap restart failed: {e:#}"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pending_timing_take, PENDING_DICTATION_LIMIT_S};
+    use std::sync::atomic::Ordering;
+
+    /// A timing change waits while a session is live and is taken exactly
+    /// once when Idle.
+    #[test]
+    fn deferred_timing_waits_for_idle() {
+        PENDING_DICTATION_LIMIT_S.store(0, Ordering::SeqCst);
+        assert_eq!(pending_timing_take(false), None);
+        PENDING_DICTATION_LIMIT_S.store(90, Ordering::SeqCst);
+        assert_eq!(pending_timing_take(true), None);
+        assert_eq!(pending_timing_take(false), Some(90));
+        assert_eq!(pending_timing_take(false), None);
     }
 }

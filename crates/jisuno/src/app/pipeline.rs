@@ -94,6 +94,7 @@ impl AppState {
         self.drain_mic(cx);
         self.poll_partials();
         self.drain_watch(cx);
+        self.apply_pending_timing();
         self.poll_secure(cx);
         self.poll_idle_unload();
         self.refresh_hud_level(cx);
