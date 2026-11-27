@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::matcher::{self, Candidate, SlotSource, SlotValues};
+use crate::matcher::{self, Candidate, SlotValues};
 use crate::voice_control::{Config, Place, PlaceOrSlot, SlotDecl, Step, WindowDef};
 
 /// Host-supplied values for the built-in fixed slots that the config cannot
@@ -146,14 +146,20 @@ impl Commands {
                         hud: NO_MATCH_HUD.to_string(),
                     };
                 };
-                let is_free =
-                    |name: &str| matches!(self.values(&entry.id, name), Some(SlotValues::Free));
+                // Only lists declared in this command's own `slots` go into a
+                // shell command verbatim; every other value is quoted.
+                let declared_list = |name: &str| {
+                    matches!(
+                        self.declared.get(&(entry.id.clone(), name.to_string())),
+                        Some(SlotDecl::List(_))
+                    )
+                };
                 match fill_plan(
                     &entry.id,
                     &matched.phrase,
                     &entry.steps,
                     &matched.slots,
-                    &is_free,
+                    &declared_list,
                 ) {
                     Ok(plan) if entry.confirm => Resolution::Confirm(plan),
                     Ok(plan) => Resolution::Run(plan),
@@ -414,11 +420,11 @@ fn fill_plan(
     label: &str,
     steps: &[Step],
     slots: &BTreeMap<String, String>,
-    is_free: &dyn Fn(&str) -> bool,
+    verbatim: &dyn Fn(&str) -> bool,
 ) -> Result<Plan, String> {
     let mut resolved = Vec::with_capacity(steps.len());
     for step in steps {
-        resolved.push(fill_step(step, slots, is_free)?);
+        resolved.push(fill_step(step, slots, verbatim)?);
     }
     Ok(Plan {
         command_id: command_id.to_string(),
@@ -432,7 +438,7 @@ fn fill_plan(
 fn fill_step(
     step: &Step,
     slots: &BTreeMap<String, String>,
-    is_free: &dyn Fn(&str) -> bool,
+    verbatim: &dyn Fn(&str) -> bool,
 ) -> Result<ResolvedStep, String> {
     match step {
         Step::JisunoMenu => Ok(ResolvedStep::JisunoMenu),
@@ -484,7 +490,7 @@ fn fill_step(
             keys: fill_string(keys, slots)?,
         }),
         Step::ShellRun { cmd, cwd } => Ok(ResolvedStep::ShellRun {
-            cmd: fill_shell_cmd(cmd, slots, is_free)?,
+            cmd: fill_shell_cmd(cmd, slots, verbatim)?,
             cwd: cwd
                 .as_ref()
                 .map(|value| fill_string(value, slots))
@@ -513,19 +519,19 @@ fn fill_string(template: &str, slots: &BTreeMap<String, String>) -> Result<Strin
     substitute(template, slots, |_, value| value.to_string())
 }
 
-/// Substitute refs in a `shell.run` `cmd`: free-text slot values are
-/// single-quoted POSIX-style so they cannot break out of the command;
-/// fixed-list values are inserted verbatim.
+/// Substitute refs in a `shell.run` `cmd`: every slot value is single-quoted
+/// POSIX-style so it cannot break out of the command, except values of lists
+/// the command declares in its own `slots` (`verbatim`).
 fn fill_shell_cmd(
     template: &str,
     slots: &BTreeMap<String, String>,
-    is_free: &dyn Fn(&str) -> bool,
+    verbatim: &dyn Fn(&str) -> bool,
 ) -> Result<String, String> {
     substitute(template, slots, |name, value| {
-        if is_free(name) {
-            shell_quote(value)
-        } else {
+        if verbatim(name) {
             value.to_string()
+        } else {
+            shell_quote(value)
         }
     })
 }
@@ -993,7 +999,12 @@ mod tests {
                  "slots": {"msg": "free"},
                  "steps": [{"do": "shell.run", "cmd": "echo {msg}"}]},
                 {"id": "tile", "say": ["tile {place} please"], "confirm": true,
-                 "steps": [{"do": "shell.run", "cmd": "tile {place}"}]}
+                 "steps": [{"do": "shell.run", "cmd": "tile {place}"}]},
+                {"id": "pick", "say": ["pick {pick}"], "confirm": true,
+                 "slots": {"pick": ["alpha", "beta"]},
+                 "steps": [{"do": "shell.run", "cmd": "echo {pick}"}]},
+                {"id": "open", "say": ["open {app}"], "confirm": true,
+                 "steps": [{"do": "shell.run", "cmd": "open -a {app}"}]}
             ]
         }"#;
         let (config, _) = crate::voice_control::parse(json).expect("test config parses");
@@ -1002,7 +1013,7 @@ mod tests {
             &Runtime {
                 windows: vec![],
                 themes: vec![],
-                apps: vec![],
+                apps: vec!["Visual Studio Code".to_string()],
             },
         );
         match commands.resolve("echo hello'; rm -rf /", None) {
@@ -1015,12 +1026,33 @@ mod tests {
             ),
             other => panic!("expected Confirm, got {other:?}"),
         }
-        // Fixed-list values go in verbatim (no quoting).
+        // Built-in fixed lists (host inventory) are quoted too.
         match commands.resolve("tile full please", None) {
             Resolution::Confirm(plan) => assert_eq!(
                 plan.steps,
                 vec![ResolvedStep::ShellRun {
-                    cmd: "tile full".to_string(),
+                    cmd: "tile 'full'".to_string(),
+                    cwd: None,
+                }]
+            ),
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+        match commands.resolve("open visual studio code", None) {
+            Resolution::Confirm(plan) => assert_eq!(
+                plan.steps,
+                vec![ResolvedStep::ShellRun {
+                    cmd: "open -a 'Visual Studio Code'".to_string(),
+                    cwd: None,
+                }]
+            ),
+            other => panic!("expected Confirm, got {other:?}"),
+        }
+        // Values of a list declared in the command's own slots stay verbatim.
+        match commands.resolve("pick beta", None) {
+            Resolution::Confirm(plan) => assert_eq!(
+                plan.steps,
+                vec![ResolvedStep::ShellRun {
+                    cmd: "echo beta".to_string(),
                     cwd: None,
                 }]
             ),

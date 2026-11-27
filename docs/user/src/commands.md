@@ -128,7 +128,7 @@ Each step has `"do"` and its arguments.
 | `ax.press` | `app`, `role`, `name` | Presses one element found by app, role and name. `"focused"` means the frontmost app. Jisuno first checks the focused window's default and cancel buttons. If that fails, it searches the focused window, up to 4 levels deep and 300 elements. |
 | `ax.set_value` | `app`, `role`, `name`, `value` | Sets the value of one field found the same way. |
 | `keys.send` | `keys` | Sends a key combination to the focused app, written as in [Keybindings](keybindings.md). |
-| `shell.run` | `cmd`; optional `cwd` | Runs `cmd` with `/bin/zsh -lc`. Standard input is closed. The command is stopped after 60 seconds. Needs `"confirm": true`. |
+| `shell.run` | `cmd`; optional `cwd` | Runs `cmd` with `/bin/zsh -lc`. Standard input is closed. The command is stopped after 60 seconds. Needs `"confirm": true`. Every slot value in `cmd` is shell-quoted, so spoken words cannot add shell syntax. The exception is a list the command declares in its own `slots`, which is inserted as written. |
 | `theme.set` | `theme` | Switches the theme. |
 | `model.warm` | none | Loads the model. |
 | `model.unload` | none | Unloads the model. |

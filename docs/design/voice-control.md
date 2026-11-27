@@ -376,8 +376,10 @@ Matching:
    command.
 1a. A command whose slots cannot be filled from the match does not start. HUD:
    `Could not run "<label>": <reason>`, for example `Could not run "open project": no matched value for slot "project"`. Nothing runs.
-1b. Free-slot text inside `shell.run` (`cmd` or `cwd`) is shell-quoted before it is
-   substituted, so spoken words cannot add shell syntax.
+1b. Slot values inside `shell.run` `cmd` are shell-quoted before they are substituted, so
+   spoken words cannot add shell syntax. Built-in fixed lists (`{app}`, `{window}`, `{theme}`,
+   `{workspace}`, `{place}`) and free text are quoted; only values of a list the command declares
+   in its own `slots` are inserted verbatim (round 11).
 3. No match: `Did you mean "start working"?`, nothing runs.
 4. Confirm flow: a command with `"confirm": true` shows a HUD prompt first:
    `Run "clean build"? cargo clean · Return to run · Esc to cancel`. When the step has a
@@ -513,3 +515,9 @@ removed "mail"
 2. `window.tile` `center` = 60% of the visible frame, centered.
 3. `shell.run` runs `/bin/zsh -lc` with stdin closed and a 60 s timeout; timeout reason
    `shell timed out after 60 s`.
+
+### Round 11 (pre-release review, 2026-11-27)
+
+1. Runner: `shell.run` `cmd` quotes every slot value except values of lists the command
+   declares in its own `slots`. Built-in fixed lists (`{app}`, `{window}`, `{theme}`,
+   `{workspace}`, `{place}`) and free text are quoted. Before, built-in fixed lists were verbatim.
