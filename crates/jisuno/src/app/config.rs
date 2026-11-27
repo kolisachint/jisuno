@@ -3,7 +3,7 @@
 //! Split from `app.rs` with no behavior change (step 1).
 
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
@@ -30,6 +30,15 @@ use super::tap_config_for;
 /// 10..=600, so 0 is never a real limit). Process-global: one app instance
 /// owns the mic, and `AppState` gains no field for it (see mod.rs).
 static PENDING_DICTATION_LIMIT_S: AtomicU64 = AtomicU64::new(0);
+
+/// A failed tap restart leaves the old tap running and asks the tick to
+/// show the keys-paused HUD once. Process-global for the same reason.
+static TAP_RESTART_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Take a pending tap-restart failure for one HUD report.
+pub(crate) fn take_tap_restart_failed() -> bool {
+    TAP_RESTART_FAILED.swap(false, Ordering::SeqCst)
+}
 
 /// Take a deferred timing change once the machine is Idle: returns the
 /// pending limit and clears the slot, or `None` while a session is live.
@@ -363,11 +372,6 @@ impl AppState {
     }
 
     pub(crate) fn restart_tap(&mut self) {
-        if let Some(tap) = self.tap.take() {
-            if let Err(e) = tap.shutdown() {
-                self.log(&format!("tap shutdown: {e:#}"));
-            }
-        }
         let machine_w = Arc::clone(&self.machine);
         let tap_capture_w = Arc::clone(&self.tap_capture);
         let should_capture: ShouldCapture = Arc::new(move |captured: Captured| {
@@ -386,13 +390,18 @@ impl AppState {
             should_capture,
         ) {
             Ok((tap, rx)) => {
+                if let Some(old) = self.tap.take() {
+                    if let Err(e) = old.shutdown() {
+                        self.log(&format!("tap shutdown: {e:#}"));
+                    }
+                }
                 self.tap = Some(tap);
                 self.tap_rx = Some(rx);
                 self.log("tap restarted");
             }
             Err(e) => {
-                self.tap_rx = None;
-                self.log(&format!("tap restart failed: {e:#}"));
+                self.log(&format!("tap restart failed, keeping old tap: {e:#}"));
+                TAP_RESTART_FAILED.store(true, Ordering::SeqCst);
             }
         }
     }

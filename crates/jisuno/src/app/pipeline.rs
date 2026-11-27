@@ -21,6 +21,7 @@ use jisuno_platform::{
 };
 use jisuno_ui::hud_model::HudState as UiHud;
 
+use super::config::take_tap_restart_failed;
 use super::hold_kind_for;
 use super::model::ModelState;
 use super::state::{text_summary, AppState, ListeningUi, PendingTranscribe, RecentEntry};
@@ -154,6 +155,16 @@ impl AppState {
     // --- Event tap ---
 
     pub(crate) fn drain_tap(&mut self, cx: &mut App) {
+        if take_tap_restart_failed() {
+            self.show_ephemeral(
+                cx,
+                UiHud::ConfigError {
+                    location: "Keys paused".to_string(),
+                    message: "Input Monitoring is off".to_string(),
+                },
+                "tap restart failed",
+            );
+        }
         let mut events = Vec::new();
         if let Some(rx) = &self.tap_rx {
             while let Ok(ev) = rx.try_recv() {
