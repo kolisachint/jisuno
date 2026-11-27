@@ -251,22 +251,47 @@ impl AppState {
         self.buffer.clear();
         self.heard_speech = false;
         self.level = 0.0;
+        self.resampler = None;
+        self.debug_pcm = None;
+        self.debug_pos = 0;
+        self.debug_next_at = None;
         self.resolve_audio_notes();
-        if self.debug_wav.is_some() {
-            self.log("mic: debug wav substitutes for the microphone");
-            return;
-        }
-        match jisuno_audio::mic::start() {
-            Ok(capture) => {
-                self.mic_rate = capture.input_rate;
-                self.capture = Some(capture);
-                self.log(&format!("mic open ({} Hz)", self.mic_rate));
+        if let Some(path) = self.debug_wav.clone() {
+            // Debug WAV as a fake real-time mic: the clip feeds in 100 ms
+            // chunks on the wall clock while the hold is down, so
+            // pause-split segments decode during the hold like a real mic.
+            match jisuno_audio::audio::load_wav_16k_mono(&path) {
+                Ok(pcm) => {
+                    self.debug_pcm = Some(pcm);
+                    self.debug_next_at = Some(Instant::now());
+                    self.heard_speech = true;
+                    self.level = 0.5;
+                    self.log("mic: debug wav substitutes for the microphone");
+                }
+                Err(e) => {
+                    self.log(&format!("debug wav failed: {e:#}"));
+                    self.mic_open = false;
+                    self.input_no_cx(Input::Resync, "resync (debug wav failed)");
+                    return;
+                }
             }
-            Err(e) => {
-                self.log(&format!("mic open failed: {e:#}"));
-                self.mic_open = false;
-                self.input_no_cx(Input::Resync, "resync (mic failed)");
+        } else {
+            match jisuno_audio::mic::start() {
+                Ok(capture) => {
+                    self.mic_rate = capture.input_rate;
+                    self.capture = Some(capture);
+                    self.log(&format!("mic open ({} Hz)", self.mic_rate));
+                }
+                Err(e) => {
+                    self.log(&format!("mic open failed: {e:#}"));
+                    self.mic_open = false;
+                    self.input_no_cx(Input::Resync, "resync (mic failed)");
+                }
             }
+            self.resampler = Some(jisuno_audio::audio::StreamingResampler::new(
+                self.mic_rate,
+                jisuno_audio::audio::TARGET_RATE,
+            ));
         }
         // Speech detection for hold sessions: skip the decode round-trip when
         // the press captured no speech at all.
@@ -317,8 +342,14 @@ impl AppState {
             self.stream_begun = false;
             self.partial_in_flight = false;
             self.partial_text = None;
+            self.resampler = None;
+            self.debug_pcm = None;
+            self.debug_next_at = None;
         }
         self.drain_mic();
+        if !discard {
+            self.flush_stream_tail();
+        }
         if let Some(capture) = self.capture.take() {
             capture.stop();
         }
@@ -333,7 +364,60 @@ impl AppState {
         }
     }
 
+    /// Push any filter remainder still held by the streaming resampler
+    /// (plus any unfed debug-WAV tail) so key-up `finish` sees everything.
+    pub(crate) fn flush_stream_tail(&mut self) {
+        if self.debug_pcm.is_some() {
+            self.push_debug_chunks(true);
+        }
+        if self.stream_begun {
+            if let Some(stream) = self.stream {
+                if let Some(resampler) = self.resampler.as_mut() {
+                    let tail = resampler.flush();
+                    if !tail.is_empty() {
+                        let _ = self.to_worker.send(ToWorker::Push { stream, pcm: tail });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Feed due 100 ms debug-WAV chunks (16 kHz already). With `catch_up`,
+    /// push everything remaining (key-up); otherwise only what the wall
+    /// clock has reached (real-time simulation mid-hold).
+    pub(crate) fn push_debug_chunks(&mut self, catch_up: bool) {
+        let total = self.debug_pcm.as_ref().map(Vec::len).unwrap_or(0);
+        if total == 0 || !self.mic_open {
+            return;
+        }
+        let now = Instant::now();
+        loop {
+            let due = match self.debug_next_at {
+                Some(t) => catch_up || now >= t,
+                None => false,
+            };
+            if !due || self.debug_pos >= total {
+                break;
+            }
+            let end = (self.debug_pos + 1600).min(total);
+            let chunk = self.debug_pcm.as_ref().unwrap()[self.debug_pos..end].to_vec();
+            self.debug_pos = end;
+            self.debug_next_at = Some(self.debug_next_at.unwrap() + Duration::from_millis(100));
+            let rms = jisuno_logic::vad::rms(&chunk);
+            if rms > self.level {
+                self.level = rms;
+            }
+            self.buffer.extend_from_slice(&chunk);
+            if self.stream_begun {
+                if let Some(stream) = self.stream {
+                    let _ = self.to_worker.send(ToWorker::Push { stream, pcm: chunk });
+                }
+            }
+        }
+    }
+
     pub(crate) fn drain_mic(&mut self) {
+        self.push_debug_chunks(false);
         let mut chunks = Vec::new();
         if let Some(capture) = &self.capture {
             while let Ok(chunk) = capture.chunks.try_recv() {
@@ -357,11 +441,18 @@ impl AppState {
             self.buffer.extend_from_slice(&chunk);
             // Stream to the helper without blocking: the worker queues it
             // for the child. A failed send means the worker thread is
-            // gone; the crash surfaces through its next reply.
+            // gone; the crash surfaces through its next reply. The
+            // streaming resampler keeps filter state across chunks (a
+            // per-chunk one-shot would corrupt edges).
             if self.stream_begun {
                 if let Some(stream) = self.stream {
-                    let pcm16 = jisuno_audio::audio::resample_to_16k(&chunk, self.mic_rate);
-                    let _ = self.to_worker.send(ToWorker::Push { stream, pcm: pcm16 });
+                    let pcm16 = match self.resampler.as_mut() {
+                        Some(r) => r.push(&chunk),
+                        None => jisuno_audio::audio::resample_to_16k(&chunk, self.mic_rate),
+                    };
+                    if !pcm16.is_empty() {
+                        let _ = self.to_worker.send(ToWorker::Push { stream, pcm: pcm16 });
+                    }
                 }
             }
         }
@@ -370,7 +461,7 @@ impl AppState {
     /// Ask the worker for live partial text every 400 ms while listening
     /// (H4). One request at a time; a slow decode self-throttles.
     pub(crate) fn poll_partials(&mut self) {
-        if !self.settings.partials || self.debug_wav.is_some() || self.pending.is_some() {
+        if !self.settings.partials || self.pending.is_some() {
             return;
         }
         if !self.mic_open || !self.stream_begun || self.partial_in_flight {
@@ -506,6 +597,7 @@ impl AppState {
                     level: 0.5,
                     loading_since: (self.model_state != ModelState::Warm).then(Instant::now),
                     countdown_ms: None,
+                    partial: None,
                 });
                 if dictate {
                     self.log("hud: listening dictate");
@@ -521,6 +613,7 @@ impl AppState {
                     level: 0.5,
                     loading_since: (self.model_state != ModelState::Warm).then(Instant::now),
                     countdown_ms: None,
+                    partial: None,
                 });
                 self.log("hud: hands-free");
                 self.open_listening_hud(cx);
@@ -554,19 +647,24 @@ impl AppState {
             return;
         }
         let dictate = mode == Mode::Dictate;
-        // Warm and streamed: the child already holds the audio — finish
-        // only decodes. Otherwise hand the whole clip over; the worker
-        // one-shots it behind the in-flight load.
-        let (stream, fallback) = match &self.debug_wav {
-            Some(path) => (0, Some(AudioSource::Wav { path: path.clone() })),
-            None if self.stream_begun => (self.stream.unwrap_or(0), None),
-            None => (
-                self.stream.unwrap_or(0),
-                Some(AudioSource::Mic {
-                    rate: self.mic_rate,
-                    pcm: std::mem::take(&mut self.buffer),
-                }),
-            ),
+        // Warm and streamed (mic or debug WAV): the child already holds
+        // the audio — finish only decodes the tail. Otherwise hand the
+        // whole clip over; the worker one-shots it behind the in-flight
+        // load.
+        self.flush_stream_tail();
+        let (stream, fallback) = if self.stream_begun {
+            (self.stream.unwrap_or(0), None)
+        } else {
+            match &self.debug_wav {
+                Some(path) => (0, Some(AudioSource::Wav { path: path.clone() })),
+                None => (
+                    self.stream.unwrap_or(0),
+                    Some(AudioSource::Mic {
+                        rate: self.mic_rate,
+                        pcm: std::mem::take(&mut self.buffer),
+                    }),
+                ),
+            }
         };
         self.show_decoding(cx, dictate, self.model_state != ModelState::Warm);
         // The stream ends here either way: the answer arrives as

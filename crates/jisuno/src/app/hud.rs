@@ -51,7 +51,13 @@ impl AppState {
             let frac = since.elapsed().as_secs_f32() / 1.5;
             frac.clamp(0.0, 0.95)
         });
-        let partial = None;
+        // Live partial text (H4) only when the setting is on; the model
+        // stores `None` otherwise.
+        let partial = if self.settings.partials {
+            l.partial.clone()
+        } else {
+            None
+        };
         let countdown_ms = l.countdown_ms;
         let bluetooth = self.bluetooth_now && !self.announced_bluetooth;
         let missing_device = self.missing_device_note.clone();
@@ -250,7 +256,15 @@ impl AppState {
             }
         }
         if dirty {
-            if let (Some(hud), Some(state)) = (&self.hud, self.listening_state()) {
+            self.refresh_hud_now(cx);
+        }
+    }
+
+    /// Push the current listening state to the open HUD window (partial
+    /// arrivals call this; the level tick calls it when dirty).
+    pub(crate) fn refresh_hud_now(&mut self, cx: &mut App) {
+        if let (Some(hud), Some(state)) = (&self.hud, self.listening_state()) {
+            if hud.sticky {
                 let handle = hud.handle;
                 if let Err(e) = update_hud_window(handle, state, cx) {
                     self.log(&format!("hud update failed: {e:#}"));
