@@ -6,15 +6,24 @@
 //! the model bookkeeping. One connection per thread; the socket is `0600`,
 //! removed on quit, and a stale file is replaced at startup.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 use crate::app::command::HookRequest;
 use crate::app::model::ModelState;
-use crate::ipc::{self, Request, Response};
+use crate::ipc::{self, ClientError, Request, Response};
+
+/// Read and write timeout per connection: a client that stalls cannot pin a
+/// thread for longer than this.
+const CONN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Longest request line accepted, in bytes (newline included). A longer line
+/// is cut off here and fails to decode.
+const MAX_LINE: u64 = 4 * 1024;
 
 /// Tick-refreshed answer for `{"cmd":"status"}`. `rss_mb` is the helper
 /// child RSS while the model is warm; `None` falls back to this process.
@@ -75,8 +84,14 @@ fn answer(request: &Request, snapshot: &SocketSnapshot) -> (Response, Option<Hoo
 
 fn handle(stream: UnixStream, snapshot: &SocketSnapshot, hook_tx: &mpsc::Sender<HookRequest>) {
     let mut line = String::new();
+    let timeouts = stream
+        .set_read_timeout(Some(CONN_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(CONN_TIMEOUT)));
+    if timeouts.is_err() {
+        return;
+    }
     let response = {
-        let mut reader = BufReader::new(&stream);
+        let mut reader = BufReader::new((&stream).take(MAX_LINE));
         match reader.read_line(&mut line) {
             Ok(_) => match Request::decode_line(&line) {
                 Ok(request) => {
@@ -95,10 +110,10 @@ fn handle(stream: UnixStream, snapshot: &SocketSnapshot, hook_tx: &mpsc::Sender<
     let _ = stream.write_all(response.encode_line().as_bytes());
 }
 
-/// Bind the socket, replacing a stale file. Errors with
-/// [`std::io::ErrorKind::AddrInUse`] when a live app answers, so a second
-/// instance exits instead of stealing the socket. Returns the path for
-/// removal on quit.
+/// Bind the socket, replacing a stale file. Only a refused connect (no
+/// listener) counts as stale. Anything else means another instance is alive:
+/// [`std::io::ErrorKind::AddrInUse`] is returned so the second instance exits
+/// instead of stealing the socket. Returns the path for removal on quit.
 pub(crate) fn start(
     snapshot: Arc<Mutex<SocketSnapshot>>,
     hook_tx: mpsc::Sender<HookRequest>,
@@ -107,14 +122,32 @@ pub(crate) fn start(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if path.exists() && ipc::send(&Request::Status).is_ok() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AddrInUse,
-            "Jisuno is already running",
-        ));
+    if path.exists() {
+        match ipc::send(&Request::Status) {
+            Err(ClientError::NotRunning) => {}
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "another Jisuno instance is running",
+                ));
+            }
+            Err(ClientError::Failed(message)) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    format!(
+                        "another Jisuno instance is not answering on the control socket ({message})"
+                    ),
+                ));
+            }
+        }
     }
     let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)?;
+    // Bind under umask 077 so the socket is never world-accessible, even for
+    // the instant before the explicit chmod below.
+    let old_umask = unsafe { libc::umask(0o077) };
+    let bound = UnixListener::bind(&path);
+    unsafe { libc::umask(old_umask) };
+    let listener = bound?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     std::thread::spawn(move || {
         for conn in listener.incoming() {

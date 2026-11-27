@@ -32,7 +32,7 @@ pub(crate) mod windows;
 pub(crate) mod worker;
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{
@@ -73,12 +73,14 @@ pub struct AppOptions {
 
 /// Which window `--debug-open` opens after launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "dev"), allow(dead_code))]
 pub enum DebugOpen {
     Popover,
     Settings,
     Welcome,
 }
 
+#[cfg(feature = "dev")]
 impl DebugOpen {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
@@ -91,15 +93,24 @@ impl DebugOpen {
 }
 
 impl AppOptions {
+    /// Launch options from the environment. The `JISUNO_DEBUG_*` hooks are
+    /// read only in `dev` builds; release always gets the defaults.
     pub fn from_env() -> Self {
-        Self {
-            debug_wav: std::env::var("JISUNO_DEBUG_WAV").ok().map(PathBuf::from),
-            debug_hold_ms: std::env::var("JISUNO_DEBUG_HOLD_MS")
-                .ok()
-                .and_then(|s| s.parse().ok()),
-            debug_open: std::env::var("JISUNO_DEBUG_OPEN")
-                .ok()
-                .and_then(|s| DebugOpen::parse(&s)),
+        #[cfg(feature = "dev")]
+        {
+            Self {
+                debug_wav: std::env::var("JISUNO_DEBUG_WAV").ok().map(PathBuf::from),
+                debug_hold_ms: std::env::var("JISUNO_DEBUG_HOLD_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok()),
+                debug_open: std::env::var("JISUNO_DEBUG_OPEN")
+                    .ok()
+                    .and_then(|s| DebugOpen::parse(&s)),
+            }
+        }
+        #[cfg(not(feature = "dev"))]
+        {
+            Self::default()
         }
     }
 }
@@ -307,7 +318,7 @@ pub fn run(opts: AppOptions) {
     let socket_path = match socket::start(socket_snapshot.clone(), hook_tx.clone()) {
         Ok(path) => Some(path),
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            eprintln!("jisuno app: already running");
+            eprintln!("jisuno app: {e}");
             std::process::exit(1);
         }
         Err(e) => {
@@ -545,6 +556,7 @@ fn capture_chords(configured: &[Key]) -> Vec<Key> {
     use jisuno_logic::keybindings::Modifier;
     use jisuno_platform::keys::keycode_name;
     let mut out: Vec<Key> = configured.to_vec();
+    let mut seen: HashSet<Key> = configured.iter().cloned().collect();
     let combos: [Vec<Modifier>; 16] = [
         vec![],
         vec![Modifier::Ctrl],
@@ -577,7 +589,7 @@ fn capture_chords(configured: &[Key]) -> Vec<Key> {
                 modifiers: modifiers.clone(),
                 key: name.to_string(),
             };
-            if !out.contains(&key) {
+            if seen.insert(key.clone()) {
                 out.push(key);
             }
         }

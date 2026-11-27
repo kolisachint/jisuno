@@ -389,7 +389,7 @@ impl KeyTap {
 #[cfg(target_os = "macos")]
 mod macos {
     use std::ffi::c_void;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
@@ -409,7 +409,9 @@ mod macos {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
-        fn CGEventTapEnable(tap: *const c_void, enable: bool);
+        /// `tap` is the `CFMachPortRef` of the event tap.
+        fn CGEventTapEnable(tap: *mut c_void, enable: bool);
+        fn CGEventTapIsEnabled(tap: *mut c_void) -> bool;
     }
 
     /// One configured chord, precomputed to integers for the hot path.
@@ -475,6 +477,25 @@ mod macos {
     fn emit(shared: &Shared, event: KeyEvent) {
         // The host went away: nothing to do.
         let _ = shared.tx.send(event);
+    }
+
+    /// Re-enable the tap after a timeout or user-input disable. `port` holds
+    /// the tap's `CFMachPortRef` (null until created, null again after drop).
+    /// `TapReenabled` is emitted only when the tap reports enabled again.
+    fn reenable(shared: &Shared, port: &AtomicPtr<c_void>) {
+        let port = port.load(Ordering::Acquire);
+        if port.is_null() {
+            return;
+        }
+        // SAFETY: the port is live while the tap thread runs its runloop, and
+        // this callback only runs on that thread.
+        let enabled = unsafe {
+            CGEventTapEnable(port, true);
+            CGEventTapIsEnabled(port)
+        };
+        if enabled {
+            emit(shared, KeyEvent::TapReenabled);
+        }
     }
 
     fn on_flags_changed(shared: &Shared, flags: u64) -> CallbackResult {
@@ -587,7 +608,10 @@ mod macos {
         let runloop: Arc<Mutex<Option<RunLoopPtr>>> = Arc::new(Mutex::new(None));
         let runloop_w = Arc::clone(&runloop);
         let (init_tx, init_rx) = mpsc::channel::<anyhow::Result<()>>();
+        let port: Arc<AtomicPtr<c_void>> = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let port_w = Arc::clone(&port);
         let thread = thread::spawn(move || {
+            let port_cb = Arc::clone(&port_w);
             let tap = match CGEventTap::new(
                 CGEventTapLocation::HID,
                 CGEventTapPlacement::HeadInsertEventTap,
@@ -597,15 +621,14 @@ mod macos {
                     CGEventType::KeyUp,
                     CGEventType::FlagsChanged,
                 ],
-                move |proxy, etype, event| {
+                move |_proxy, etype, event| {
                     if matches!(
                         etype,
                         CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
                     ) {
                         // Re-enable and tell the host keys may have been missed.
                         // NOTE: `event` may be NULL here; never touch it.
-                        unsafe { CGEventTapEnable(proxy, true) };
-                        emit(&shared, KeyEvent::TapReenabled);
+                        reenable(&shared, &port_cb);
                         return CallbackResult::Keep;
                     }
                     // Our own synthetic events (insert) pass through untouched.
@@ -646,6 +669,10 @@ mod macos {
                     return;
                 }
             };
+            port_w.store(
+                tap.mach_port().as_concrete_TypeRef() as *mut c_void,
+                Ordering::Release,
+            );
             let current = CFRunLoop::get_current();
             *runloop_w.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(RunLoopPtr(current.as_concrete_TypeRef() as *mut c_void));
@@ -653,7 +680,8 @@ mod macos {
             tap.enable();
             let _ = init_tx.send(Ok(()));
             CFRunLoop::run_current();
-            // `tap` drops here and invalidates the mach port.
+            // Clear the port before `tap` drops and invalidates it.
+            port_w.store(std::ptr::null_mut(), Ordering::Release);
         });
 
         init_rx

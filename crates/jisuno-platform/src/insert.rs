@@ -1,10 +1,11 @@
 //! Text insertion into the focused app (`jisuno.md` §10 round 4.5-6).
 //!
 //! * [`InsertMode::Paste`]: save every pasteboard item (types + data), write
-//!   the text, post Cmd+V to the target pid (or the session), then restore
-//!   the saved items after ~150 ms on a background thread — but only if the
-//!   pasteboard changeCount is still ours. If writing the pasteboard fails,
-//!   fall back to [`InsertMode::Type`].
+//!   the text, post Cmd+V to the target pid, then restore the saved items
+//!   after ~500 ms on a background thread — but only if the pasteboard
+//!   changeCount is still ours. If writing the pasteboard fails, fall back to
+//!   [`InsertMode::Type`]. If posting Cmd+V fails, the clipboard is restored
+//!   and the error returned (no fallback: the text may already be inserted).
 //! * [`InsertMode::Type`]: synthetic key events via
 //!   `CGEventKeyboardSetUnicodeString`, in chunks of at most
 //!   [`TYPE_CHUNK_UNITS`] UTF-16 units (never splitting a surrogate pair).
@@ -23,27 +24,33 @@ pub enum InsertMode {
     Type,
 }
 
-/// The target app quit (or its window closed) before key-up: nothing was
-/// inserted anywhere; the host keeps the text in Recent and shows
-/// "Focus lost: text in Recent". Match with `anyhow::Error::downcast_ref`.
+/// The target app quit (or its window closed) before key-up, or there was no
+/// target app at all (`pid` is `None`): nothing was inserted anywhere; the
+/// host keeps the text in Recent and shows "Focus lost: text in Recent".
+/// Match with `anyhow::Error::downcast_ref`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusLost {
-    pub pid: i32,
+    pub pid: Option<i32>,
 }
 
 impl std::fmt::Display for FocusLost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "focus lost: target pid {} is gone", self.pid)
+        match self.pid {
+            Some(pid) => write!(f, "focus lost: target pid {pid} is gone"),
+            None => write!(f, "focus lost: no target app"),
+        }
     }
 }
 
 impl std::error::Error for FocusLost {}
 
-/// Insert `text` for `target_pid` (`None` posts to the session instead of a
-/// pid). Empty text is a no-op. When `restore_clipboard` is false, Paste
-/// leaves the inserted text on the clipboard.
+/// Insert `text` into `target_pid`. `None` returns [`FocusLost`] and posts
+/// nothing: events are never sent to the session, where they would land in
+/// whatever app happens to be focused. Empty text is a no-op. When
+/// `restore_clipboard` is false, Paste leaves the inserted text on the
+/// clipboard.
 ///
-/// Clipboard restore runs on a background thread ~150 ms after the paste, so
+/// Clipboard restore runs on a background thread ~500 ms after the paste, so
 /// the calling process must outlive the call by at least that long or the
 /// restore is lost (the text is already inserted either way).
 pub fn insert_text(
@@ -64,24 +71,27 @@ pub fn insert_text(
         if text.is_empty() {
             return Ok(());
         }
-        if let Some(pid) = target_pid {
-            if !macos::pid_alive(pid) {
-                return Err(FocusLost { pid }.into());
-            }
+        let Some(pid) = target_pid else {
+            return Err(FocusLost { pid: None }.into());
+        };
+        if !macos::pid_alive(pid) {
+            return Err(FocusLost { pid: Some(pid) }.into());
         }
         match mode {
-            InsertMode::Paste => match macos::insert_via_paste(text, target_pid, restore_clipboard)
-            {
+            InsertMode::Paste => match macos::insert_via_paste(text, pid, restore_clipboard) {
                 Ok(()) => Ok(()),
                 Err(paste_err) => {
-                    if paste_err.downcast_ref::<FocusLost>().is_some() {
+                    if paste_err
+                        .downcast_ref::<macos::ClipboardWriteFailed>()
+                        .is_none()
+                    {
                         return Err(paste_err);
                     }
-                    // Clipboard write failed: fall back to typing.
-                    macos::insert_via_type(text, target_pid).context("paste failed, type failed")
+                    // Nothing was posted: fall back to typing.
+                    macos::insert_via_type(text, pid).context("paste failed, type failed")
                 }
             },
-            InsertMode::Type => macos::insert_via_type(text, target_pid),
+            InsertMode::Type => macos::insert_via_type(text, pid),
         }
     }
 }
@@ -119,8 +129,7 @@ mod macos {
     use std::thread;
     use std::time::Duration;
 
-    use anyhow::Context;
-    use core_graphics::event::{CGEvent, CGEventTapLocation, EventField};
+    use core_graphics::event::{CGEvent, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use objc2::rc::Retained;
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
@@ -128,9 +137,27 @@ mod macos {
 
     use super::super::keys::POSTED_EVENT_TAG;
 
+    /// Restore delay after Cmd+V. The target app reads the pasteboard
+    /// asynchronously; if it is slower than this it pastes the restored
+    /// content instead. Raised from 150 ms for that reason.
+    const RESTORE_DELAY: Duration = Duration::from_millis(500);
+
     /// Tag every posted event so the key tap passes our own events through.
     const PASTE_KEYCODE: u16 = 0x09; // ANSI_V
     const CMD_FLAG: u64 = 0x0010_0000;
+
+    /// The pasteboard refused our text. Nothing was posted, so the caller may
+    /// fall back to typing.
+    #[derive(Debug)]
+    pub(super) struct ClipboardWriteFailed;
+
+    impl std::fmt::Display for ClipboardWriteFailed {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("writing the text to the pasteboard failed")
+        }
+    }
+
+    impl std::error::Error for ClipboardWriteFailed {}
 
     pub(super) fn pid_alive(pid: i32) -> bool {
         // SAFETY: kill(pid, 0) performs no action; ESRCH means the pid is gone
@@ -142,12 +169,7 @@ mod macos {
         std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     }
 
-    fn post_key(
-        keycode: u16,
-        down: bool,
-        flags: u64,
-        target_pid: Option<i32>,
-    ) -> anyhow::Result<()> {
+    fn post_key(keycode: u16, down: bool, flags: u64, pid: i32) -> anyhow::Result<()> {
         use core_graphics::event::CGEventFlags;
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
             .map_err(|()| anyhow::anyhow!("CGEventSourceCreate failed"))?;
@@ -155,41 +177,35 @@ mod macos {
             .map_err(|()| anyhow::anyhow!("CGEventCreateKeyboardEvent failed"))?;
         event.set_flags(CGEventFlags::from_bits_retain(flags));
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, POSTED_EVENT_TAG);
-        match target_pid {
-            Some(pid) => event.post_to_pid(pid),
-            None => event.post(CGEventTapLocation::Session),
-        }
+        event.post_to_pid(pid);
         Ok(())
     }
 
-    fn post_unicode(chunk: &[u16], down: bool, target_pid: Option<i32>) -> anyhow::Result<()> {
+    fn post_unicode(chunk: &[u16], down: bool, pid: i32) -> anyhow::Result<()> {
         let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
             .map_err(|()| anyhow::anyhow!("CGEventSourceCreate failed"))?;
         let event = CGEvent::new_keyboard_event(source, 0, down)
             .map_err(|()| anyhow::anyhow!("CGEventCreateKeyboardEvent failed"))?;
         event.set_string_from_utf16_unchecked(chunk);
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, POSTED_EVENT_TAG);
-        match target_pid {
-            Some(pid) => event.post_to_pid(pid),
-            None => event.post(CGEventTapLocation::Session),
-        }
+        event.post_to_pid(pid);
         Ok(())
     }
 
-    pub(super) fn insert_via_type(text: &str, target_pid: Option<i32>) -> anyhow::Result<()> {
+    pub(super) fn insert_via_type(text: &str, pid: i32) -> anyhow::Result<()> {
         if crate::permissions::accessibility() != crate::permissions::PermissionState::Granted {
             anyhow::bail!("Can't insert: Accessibility is off");
         }
         for chunk in super::utf16_chunks(text, super::TYPE_CHUNK_UNITS) {
-            post_unicode(&chunk, true, target_pid)?;
-            post_unicode(&chunk, false, target_pid)?;
+            post_unicode(&chunk, true, pid)?;
+            post_unicode(&chunk, false, pid)?;
         }
         Ok(())
     }
 
     pub(super) fn insert_via_paste(
         text: &str,
-        target_pid: Option<i32>,
+        pid: i32,
         restore_clipboard: bool,
     ) -> anyhow::Result<()> {
         if crate::permissions::accessibility() != crate::permissions::PermissionState::Granted {
@@ -220,17 +236,25 @@ mod macos {
         if !wrote {
             // Restore what was there and let the caller fall back to Type.
             restore_items(&pasteboard, &saved);
-            anyhow::bail!("writing the text to the pasteboard failed");
+            return Err(ClipboardWriteFailed.into());
         }
         let ours = pasteboard.changeCount();
 
-        post_key(PASTE_KEYCODE, true, CMD_FLAG, target_pid)
-            .and(post_key(PASTE_KEYCODE, false, CMD_FLAG, target_pid))
-            .with_context(|| format!("posting Cmd+V to {target_pid:?} failed"))?;
+        let posted = post_key(PASTE_KEYCODE, true, CMD_FLAG, pid)
+            .and_then(|()| post_key(PASTE_KEYCODE, false, CMD_FLAG, pid));
+        if let Err(e) = posted {
+            // Nothing reached the app: put the old clipboard back. No typing
+            // fallback, so the text cannot be inserted twice.
+            restore_items(&pasteboard, &saved);
+            return Err(e.context(format!("posting Cmd+V to pid {pid} failed")));
+        }
 
         if restore_clipboard {
+            // Limits: the check and the restore are not atomic, so a copy in
+            // the gap between them can be overwritten; and a target app that
+            // reads the pasteboard after RESTORE_DELAY pastes the old content.
             thread::spawn(move || {
-                thread::sleep(Duration::from_millis(150));
+                thread::sleep(RESTORE_DELAY);
                 // Only restore if nobody else touched the clipboard since.
                 let pasteboard = NSPasteboard::generalPasteboard();
                 if pasteboard.changeCount() == ours {
