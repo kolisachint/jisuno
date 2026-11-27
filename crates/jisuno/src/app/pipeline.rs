@@ -376,12 +376,7 @@ impl AppState {
         // CloseMic while an outer chunk loop is still iterating.
         if discard {
             // Tap / Esc / other-key: drop the utterance without decoding.
-            if let Some(stream) = self.stream.take() {
-                let _ = self.to_worker.send(ToWorker::CancelStream { stream });
-            }
-            self.stream_begun = false;
-            self.partial_in_flight = false;
-            self.partial_text = None;
+            self.cancel_stream();
             self.resampler = None;
             self.debug_pcm = None;
             self.debug_next_at = None;
@@ -402,6 +397,20 @@ impl AppState {
         } else {
             self.log(&format!("mic closed ({} samples kept)", self.buffer.len()));
         }
+    }
+
+    /// Drop the helper stream without decoding (silent hold, failed load):
+    /// cancel only what was begun — cancelling a never-begun stream would
+    /// error the helper child — then clear the local stream state.
+    pub(crate) fn cancel_stream(&mut self) {
+        let begun = std::mem::replace(&mut self.stream_begun, false);
+        if let Some(stream) = self.stream.take() {
+            if begun {
+                let _ = self.to_worker.send(ToWorker::CancelStream { stream });
+            }
+        }
+        self.partial_in_flight = false;
+        self.partial_text = None;
     }
 
     /// Push any filter remainder still held by the streaming resampler
@@ -706,6 +715,7 @@ impl AppState {
         if mode == Mode::Dictate && !self.heard_speech && self.debug_wav.is_none() {
             self.log("no speech captured — skipping decode");
             self.pending = None;
+            self.cancel_stream();
             self.input(cx, Input::Finished { hud: None, id }, "finished (silence)");
             return;
         }
