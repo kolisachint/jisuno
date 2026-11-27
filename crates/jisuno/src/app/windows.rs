@@ -318,7 +318,8 @@ impl AppState {
     }
 }
 
-/// Copy text to the system clipboard via `pbcopy` (no lingering state).
+/// Copy text to the system clipboard via `pbcopy` (no lingering state). The
+/// child is reaped on a short-lived thread so it never lingers as a zombie.
 pub(crate) fn copy_to_clipboard(text: &str) {
     let mut child = match std::process::Command::new("pbcopy")
         .stdin(Stdio::piped())
@@ -333,6 +334,9 @@ pub(crate) fn copy_to_clipboard(text: &str) {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
     }
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 /// Window height for the model: base chrome plus one row per Recent entry.
