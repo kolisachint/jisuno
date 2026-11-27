@@ -18,7 +18,7 @@ also builds on Linux.
 brew install --cask jisuno
 ```
 
-The cask points at the GitHub release zip. If the cask is not yet in your tap, use the zip.
+The cask downloads the release zip from GitHub.
 
 ## Command-line tool only
 

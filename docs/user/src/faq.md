@@ -45,7 +45,7 @@ The model loads on demand. Press `⌃⌥W` after login, or set `model_load` to `
 
 **How much memory does it use?**
 With the model loaded, about 1.1 GB, in a helper process (`jisuno asr-worker`). With the model unloaded, the app
-uses about 35 MB.
+uses 32 to 39 MB.
 
 **Why is it unloaded most of the time?**
 On an 8 GB Mac, 1.1 GB is more than 10% of the RAM. The model unloads after 10 minutes without use
