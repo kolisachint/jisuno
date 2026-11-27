@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use gpui::App;
 use jisuno_logic::hold::Input;
-use jisuno_logic::runner::{self, Commands, Outcome, Resolution};
+use jisuno_logic::runner::{self, Commands, Outcome, Plan, Resolution};
 use jisuno_logic::settings::ConfigDir;
 use jisuno_logic::voice_control::{self, Config, WindowDef};
 use jisuno_platform::actions::{self, MacActions};
@@ -223,13 +223,34 @@ impl AppState {
     }
 
     /// Replace decoding with the H10 confirm prompt and arm the timeout.
+    /// The confirm HUD shows the runner's exact prompt copy
+    /// (`Plan::confirm_prompt`, voice-control.md §6): `detail_lines`
+    /// renders `Run "<command>"? <first_step> · …`, so `first_step` is the
+    /// prompt's summary part verbatim, not just `steps[0]`.
+    pub(crate) fn confirm_summary(plan: &Plan) -> String {
+        let prompt = plan.confirm_prompt();
+        let prefix = format!("Run \"{}\"? ", plan.label);
+        let suffix = " · Return to run · Esc to cancel";
+        prompt
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(suffix))
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                plan.steps
+                    .iter()
+                    .map(|step| step.summary())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+    }
+
     pub(crate) fn show_confirm(&mut self, cx: &mut App, label: String) {
         self.confirming = self.pending_plan.clone();
         let first_step = self
             .confirming
             .as_ref()
-            .and_then(|plan| plan.steps.first())
-            .map(|step| step.summary())
+            .map(Self::confirm_summary)
             .unwrap_or_default();
         self.log(&format!("confirm prompt: {label}"));
         if !self.hud_enabled() {
@@ -348,5 +369,62 @@ impl AppState {
                 self.show_ephemeral(cx, UiHud::ResolveFailed { label, reason }, "resolve failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppState;
+    use jisuno_logic::runner::{Plan, ResolvedStep};
+
+    fn plan(label: &str, steps: Vec<ResolvedStep>) -> Plan {
+        Plan {
+            command_id: "test".to_string(),
+            label: label.to_string(),
+            steps,
+        }
+    }
+
+    /// The confirm HUD carries the runner's exact prompt summary
+    /// (voice-control.md §6), not just `steps[0]`.
+    #[test]
+    fn confirm_shows_runner_prompt_summary() {
+        let shell = plan(
+            "clean build",
+            vec![ResolvedStep::ShellRun {
+                cmd: "cargo clean".to_string(),
+                cwd: None,
+            }],
+        );
+        assert_eq!(AppState::confirm_summary(&shell), "cargo clean");
+
+        let shell_cwd = plan(
+            "clean build",
+            vec![ResolvedStep::ShellRun {
+                cmd: "cargo clean".to_string(),
+                cwd: Some("~/github/jisuno".to_string()),
+            }],
+        );
+        assert_eq!(
+            AppState::confirm_summary(&shell_cwd),
+            "cargo clean (in ~/github/jisuno)"
+        );
+
+        let multi = plan(
+            "tidy",
+            vec![
+                ResolvedStep::ShellRun {
+                    cmd: "cargo clean".to_string(),
+                    cwd: None,
+                },
+                ResolvedStep::ThemeSet {
+                    theme: "dark".to_string(),
+                },
+            ],
+        );
+        assert_eq!(
+            AppState::confirm_summary(&multi),
+            "shell.run cargo clean, theme.set dark"
+        );
     }
 }
