@@ -30,7 +30,7 @@ jisuno/
   Cargo.toml                  virtual workspace, members = ["crates/*"]
   crates/
     jisuno/                   macOS app (GPUI): menu bar, HUD, settings; plus the CLI
-                              (setup, models, transcribe, serve, control, model, bench)
+                              (setup, models, transcribe, serve, control, model)
     jisuno-logic/             pure, builds anywhere: config schemas + load/validate, command
                               matcher with {slots}, step runner (actions as data), line
                               protocol, VAD state machine, latency accounting
@@ -40,7 +40,7 @@ jisuno/
     jisuno-platform/          macOS only: hotkey event tap, text insert, AX actions, window
                               placement, app launch, login item, permissions, status item
     jisuno-ui/                theme tokens, HUD, popover, settings widgets (GPUI)
-    jisuno-bench/             bench harness and fixtures runner (also `jisuno bench`)
+    jisuno-bench/             bench harness and fixtures runner (`jisuno-bench`, bundled in the app)
   docs/design/                this doc, keybindings.md, voice-control.md, app-ui.md,
                               prototypes/
   docs/user/                  mdBook: install, permissions, dictation, commands, config files
@@ -75,7 +75,7 @@ config stays live, with the error in the HUD and in `jisuno control validate`.
 
 | File | Owns |
 |--|--|
-| `settings.json` | `model`, `language`, `model_load` (on_demand/at_login), `unload_after_idle_min`, `input_device`, `dictation_limit_s`, `hands_free_silence_ms`, partials, `insert` (paste/type) + `insert_type_apps`, `restore_clipboard`, sounds, `hud` position, login item |
+| `settings.json` | `model`, `model_load` (on_demand/at_login), `unload_after_idle_min`, `input_device`, `dictation_limit_s`, `hands_free_silence_ms`, partials, `insert` (paste/type) + `insert_type_apps`, `restore_clipboard`, sounds, `hud` position, login item |
 | `keybindings.json` | `{"bindings": [{key, hold?, when?, command}]}` |
 | `theme.json` | theme name, appearance, dictate/command accents, HUD style and latency (`app-ui.md` §5) |
 | `voice-control-config.json` | `commands[]` and `workspaces{}` |
@@ -143,7 +143,7 @@ typing; mic opened on key-down.
 
 ### 6.1 Measurement
 
-`jisuno bench` and the Settings → Performance page report: key-up → text (warm, cold),
+`jisuno-bench` and the Settings → Performance page report: key-up → text (warm, cold),
 warm decode for 2/5/15 s clips, cold load, memory warm/unloaded, idle CPU, and WER on
 LibriSpeech test-clean plus an owner-recorded set. Shared CI runners record numbers only; the
 reference Mac is where numbers are signed off.
@@ -308,6 +308,17 @@ secure input, focus lost) are specified in `app-ui.md` and shown in `prototypes/
 4. Debug hooks (`--debug-wav`, `--debug-hold-ms`, `--debug-open`, fake helper) exist only with
    the `dev` cargo feature; release builds never include them.
 5. Logs never contain dictated, partial, or command text unless `JISUNO_LOG_TEXT=1`.
+
+**2026-11-26, round 10**
+1. `ax.*` uses direct attributes first, then a bounded search of the focused window (depth <= 4,
+   <= 300 elements); never unbounded. Supersedes "never a scan" in §5.2 and round 2 item 2.
+   Details: `voice-control.md` changelog round 8 (also: `center` = 60% of the visible frame;
+   `shell.run` timeout 60 s with reason `shell timed out after 60 s`).
+2. `language` is removed from `settings.json`: Parakeet v3 detects the language per utterance and
+   v2 is English only, so there is nothing to choose.
+3. `login_item` registers Jisuno as a login item through `SMAppService.mainApp` (macOS 13+).
+4. Settings -> Performance runs the bundled `jisuno-bench` (shipped inside `Jisuno.app` next to
+   `jisuno`); there is no `jisuno bench` subcommand.
 
 ## 11. Open questions
 
