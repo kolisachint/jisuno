@@ -2,6 +2,8 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::App;
@@ -18,6 +20,21 @@ pub(crate) enum ModelState {
     Loading { gen: u64 },
     Warm,
     Failed,
+}
+
+/// A model download running on its own thread, reporting over `download_tx`.
+/// One at a time: starting another cancels the running one.
+pub(crate) struct ActiveDownload {
+    pub(crate) model_id: String,
+    pub(crate) percent: u32,
+    pub(crate) cancel: Arc<AtomicBool>,
+}
+
+/// Progress/completion reports from the download thread.
+pub(crate) enum DownloadEvent {
+    Progress { model_id: String, percent: u32 },
+    Done { model_id: String },
+    Failed { model_id: String, err: String },
 }
 
 pub(crate) fn model_id(settings: &Settings) -> String {
@@ -68,6 +85,109 @@ impl AppState {
             self.model_state = ModelState::Unloaded;
             let _ = self.to_worker.send(ToWorker::Cancel { gen });
             self.log("model load cancelled (tap)");
+        }
+    }
+
+    /// Start (or resume) downloading `model_id` on a thread; progress and
+    /// completion arrive as [`DownloadEvent`]s. A running download for
+    /// another model is cancelled first.
+    pub(crate) fn start_download(&mut self, model_id: String) {
+        if let Some(active) = &self.download {
+            if active.model_id == model_id {
+                // A second click cancels the running download.
+                self.cancel_download("toggle");
+                return;
+            }
+            active.cancel.store(true, Ordering::SeqCst);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tx = self.download_tx.clone();
+        let cancel_w = Arc::clone(&cancel);
+        let id = model_id.clone();
+        self.download = Some(ActiveDownload {
+            model_id: model_id.clone(),
+            percent: 0,
+            cancel,
+        });
+        self.log(&format!("download {model_id}: started"));
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<()> {
+                let model = jisuno_asr::setup::Model::parse(&id)?;
+                if model.is_ready() {
+                    return Ok(());
+                }
+                let tls = jisuno_asr::tls::TlsOptions::default();
+                jisuno_asr::setup::download_model(
+                    &model,
+                    &tls,
+                    &cancel_w,
+                    &mut |p: jisuno_asr::download::Progress| {
+                        let percent = p
+                            .overall_done
+                            .saturating_mul(100)
+                            .checked_div(p.overall_total)
+                            .map(|q| q.min(100) as u32)
+                            .unwrap_or(0);
+                        let _ = tx.send(DownloadEvent::Progress {
+                            model_id: id.clone(),
+                            percent,
+                        });
+                    },
+                )?;
+                if cancel_w.load(Ordering::SeqCst) {
+                    anyhow::bail!("cancelled");
+                }
+                model.verify()?;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => {
+                    let _ = tx.send(DownloadEvent::Done { model_id: id });
+                }
+                Err(e) => {
+                    let _ = tx.send(DownloadEvent::Failed {
+                        model_id: id,
+                        err: format!("{e:#}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Cancel the running download, if any.
+    pub(crate) fn cancel_download(&mut self, why: &str) {
+        if let Some(active) = self.download.take() {
+            active.cancel.store(true, Ordering::SeqCst);
+            self.log(&format!("download {} cancelled ({why})", active.model_id));
+        }
+    }
+
+    /// Drain download progress/completion into state (the tick calls this).
+    pub(crate) fn drain_download(&mut self) {
+        let mut events = Vec::new();
+        while let Ok(event) = self.download_rx.try_recv() {
+            events.push(event);
+        }
+        for event in events {
+            match event {
+                DownloadEvent::Progress { model_id, percent } => {
+                    if let Some(active) = &mut self.download {
+                        if active.model_id == model_id {
+                            active.percent = percent;
+                        }
+                    }
+                }
+                DownloadEvent::Done { model_id } => {
+                    self.download = None;
+                    self.model_present = self.model_files_present();
+                    self.log(&format!("download {model_id}: finished"));
+                }
+                DownloadEvent::Failed { model_id, err } => {
+                    self.download = None;
+                    self.model_present = self.model_files_present();
+                    self.log(&format!("download {model_id}: failed: {err}"));
+                }
+            }
         }
     }
 

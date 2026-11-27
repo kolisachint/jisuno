@@ -27,6 +27,7 @@ use jisuno_ui::tokens::ThemeJson;
 use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
 use super::socket::SocketSnapshot;
+use super::model::{ActiveDownload, DownloadEvent};
 use super::windows::PopoverHandle;
 use super::worker::{FromWorker, ToWorker};
 use jisuno_ui::popover_model::PopoverIntent;
@@ -118,6 +119,9 @@ pub(crate) struct AppState {
     pub(crate) tap: Option<KeyTap>,
     pub(crate) menu_rx: mpsc::Receiver<MenuAction>,
     pub(crate) status: StatusItem,
+    pub(crate) download: Option<ActiveDownload>,
+    pub(crate) download_tx: mpsc::Sender<DownloadEvent>,
+    pub(crate) download_rx: mpsc::Receiver<DownloadEvent>,
     pub(crate) popover: Option<PopoverHandle>,
     pub(crate) popover_toast: Option<(String, Instant)>,
     pub(crate) popover_tx: mpsc::Sender<PopoverIntent>,

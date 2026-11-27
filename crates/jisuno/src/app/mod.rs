@@ -340,6 +340,7 @@ pub fn run(opts: AppOptions) {
 
         let settings = settings_holder.current.clone();
         let (popover_tx, popover_rx) = mpsc::channel();
+        let (download_tx, download_rx) = mpsc::channel();
         let state = Rc::new(RefCell::new(AppState {
             start,
             machine,
@@ -373,6 +374,9 @@ pub fn run(opts: AppOptions) {
             tap_rx,
             tap,
             menu_rx,
+            download: None,
+            download_tx,
+            download_rx,
             popover: None,
             popover_toast: None,
             popover_tx,

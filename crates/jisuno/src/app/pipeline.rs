@@ -34,6 +34,7 @@ impl AppState {
             return true;
         }
         self.drain_menu(cx);
+        self.drain_download();
         self.drain_popover(cx);
         self.drain_tap(cx);
         self.drain_worker(cx);

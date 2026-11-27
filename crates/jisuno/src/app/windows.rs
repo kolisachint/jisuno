@@ -56,11 +56,19 @@ impl Render for PopoverRoot {
 impl AppState {
     /// Build the popover model from live state (§4).
     pub(crate) fn popover_model(&self) -> PopoverModel {
-        let presence = match self.model_state {
-            AppModelState::Warm => ModelPresence::Warm,
-            AppModelState::Loading { .. } => ModelPresence::Loading,
-            AppModelState::Unloaded if self.model_present => ModelPresence::Cold,
-            AppModelState::Unloaded | AppModelState::Failed => ModelPresence::NotDownloaded,
+        let presence = if let Some(active) = &self.download {
+            ModelPresence::Downloading {
+                percent: active.percent,
+            }
+        } else {
+            match self.model_state {
+                AppModelState::Warm => ModelPresence::Warm,
+                AppModelState::Loading { .. } => ModelPresence::Loading,
+                AppModelState::Unloaded if self.model_present => ModelPresence::Cold,
+                AppModelState::Unloaded | AppModelState::Failed => {
+                    ModelPresence::NotDownloaded
+                }
+            }
         };
         let recent = self
             .recent
@@ -228,7 +236,7 @@ impl AppState {
         match intent {
             PopoverIntent::WarmModel => self.start_load(cx, "popover"),
             PopoverIntent::UnloadModel => self.unload_model("popover"),
-            PopoverIntent::DownloadModel => self.log("model download comes later"),
+            PopoverIntent::DownloadModel => self.start_download(self.model_name.clone()),
             PopoverIntent::CopyRecent(index) => {
                 let text = self
                     .popover_model()
