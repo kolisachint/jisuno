@@ -9,8 +9,10 @@ use std::time::Duration;
 use super::ResolvedWindow;
 
 /// Poll interval for window waits.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const WAIT_POLL: Duration = Duration::from_millis(100);
 /// Window-wait budget: 50 polls x 100 ms.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const WAIT_POLLS: usize = 50;
 
 /// Sleep `ms` milliseconds.
@@ -23,7 +25,7 @@ pub(crate) fn wait_for_window(resolved: &ResolvedWindow) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = resolved;
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {

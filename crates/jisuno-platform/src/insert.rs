@@ -62,7 +62,7 @@ pub fn insert_text(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (text, target_pid, mode, restore_clipboard);
-        return Err(anyhow::anyhow!("jisuno-platform: macOS only"));
+        Err(anyhow::anyhow!("jisuno-platform: macOS only"))
     }
     #[cfg(target_os = "macos")]
     {

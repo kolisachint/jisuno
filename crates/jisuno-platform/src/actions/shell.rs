@@ -8,14 +8,18 @@
 //! child can never block on a full pipe) and only its tail is kept — the
 //! reason text itself never carries output.
 
+#[cfg(any(target_os = "macos", test))]
 use std::time::Duration;
 
 /// Kill-after timeout for the child.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const SHELL_TIMEOUT: Duration = Duration::from_secs(60);
 /// How much stderr tail is kept (for diagnostics, not for the reason text).
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const STDERR_TAIL_BYTES: usize = 4096;
 
 /// Last `max` bytes of `bytes` as lossy text. Pure: unit-tested on all OSes.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn stderr_tail(bytes: &[u8], max: usize) -> String {
     let start = bytes.len().saturating_sub(max);
     String::from_utf8_lossy(&bytes[start..]).into_owned()
@@ -26,7 +30,7 @@ pub(crate) fn run_command(cmd: &str, cwd: Option<&str>) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (cmd, cwd);
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {

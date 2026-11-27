@@ -157,6 +157,7 @@ pub(crate) fn resolve_window(
 
 /// Expand a leading `~` or `~/...` against `home`. Pure: unit-tested on all
 /// OSes; live callers pass `HOME`.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn expand_tilde(path: &str, home: &str) -> String {
     if path == "~" {
         return home.to_string();
@@ -171,6 +172,7 @@ pub(crate) fn expand_tilde(path: &str, home: &str) -> String {
 }
 
 /// Live `~` expansion against `$HOME` (empty when unset).
+#[cfg(target_os = "macos")]
 pub(crate) fn expand_tilde_live(path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     expand_tilde(path, &home)
@@ -297,7 +299,6 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn stubs_on_other_oses() {
-        let mut actions = MacActions::new(StubHooks { theme_error: None });
         let resolved = resolve_window("terminal", &BTreeMap::new());
         assert_eq!(
             window::focus_window(&resolved),

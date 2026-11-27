@@ -21,7 +21,7 @@ pub(crate) fn open_workspace(defs: &[WindowDef]) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = defs;
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {
@@ -34,7 +34,7 @@ pub(crate) fn close_workspace(defs: &[WindowDef]) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = defs;
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {
@@ -43,6 +43,7 @@ pub(crate) fn close_workspace(defs: &[WindowDef]) -> Result<(), String> {
 }
 
 /// File name for a def's `run` command file. Pure: unit-tested on all OSes.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn command_file_name(id: &str) -> String {
     let safe: String = id
         .chars()
@@ -58,6 +59,7 @@ pub(crate) fn command_file_name(id: &str) -> String {
 }
 
 /// Contents of the `.command` file: login shell, then the command.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn command_file_contents(run: &str) -> String {
     format!("#!/bin/zsh -l\n{run}\n")
 }

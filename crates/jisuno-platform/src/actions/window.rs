@@ -17,7 +17,7 @@ pub(crate) fn focus_window(resolved: &ResolvedWindow) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = resolved;
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {
@@ -30,7 +30,7 @@ pub(crate) fn tile_window(resolved: &ResolvedWindow, place: Place) -> Result<(),
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (resolved, place);
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {
