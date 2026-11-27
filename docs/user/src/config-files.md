@@ -31,7 +31,8 @@ Errors name the file, the line and the problem:
 keybindings.json:12: unknown key "hald" · using last good config
 ```
 
-Keys you leave out of `settings.json` use their defaults.
+Keys you leave out of `settings.json` use their defaults. A key Jisuno does not know is an error: the file
+is rejected, and the last good version stays live.
 
 ## settings.json
 
@@ -39,7 +40,7 @@ Keys you leave out of `settings.json` use their defaults.
 |---|---|---|---|
 | `$schema` | string | none | Path to the local schema. Keep it. |
 | `model` | string | `parakeet-tdt-0.6b-v3-int8` | `parakeet-tdt-0.6b-v3-int8` (multilingual) or `parakeet-tdt-0.6b-v2-int8` (English only). See [Models](models.md). |
-| `language` | string | `auto` | Only `auto` is supported. The model detects the language of each utterance. |
+| `language` | string | `auto` | Stored, not read by the app. The model detects the language of each utterance. |
 | `model_load` | enum | `on_demand` | `on_demand` loads when you start speaking. `at_login` loads at login. |
 | `unload_after_idle_min` | integer, 0 or more | `10` | Minutes without use before the model unloads. `0` means never. |
 | `input_device` | string | `system` | `system` for the system input, or the exact name of a device. If the device is not connected, Jisuno uses the system input and shows a HUD note. Pick it in Settings → Audio. |
@@ -51,7 +52,7 @@ Keys you leave out of `settings.json` use their defaults.
 | `restore_clipboard` | boolean | `true` | Restore the clipboard after a paste. |
 | `sounds` | boolean | `true` | Short tones on start, stop and cancel. |
 | `hud` | enum | `notch` | Where the HUD appears: `notch`, `cursor` or `off`. |
-| `login_item` | boolean | `false` | Launch Jisuno at login. |
+| `login_item` | boolean | `false` | Shown as **Launch at login** in Settings. Not yet applied: Jisuno does not register itself to start at login, so this has no effect. Open Jisuno at login by adding it under System Settings → General → Login Items. |
 
 ## keybindings.json
 
