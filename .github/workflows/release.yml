@@ -8,7 +8,9 @@ permissions:
   contents: write
 
 jobs:
-  # ── 1. Bump version, commit, push, annotated tag ──────────────────────
+  # ── 1. Resolve the version, bump, commit, tag ─────────────────────────
+  # Base version: the highest v* tag, bumped by the label. No v* tag yet: the
+  # manifest version is released as is (first release).
   bump-and-tag:
     if: >
       github.event.pull_request.merged == true && (
@@ -18,13 +20,14 @@ jobs:
       )
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.bump.outputs.version }}
-      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+          fetch-tags: true
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,43 +47,83 @@ jobs:
             echo "type=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump version in Cargo.toml
-        id: bump
+      - name: Resolve version
+        id: release
+        env:
+          MERGE: ${{ github.event.pull_request.merge_commit_sha }}
+          BUMP_TYPE: ${{ steps.release-type.outputs.type }}
         run: |
-          CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          echo "Current version: $CURRENT_VERSION"
+          set -euo pipefail
 
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          manifest="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          echo "Manifest version: $manifest"
 
-          BUMP_TYPE="${{ steps.release-type.outputs.type }}"
-          case "$BUMP_TYPE" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
+          # Base: the highest v* tag reachable from main (not `git describe`,
+          # which picks the nearest tag and can pick an older one). None yet:
+          # release the manifest version unchanged.
+          latest="$(git tag --merged HEAD --list 'v*' --sort=-v:refname | head -n1)"
+          if [[ -z "$latest" ]]; then
+            version="$manifest"
+            echo "No v* tag yet: releasing manifest version $version"
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${latest#v}"
+            case "$BUMP_TYPE" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            version="$MAJOR.$MINOR.$PATCH"
+            echo "Latest tag $latest: $BUMP_TYPE bump to $version"
+          fi
 
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "New version: $NEW_VERSION"
+          # No bump commit when the manifest already has the version.
+          bump=true
+          if [[ "$manifest" == "$version" ]]; then bump=false; fi
 
+          {
+            echo "bump=$bump"
+            echo "version=$version"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in Cargo.toml
+        if: steps.release.outputs.bump == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
           # Workspace version, then the version pins on the workspace path
           # dependencies (root Cargo.toml [workspace.dependencies]). A stale pin
           # would make cargo reject the crates after a minor or major bump.
-          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-          sed -i "/path = \"crates\//s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          sed -i "/path = \"crates\//s/version = \"[^\"]*\"/version = \"$VERSION\"/" Cargo.toml
           cargo update --workspace
 
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Commit and tag
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BUMP: ${{ steps.release.outputs.bump }}
+          MERGE: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          VERSION="${{ steps.bump.outputs.version }}"
-          git add Cargo.toml Cargo.lock
-          git commit -m "release: v${VERSION}"
-          git tag -a "v${VERSION}" -m "release: v${VERSION}"
+          set -euo pipefail
+          target="$MERGE"
+          if [[ "$BUMP" == "true" ]]; then
+            git add Cargo.toml Cargo.lock
+            git commit -m "release: $TAG"
+            target="$(git rev-parse HEAD)"
+          fi
+          git tag -a "$TAG" "$target" -m "release: $TAG"
 
       - name: Push version bump and tag
-        run: git push --follow-tags origin main
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BUMP: ${{ steps.release.outputs.bump }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUMP" == "true" ]]; then
+            git push origin main
+          fi
+          git push origin "refs/tags/$TAG"
 
   # ── 2. Publish crates to crates.io ────────────────────────────────────
   # Published in dependency order. jisuno-platform and jisuno-ui are
