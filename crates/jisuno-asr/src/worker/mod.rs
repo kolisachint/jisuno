@@ -10,5 +10,5 @@ pub mod client;
 pub mod frame;
 pub mod server;
 
-pub use client::AsrWorker;
+pub use client::{is_crashed, AsrWorker, WorkerCrashed};
 pub use server::run_worker_stdio;

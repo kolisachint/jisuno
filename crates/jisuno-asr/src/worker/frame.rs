@@ -103,14 +103,12 @@ pub fn encode_push(id: u64, samples: &[f32]) -> Vec<u8> {
 
 /// Decode `id + f32 samples` (PUSH).
 pub fn decode_push(payload: &[u8]) -> anyhow::Result<(u64, Vec<f32>)> {
-    if payload.len() < 8 || (payload.len() - 8) % 4 != 0 {
+    if payload.len() < 8 || !(payload.len() - 8).is_multiple_of(4) {
         return Err(anyhow!("bad PUSH payload of {} bytes", payload.len()));
     }
     let id = u64::from_le_bytes(payload[..8].try_into().expect("checked len"));
-    let samples = payload[8..]
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().expect("chunk of 4")))
-        .collect();
+    let (chunks, _) = payload[8..].as_chunks::<4>();
+    let samples = chunks.iter().map(|c| f32::from_le_bytes(*c)).collect();
     Ok((id, samples))
 }
 
@@ -125,16 +123,14 @@ pub fn encode_samples(samples: &[f32]) -> Vec<u8> {
 
 /// Decode raw `f32` samples (TRANSCRIBE).
 pub fn decode_samples(payload: &[u8]) -> anyhow::Result<Vec<f32>> {
-    if payload.len() % 4 != 0 {
+    if !payload.len().is_multiple_of(4) {
         return Err(anyhow!(
             "sample payload of {} bytes is not a multiple of 4",
             payload.len()
         ));
     }
-    Ok(payload
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().expect("chunk of 4")))
-        .collect())
+    let (chunks, _) = payload.as_chunks::<4>();
+    Ok(chunks.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 /// Encode `id + utf8 text` (FINAL / PARTIAL / ERROR).
