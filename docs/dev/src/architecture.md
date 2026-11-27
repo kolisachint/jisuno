@@ -5,7 +5,7 @@
 | Crate | Responsibility | Depends on (internal) | Builds on |
 |---|---|---|---|
 | `jisuno` | Binary. CLI subcommands, the menu bar app (feature `app`), the hidden `asr-worker` entry, the control socket server. | `jisuno-asr`, `jisuno-audio`, `jisuno-logic`; with `app`: `jisuno-platform`, `jisuno-ui` | macOS (app); any (CLI) |
-| `jisuno-logic` | Pure logic: hold state machine, keybindings, settings and theme-independent config types, voice-command schema, validation, matcher, runner, VAD, stdout protocol. | none | all, tested on Linux |
+| `jisuno-logic` | Pure logic: hold state machine, keybindings, settings and voice-command types and validation, matcher, runner, VAD, stdout protocol. | none | all, tested on Linux |
 | `jisuno-audio` | Mono downmix, anti-aliased resample to 16 kHz, streaming resampler, WAV load, mic capture (`cpal`, feature `mic`), start/stop/cancel tones. | none | all (`mic` needs ALSA on Linux) |
 | `jisuno-asr` | `Transcriber` trait and Parakeet ONNX decode, pause-split streaming, model registry, resumable downloads, TLS trust, helper process (`worker/`). | `jisuno-logic` | all |
 | `jisuno-platform` | macOS glue: event tap (`keys`), text insert, frontmost app, permissions, Secure Input, status item, login item, HUD placement, voice-command actions (`actions/`). Stubs on other OSes. | `jisuno-logic` | macOS |
@@ -18,16 +18,14 @@ The file-level layout of each crate is in [`AGENTS.md`](../../../AGENTS.md) (rep
 ## Dependencies
 
 ```
-jisuno ─┬─> jisuno-asr ────────┐
-        ├─> jisuno-audio       │
-        ├─> jisuno-logic <─────┤  jisuno-asr, jisuno-platform and jisuno-ui
-        │        ^             │  depend on jisuno-logic
-        │        │             │
-        ├─> jisuno-platform ───┘   [app feature, macOS]
-        └─> jisuno-ui ─────────────> jisuno-logic   [app feature, macOS]
+jisuno                         binary: CLI, menu bar app, hidden asr-worker
+├── jisuno-logic               pure core; no internal dependencies
+├── jisuno-asr ──────────────> jisuno-logic
+├── jisuno-audio               no internal dependencies
+├── jisuno-platform  [app] ──> jisuno-logic
+└── jisuno-ui        [app] ──> jisuno-logic
 
-jisuno-bench ─┬─> jisuno-asr
-              └─> jisuno-audio   (default features off: no cpal)
+jisuno-bench ──> jisuno-asr, jisuno-audio (default features off)
 ```
 
 Rule: anything that can be pure goes into `jisuno-logic` so it is tested on Linux. macOS-only code
