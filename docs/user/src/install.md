@@ -7,8 +7,8 @@ Jisuno runs on macOS only.
 1. Open the releases page: <https://github.com/kolisachint/jisuno/releases>.
 2. Download the Jisuno zip from the latest release.
 3. Unzip it and move `Jisuno.app` to `/Applications`.
-4. Open Jisuno. A build that is not signed and notarized is blocked by macOS. To open it anyway,
-   right-click the app and choose **Open**.
+4. Open Jisuno. An unsigned build is blocked by Gatekeeper. Release builds are signed and notarized. If
+   macOS blocks a build, open **System Settings → Privacy & Security** and choose **Open Anyway**.
 
 ## Homebrew
 
@@ -37,8 +37,8 @@ cargo build --release -p jisuno --features app
 packaging/bundle.sh --arch arm64 --out target/packaging   # Jisuno.app, unsigned
 ```
 
-`bundle.sh` builds the app itself and defaults to a universal build, which needs both Rust Apple
-targets. `--arch arm64` builds for Apple silicon only. Signing and notarization are in
+`bundle.sh` runs the same `cargo build --features app` for each target. Its default is `--arch universal`,
+which needs both Rust Apple targets. `--arch arm64` builds for Apple silicon only. Signing and notarization are in
 `packaging/sign-notarize.sh`. See [`packaging/README.md`](https://github.com/kolisachint/jisuno/blob/main/packaging/README.md).
 
 ## Updates
