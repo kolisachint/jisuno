@@ -16,11 +16,13 @@ use crate::app::command::HookRequest;
 use crate::app::model::ModelState;
 use crate::ipc::{self, Request, Response};
 
-/// Tick-refreshed answer for `{"cmd":"status"}`.
+/// Tick-refreshed answer for `{"cmd":"status"}`. `rss_mb` is the helper
+/// child RSS while the model is warm; `None` falls back to this process.
 #[derive(Debug, Clone)]
 pub(crate) struct SocketSnapshot {
     pub(crate) model: String,
     pub(crate) state: String,
+    pub(crate) rss_mb: Option<u64>,
 }
 
 /// `warm` / `loading` / `unloaded` for the socket and the CLI.
@@ -53,7 +55,11 @@ fn model_ready(model: &str) -> bool {
 fn answer(request: &Request, snapshot: &SocketSnapshot) -> (Response, Option<HookRequest>) {
     match request {
         Request::Status => (
-            Response::status(snapshot.model.clone(), &snapshot.state, process_rss_mb()),
+            Response::status(
+                snapshot.model.clone(),
+                &snapshot.state,
+                snapshot.rss_mb.unwrap_or_else(process_rss_mb),
+            ),
             None,
         ),
         Request::Warm => {

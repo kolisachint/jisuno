@@ -60,6 +60,9 @@ enum Command {
     },
     /// Talk to the running menu bar app over its control socket.
     Model(ModelArgs),
+    /// Run the ASR helper child (spawned by the app/worker; hidden).
+    #[command(name = "asr-worker", hide = true)]
+    AsrWorker,
     /// Start the menu bar app (macOS, `app` feature).
     #[cfg(all(feature = "app", target_os = "macos"))]
     App(AppArgs),
@@ -280,6 +283,15 @@ pub fn run() {
         }
         Some(Command::Control { command }) => std::process::exit(control::run(command)),
         Some(Command::Model(args)) => std::process::exit(run_model(args)),
+        // Always available and hidden: the app spawns this as its ASR
+        // helper child, and `serve` could use it too.
+        Some(Command::AsrWorker) => {
+            if let Err(e) = jisuno_asr::worker::run_worker_stdio() {
+                eprintln!("jisuno asr-worker: {e:#}");
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         #[cfg(all(feature = "app", target_os = "macos"))]
         Some(Command::App(args)) => {
             let mut opts = crate::app::AppOptions::from_env();

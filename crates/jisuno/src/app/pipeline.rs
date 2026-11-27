@@ -2,7 +2,7 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -60,6 +60,7 @@ impl AppState {
         }
         self.exec_effects(cx, effects);
         self.drain_mic();
+        self.poll_partials();
         self.drain_watch(cx);
         self.poll_secure(cx);
         self.poll_idle_unload();
@@ -275,6 +276,26 @@ impl AppState {
                 self.settings.hands_free_silence_ms,
             )));
         }
+        // Streaming utterance against the helper child: begin now when warm
+        // (pushes flow from `drain_mic`); when cold the stream id is
+        // reserved and audio only accumulates until the Warm flush.
+        // Id 0 is reserved for the worker one-shot path, never begun.
+        self.stream_seq = self.stream_seq.wrapping_add(1).max(1);
+        self.stream = Some(self.stream_seq);
+        self.stream_begun = false;
+        self.partial_text = None;
+        self.partial_in_flight = false;
+        if self.model_state == ModelState::Warm {
+            let stream = self.stream_seq;
+            if self.to_worker.send(ToWorker::Begin { stream }).is_ok() {
+                self.stream_begun = true;
+                self.last_partial_poll = Instant::now();
+                self.log(&format!("stream {stream} begun (warm)"));
+            } else {
+                self.stream = None;
+                self.log("model worker gone — stream dropped");
+            }
+        }
     }
 
     /// True when the press that just opened the mic was the hands-free
@@ -288,6 +309,15 @@ impl AppState {
     }
 
     pub(crate) fn close_mic(&mut self, discard: bool) {
+        if discard {
+            // Tap / Esc / other-key: drop the utterance without decoding.
+            if let Some(stream) = self.stream.take() {
+                let _ = self.to_worker.send(ToWorker::CancelStream { stream });
+            }
+            self.stream_begun = false;
+            self.partial_in_flight = false;
+            self.partial_text = None;
+        }
         self.drain_mic();
         if let Some(capture) = self.capture.take() {
             capture.stop();
@@ -325,6 +355,36 @@ impl AppState {
                 }
             }
             self.buffer.extend_from_slice(&chunk);
+            // Stream to the helper without blocking: the worker queues it
+            // for the child. A failed send means the worker thread is
+            // gone; the crash surfaces through its next reply.
+            if self.stream_begun {
+                if let Some(stream) = self.stream {
+                    let pcm16 = jisuno_audio::audio::resample_to_16k(&chunk, self.mic_rate);
+                    let _ = self.to_worker.send(ToWorker::Push { stream, pcm: pcm16 });
+                }
+            }
+        }
+    }
+
+    /// Ask the worker for live partial text every 400 ms while listening
+    /// (H4). One request at a time; a slow decode self-throttles.
+    pub(crate) fn poll_partials(&mut self) {
+        if !self.settings.partials || self.debug_wav.is_some() || self.pending.is_some() {
+            return;
+        }
+        if !self.mic_open || !self.stream_begun || self.partial_in_flight {
+            return;
+        }
+        let Some(stream) = self.stream else {
+            return;
+        };
+        if self.last_partial_poll.elapsed() < Duration::from_millis(400) {
+            return;
+        }
+        if self.to_worker.send(ToWorker::PartialReq { stream }).is_ok() {
+            self.partial_in_flight = true;
+            self.last_partial_poll = Instant::now();
         }
     }
 
@@ -470,77 +530,78 @@ impl AppState {
 
     // --- Transcribe ---
 
+    /// Resolve one utterance: finish the helper stream (warm) or one-shot
+    /// the buffered clip behind the in-flight load (cold, or wav-debug).
     pub(crate) fn begin_transcribe(&mut self, cx: &mut App, mode: Mode, id: u64) {
         let key_up = Instant::now();
         self.pending = Some(PendingTranscribe { id, mode, key_up });
         self.last_active = Instant::now();
-        match mode {
-            Mode::Dictate => {
-                if !self.heard_speech && self.debug_wav.is_none() {
-                    self.log("no speech captured — skipping decode");
-                    self.pending = None;
-                    self.input(cx, Input::Finished { hud: None, id }, "finished (silence)");
-                    return;
-                }
-                if self.model_state == ModelState::Failed {
-                    self.log("transcribe with failed load — model missing HUD");
-                    self.pending = None;
-                    self.input(
-                        cx,
-                        Input::Finished { hud: None, id },
-                        "finished (load failed)",
-                    );
-                    self.show_ephemeral(cx, UiHud::ModelMissing, "model load failed");
-                    return;
-                }
-                let source = match &self.debug_wav {
-                    Some(path) => AudioSource::Wav { path: path.clone() },
-                    None => AudioSource::Mic {
-                        rate: self.mic_rate,
-                        pcm: std::mem::take(&mut self.buffer),
-                    },
-                };
-                self.show_decoding(cx, true, self.model_state != ModelState::Warm);
-                if self
-                    .to_worker
-                    .send(ToWorker::Transcribe { id, source })
-                    .is_err()
-                {
-                    self.log("model worker gone");
-                    self.pending = None;
-                    self.input(
-                        cx,
-                        Input::Finished { hud: None, id },
-                        "finished (worker gone)",
-                    );
-                }
-            }
-            Mode::Command => {
-                let source = match &self.debug_wav {
-                    Some(path) => AudioSource::Wav { path: path.clone() },
-                    None => AudioSource::Mic {
-                        rate: self.mic_rate,
-                        pcm: std::mem::take(&mut self.buffer),
-                    },
-                };
-                self.show_decoding(cx, false, self.model_state != ModelState::Warm);
-                if self
-                    .to_worker
-                    .send(ToWorker::Transcribe { id, source })
-                    .is_err()
-                {
-                    self.pending = None;
-                    self.input(
-                        cx,
-                        Input::Finished { hud: None, id },
-                        "finished (worker gone)",
-                    );
-                }
-            }
+        if mode == Mode::Dictate && !self.heard_speech && self.debug_wav.is_none() {
+            self.log("no speech captured — skipping decode");
+            self.pending = None;
+            self.input(cx, Input::Finished { hud: None, id }, "finished (silence)");
+            return;
+        }
+        if self.model_state == ModelState::Failed {
+            self.log("transcribe with failed load — model missing HUD");
+            self.pending = None;
+            self.input(
+                cx,
+                Input::Finished { hud: None, id },
+                "finished (load failed)",
+            );
+            self.show_ephemeral(cx, UiHud::ModelMissing, "model load failed");
+            return;
+        }
+        let dictate = mode == Mode::Dictate;
+        // Warm and streamed: the child already holds the audio — finish
+        // only decodes. Otherwise hand the whole clip over; the worker
+        // one-shots it behind the in-flight load.
+        let (stream, fallback) = match &self.debug_wav {
+            Some(path) => (0, Some(AudioSource::Wav { path: path.clone() })),
+            None if self.stream_begun => (self.stream.unwrap_or(0), None),
+            None => (
+                self.stream.unwrap_or(0),
+                Some(AudioSource::Mic {
+                    rate: self.mic_rate,
+                    pcm: std::mem::take(&mut self.buffer),
+                }),
+            ),
+        };
+        self.show_decoding(cx, dictate, self.model_state != ModelState::Warm);
+        // The stream ends here either way: the answer arrives as
+        // Transcript / PendingFailed / Crashed.
+        self.stream = None;
+        self.stream_begun = false;
+        self.partial_in_flight = false;
+        self.partial_text = None;
+        if self
+            .to_worker
+            .send(ToWorker::Finish {
+                stream,
+                reply: id,
+                fallback,
+            })
+            .is_err()
+        {
+            self.log("model worker gone");
+            self.pending = None;
+            self.input(
+                cx,
+                Input::Finished { hud: None, id },
+                "finished (worker gone)",
+            );
         }
     }
 
-    pub(crate) fn on_transcript(&mut self, cx: &mut App, id: u64, text: String, decode_ms: u64) {
+    pub(crate) fn on_transcript(
+        &mut self,
+        cx: &mut App,
+        id: u64,
+        text: String,
+        decode_ms: u64,
+        child_rss_mb: u64,
+    ) {
         let Some(pending) = self.pending.take() else {
             self.log(&format!("stale transcript {id} — ignored"));
             return;
@@ -554,6 +615,10 @@ impl AppState {
             return;
         }
         let key_up_ms = pending.key_up.elapsed().as_millis();
+        self.child_rss_mb = Some(child_rss_mb);
+        self.log(&format!(
+            "key-up -> text: {key_up_ms} ms (finish {decode_ms} ms, child {child_rss_mb} MB)"
+        ));
         self.last_active = Instant::now();
         match pending.mode {
             Mode::Dictate => {
@@ -565,9 +630,6 @@ impl AppState {
                     Ok(()) => {
                         let words = text.split_whitespace().count();
                         self.push_recent(text.clone(), None);
-                        self.log(&format!(
-                            "key-up -> text: {key_up_ms} ms (decode {decode_ms} ms)"
-                        ));
                         self.input(cx, Input::TranscriptReady { text, id }, "transcript ready");
                         let latency = self.show_latency.then_some(key_up_ms as u64);
                         self.show_ephemeral(

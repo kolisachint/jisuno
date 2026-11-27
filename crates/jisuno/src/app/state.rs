@@ -115,6 +115,24 @@ pub(crate) struct AppState {
     pub(crate) model_state: ModelState,
     pub(crate) model_gen: u64,
     pub(crate) model_name: String,
+    /// Streaming utterance against the helper child: `Some` while the mic
+    /// is open (or the key-up transcribe is queued). Ids are app-local
+    /// (0 is reserved for the worker one-shot path); the machine's
+    /// transcribe id travels separately in `ToWorker::Finish.reply`.
+    pub(crate) stream: Option<u64>,
+    pub(crate) stream_seq: u64,
+    /// True once `Begin` went out (warm at mic open, or flushed on Warm).
+    /// False while cold: audio only accumulates in `buffer`.
+    pub(crate) stream_begun: bool,
+    /// A `PartialReq` is waiting for its reply (one at a time).
+    pub(crate) partial_in_flight: bool,
+    pub(crate) last_partial_poll: Instant,
+    /// Latest partial text, tail-truncated for the HUD (H4).
+    pub(crate) partial_text: Option<String>,
+    /// Helper child RSS in MiB (from the last Warm/Transcript STATUS).
+    pub(crate) child_rss_mb: Option<u64>,
+    /// The crash HUD has been shown since the last successful Warm.
+    pub(crate) worker_crash_shown: bool,
     pub(crate) last_active: Instant,
     pub(crate) target: Option<AppInfo>,
     pub(crate) to_worker: mpsc::Sender<ToWorker>,
