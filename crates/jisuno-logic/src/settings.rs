@@ -13,6 +13,8 @@ use std::{env, fmt};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::embedded;
+
 const DICTATION_LIMIT_S: RangeInclusive<u32> = 10..=600;
 const HANDS_FREE_SILENCE_MS: RangeInclusive<u32> = 200..=5000;
 
@@ -281,11 +283,11 @@ pub fn embedded_settings_files() -> [EmbeddedFile; 2] {
     [
         EmbeddedFile {
             name: "settings.json",
-            contents: include_str!("../defaults/settings.json"),
+            contents: embedded::SETTINGS_DEFAULTS,
         },
         EmbeddedFile {
             name: "schemas/settings.schema.json",
-            contents: include_str!("../schemas/settings.schema.json"),
+            contents: embedded::SETTINGS_SCHEMA,
         },
     ]
 }
