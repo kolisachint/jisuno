@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{atomic::AtomicBool, mpsc, Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{AnyWindowHandle, App};
@@ -126,10 +126,14 @@ pub(crate) struct AppState {
     pub(crate) download_tx: mpsc::Sender<DownloadEvent>,
     pub(crate) download_rx: mpsc::Receiver<DownloadEvent>,
     /// Keybinding recording: the Settings Keybindings pane is waiting for
+    pub(crate) debug_open: Option<DebugOpen>,
+    /// Keybinding recording: the Settings Keybindings pane is waiting for
     /// the next chord/hold (Esc cancels). While set, the tap runs in
     /// capture mode and forwards keys to `feed_recorded_key`.
-    pub(crate) debug_open: Option<DebugOpen>,
     pub(crate) key_capturing: Option<(KeyCommand, Option<KeyWhen>)>,
+    /// The tap thread swallows chords/keys while this is set (recording).
+    /// Shared with the `ShouldCapture` closure, which cannot borrow state.
+    pub(crate) tap_capture: Arc<AtomicBool>,
     pub(crate) settings_win: Option<SettingsHandle>,
     pub(crate) settings_tx: mpsc::Sender<SettingsIntent>,
     pub(crate) settings_rx: mpsc::Receiver<SettingsIntent>,

@@ -124,6 +124,10 @@ impl AppState {
         }
         for ev in events {
             self.log(&format!("tap {ev:?}"));
+            if self.key_capturing.is_some() {
+                self.feed_capture(cx, &ev);
+                continue;
+            }
             match ev {
                 KeyEvent::HoldDown(key) => {
                     self.target = frontmost::frontmost_app();

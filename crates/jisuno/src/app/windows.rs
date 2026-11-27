@@ -13,14 +13,16 @@
 
 use std::io::Write as _;
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use gpui::{
     prelude::*, px, size, AnyWindowHandle, App, Bounds, Context, Entity, Point, TitlebarOptions,
     Window, WindowBounds, WindowOptions,
 };
-use jisuno_logic::keybindings::{Command as KeyCommand, Keybindings};
+use jisuno_logic::keybindings::{Command as KeyCommand, Key, Keybindings};
 use jisuno_logic::settings::{self, ConfigDir};
+use jisuno_platform::keys::KeyEvent;
 use jisuno_platform::permissions::{self, Pane as PlatformPane};
 use jisuno_ui::popover_model::{
     ModelPresence, ModelState as PopoverModelState, PermissionPane, Permissions, PopoverIntent,
@@ -28,9 +30,9 @@ use jisuno_ui::popover_model::{
 };
 use jisuno_ui::popover_view::{popover_view, PopoverEmit};
 use jisuno_ui::settings_model::{
-    command_rows, file_rows, performance_rows, AppearanceModel, AudioModel, GeneralModel,
-    KeybindingRow, ModelId, ModelPaneModel, Pane as SettingsPane, SettingsIntent, SettingsModel,
-    WorkspaceRow,
+    command_rows, feed_recorded_key, file_rows, performance_rows, AppearanceModel, AudioModel,
+    GeneralModel, KeybindingRow, ModelId, ModelPaneModel, Pane as SettingsPane, RecordOutcome,
+    SettingsIntent, SettingsModel, WorkspaceRow,
 };
 use jisuno_ui::settings_view::{settings_view, SettingsEmit};
 use jisuno_ui::tokens::{Theme, POPOVER_W};
@@ -592,20 +594,19 @@ impl AppState {
                     model.keybinding_warning = None;
                 });
                 self.key_capturing = Some((command, when));
+                self.tap_capture.store(true, Ordering::SeqCst);
                 self.restart_tap();
                 self.log("keybinding recording started");
             }
             SettingsIntent::CancelRecording => {
-                self.key_capturing = None;
-                self.restart_tap();
+                self.end_capture();
                 self.update_settings_model(cx, |model| {
                     model.recording = None;
                     model.pending_conflict = None;
                 });
             }
             SettingsIntent::ReplaceBinding => {
-                self.key_capturing = None;
-                self.restart_tap();
+                self.end_capture();
                 self.update_settings_model(cx, apply_pending_replace);
                 self.persist_keybindings(cx);
             }
@@ -629,6 +630,54 @@ impl AppState {
             SettingsIntent::UnloadModel => self.unload_model("settings"),
             SettingsIntent::TestMic => self.log("mic level meter comes later"),
             SettingsIntent::RunBench => self.log("benchmark run comes later"),
+        }
+    }
+
+    /// Leave capture mode: normal tap config, keys flow to apps again.
+    fn end_capture(&mut self) {
+        if self.key_capturing.is_some() {
+            self.log("keybinding recording finished");
+        }
+        self.key_capturing = None;
+        self.tap_capture.store(false, Ordering::SeqCst);
+        self.restart_tap();
+    }
+
+    /// Feed one captured tap event into the in-progress recording (§9).
+    /// A saved binding is persisted at once (hot reload applies it); a
+    /// conflict or error shows inline; Esc cancels and keeps the old bind.
+    pub(crate) fn feed_capture(&mut self, cx: &mut App, event: &KeyEvent) {
+        if self.settings_win.is_none() {
+            self.end_capture();
+            return;
+        }
+        let key = match event {
+            KeyEvent::Chord(key) => Some(key.clone()),
+            KeyEvent::HoldDown(side) => Some(Key::Hold((*side).into())),
+            KeyEvent::Escape => Key::parse("escape").ok(),
+            KeyEvent::Return => Key::parse("return").ok(),
+            _ => None,
+        };
+        let Some(key) = key else {
+            return;
+        };
+        let Some(mut model) = self.settings_win.as_ref().map(|handle| handle.last.clone()) else {
+            self.end_capture();
+            return;
+        };
+        self.log(&format!("keybinding recorded: {}", key.file()));
+        let outcome = feed_recorded_key(&mut model, key);
+        let finished = model.recording.is_none();
+        let saved = matches!(outcome, RecordOutcome::Saved { .. });
+        let theme = self.ui_theme(cx);
+        if let Some(handle) = self.settings_win.as_mut() {
+            handle.set_model(cx, model, theme);
+        }
+        if finished {
+            self.end_capture();
+        }
+        if saved {
+            self.persist_keybindings(cx);
         }
     }
 
@@ -803,7 +852,7 @@ impl AppState {
         // Closed at the window chrome: the handle is dead.
         if window.update(cx, |_, _, _| ()).is_err() {
             self.settings_win = None;
-            self.key_capturing = None;
+            self.end_capture();
             self.log("settings closed");
             return;
         }

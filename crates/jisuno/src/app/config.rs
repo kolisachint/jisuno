@@ -2,7 +2,7 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -310,7 +310,11 @@ impl AppState {
             }
         }
         let machine_w = Arc::clone(&self.machine);
+        let tap_capture_w = Arc::clone(&self.tap_capture);
         let should_capture: ShouldCapture = Arc::new(move |captured: Captured| {
+            if tap_capture_w.load(Ordering::SeqCst) {
+                return true;
+            }
             let machine = machine_w.lock().unwrap_or_else(|e| e.into_inner());
             match captured {
                 Captured::Escape => machine.captures(CapturedKey::Escape),

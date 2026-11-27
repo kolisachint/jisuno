@@ -35,7 +35,10 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 use gpui::{ActivationPolicy, App, AsyncApp};
@@ -342,7 +345,12 @@ pub fn run(opts: AppOptions) {
 
         let tap_config = tap_config_for(&bindings_holder.current, false);
         let machine_w = Arc::clone(&machine);
+        let tap_capture = Arc::new(AtomicBool::new(false));
+        let tap_capture_w = Arc::clone(&tap_capture);
         let should_capture: ShouldCapture = Arc::new(move |captured: Captured| {
+            if tap_capture_w.load(Ordering::SeqCst) {
+                return true;
+            }
             let machine = machine_w.lock().unwrap_or_else(|e| e.into_inner());
             match captured {
                 Captured::Escape => machine.captures(CapturedKey::Escape),
@@ -402,6 +410,7 @@ pub fn run(opts: AppOptions) {
             menu_rx,
             debug_open: opts.debug_open,
             key_capturing: None,
+            tap_capture,
             settings_win: None,
             settings_tx,
             settings_rx,
