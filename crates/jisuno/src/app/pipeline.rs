@@ -12,7 +12,7 @@ use jisuno_logic::hold::{CapturedKey, Effect, HoldKind, Input, Mode};
 use jisuno_logic::keybindings::{Command, Key};
 use jisuno_logic::settings::{self};
 use jisuno_platform::{
-    frontmost::{self},
+    frontmost::{self, AppInfo},
     insert::{self, FocusLost, InsertMode},
     keys::KeyEvent,
     permissions::{self},
@@ -167,16 +167,10 @@ impl AppState {
                 continue;
             }
             match ev {
-                KeyEvent::HoldDown(key) => {
-                    self.target = frontmost::frontmost_app();
-                    if let Some(app) = &self.target {
-                        self.log(&format!("frontmost on hold: {app:?}"));
-                    }
-                    match hold_kind_for(&self.bindings, key) {
-                        Some(kind) => self.begin_hold(cx, kind),
-                        None => self.log("tap: hold key with no dictate/command binding — ignored"),
-                    }
-                }
+                KeyEvent::HoldDown(key) => match hold_kind_for(&self.bindings, key) {
+                    Some(kind) => self.begin_hold(cx, kind),
+                    None => self.log("tap: hold key with no dictate/command binding — ignored"),
+                },
                 KeyEvent::HoldUp(key) => {
                     if let Some(kind) = hold_kind_for(&self.bindings, key) {
                         self.input(cx, Input::HoldUp(kind), "up");
@@ -210,7 +204,6 @@ impl AppState {
     pub(crate) fn on_chord(&mut self, cx: &mut App, key: &Key) {
         match self.bindings.lookup(key, None) {
             Some(Command::HandsFreeToggle) => {
-                self.target = frontmost::frontmost_app();
                 if self.check_hold_ready(cx) {
                     self.handsfree_armed = true;
                     self.input(cx, Input::HandsFreeToggle, "hands-free toggle");
@@ -280,6 +273,13 @@ impl AppState {
     // --- Mic ---
 
     pub(crate) fn open_mic(&mut self, _cx: &mut App) {
+        // Captured only here: OpenMic runs exactly when the machine
+        // accepted the press, so ignored presses can no longer overwrite
+        // the target the utterance will insert into.
+        self.target = frontmost::frontmost_app();
+        if let Some(app) = &self.target {
+            self.log(&format!("frontmost on hold: {app:?}"));
+        }
         self.mic_open = true;
         self.buffer.clear();
         self.heard_speech = false;
@@ -692,7 +692,12 @@ impl AppState {
     /// the buffered clip behind the in-flight load (cold, or wav-debug).
     pub(crate) fn begin_transcribe(&mut self, cx: &mut App, mode: Mode, id: u64) {
         let key_up = Instant::now();
-        self.pending = Some(PendingTranscribe { id, mode, key_up });
+        self.pending = Some(PendingTranscribe {
+            id,
+            mode,
+            key_up,
+            target: self.target.clone(),
+        });
         self.last_active = Instant::now();
         if mode == Mode::Dictate && !self.heard_speech && self.debug_wav.is_none() {
             self.log("no speech captured — skipping decode");
@@ -789,7 +794,8 @@ impl AppState {
                     self.input(cx, Input::Finished { hud: None, id }, "finished (empty)");
                     return;
                 }
-                match self.insert_text(&text) {
+                let (pid, bundle) = Self::insert_dest(&pending.target);
+                match self.insert_text(&text, pid, bundle) {
                     Ok(()) => {
                         let words = text.split_whitespace().count();
                         self.push_recent(text.clone(), None);
@@ -821,13 +827,29 @@ impl AppState {
                     }
                 }
             }
-            Mode::Command => self.resolve_command(cx, id, text),
+            Mode::Command => {
+                let frontmost = pending.target.as_ref().and_then(|t| t.bundle_id.clone());
+                self.resolve_command(cx, id, text, frontmost);
+            }
         }
     }
 
-    pub(crate) fn insert_text(&mut self, text: &str) -> Result<(), InsertFailure> {
-        let pid = self.target.as_ref().map(|t| t.pid);
-        let bundle = self.target.as_ref().and_then(|t| t.bundle_id.clone());
+    /// Key-down target resolved to an insert destination: the app focused
+    /// when the machine accepted the press, or nowhere (focus was already
+    /// lost at key-down) — never the app focused at key-up.
+    pub(crate) fn insert_dest(target: &Option<AppInfo>) -> (Option<i32>, Option<String>) {
+        match target {
+            Some(t) => (Some(t.pid), t.bundle_id.clone()),
+            None => (None, None),
+        }
+    }
+
+    pub(crate) fn insert_text(
+        &mut self,
+        text: &str,
+        pid: Option<i32>,
+        bundle: Option<String>,
+    ) -> Result<(), InsertFailure> {
         let mut mode = match self.settings.insert {
             settings::Insert::Paste => InsertMode::Paste,
             settings::Insert::Type => InsertMode::Type,
@@ -915,6 +937,24 @@ mod tests {
 
     fn is_dropped(effect: &Effect) -> bool {
         matches!(no_cx_route(effect), NoCxRoute::Dropped)
+    }
+
+    /// The utterance inserts into the app focused at key-down (captured
+    /// when the machine accepted the press), never the key-up frontmost
+    /// app; `None` means focus was already lost.
+    #[test]
+    fn insert_uses_key_down_target() {
+        use super::AppState;
+        use jisuno_platform::frontmost::AppInfo;
+        assert_eq!(
+            AppState::insert_dest(&Some(AppInfo {
+                bundle_id: Some("com.example.App".to_string()),
+                name: "App".to_string(),
+                pid: 123,
+            })),
+            (Some(123), Some("com.example.App".to_string()))
+        );
+        assert_eq!(AppState::insert_dest(&None), (None, None));
     }
 
     /// Every [`Effect`] variant has an explicit headless route: cx-free

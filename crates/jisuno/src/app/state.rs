@@ -65,6 +65,10 @@ pub(crate) struct PendingTranscribe {
     pub(crate) id: u64,
     pub(crate) mode: Mode,
     pub(crate) key_up: Instant,
+    /// App focused at key-down, captured when the machine accepted the
+    /// press: the utterance inserts here even if focus moved by key-up.
+    /// `None` means focus was already lost at key-down.
+    pub(crate) target: Option<AppInfo>,
 }
 
 pub(crate) struct HudWindow {

@@ -290,9 +290,14 @@ impl AppState {
     }
 
     /// Resolve one command utterance: feed the machine and show the HUD.
-    pub(crate) fn resolve_command(&mut self, cx: &mut App, id: u64, text: String) {
+    pub(crate) fn resolve_command(
+        &mut self,
+        cx: &mut App,
+        id: u64,
+        text: String,
+        frontmost: Option<String>,
+    ) {
         use Resolution as R;
-        let frontmost = self.target.as_ref().and_then(|t| t.bundle_id.clone());
         match self.voice_commands().resolve(&text, frontmost.as_deref()) {
             R::Run(plan) => {
                 self.pending_plan = Some(plan.clone());
