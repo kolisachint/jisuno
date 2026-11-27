@@ -469,6 +469,7 @@ pub fn run(opts: AppOptions) {
             model_line: String::new(),
             perm_line: [String::new(), String::new(), String::new()],
             recent: VecDeque::with_capacity(5),
+            last_insert: None,
             announced_secure: Vec::new(),
             announced_bluetooth: Vec::new(),
             mic_satisfied: mic_override,

@@ -27,7 +27,9 @@ use jisuno_ui::hud_model::HudState as UiHud;
 use super::config::take_tap_restart_failed;
 use super::hold_kind_for;
 use super::model::ModelState;
-use super::state::{text_summary, AppState, ListeningUi, PendingTranscribe, RecentEntry};
+use super::state::{
+    text_summary, AppState, LastInsert, ListeningUi, PendingTranscribe, RecentEntry,
+};
 use super::worker::{AudioSource, ToWorker};
 
 /// Where a machine effect goes when there is no `&mut App`.
@@ -580,7 +582,7 @@ impl AppState {
             if rms > self.level {
                 self.level = rms;
             }
-            if !chunk.iter().all(|s| *s == 0.0) && rms > 0.02 {
+            if !chunk.iter().all(|s| *s == 0.0) && rms > HEARD_SPEECH_RMS {
                 self.heard_speech = true;
             }
             if let Some(vad) = &mut self.handsfree_vad {
@@ -654,6 +656,7 @@ impl AppState {
     /// playback runs on its own thread.
     pub(crate) fn play_tone(&self, tone: Tone) {
         if self.settings.sounds {
+            self.log(&format!("tone: {}", tone.log_name()));
             tones::play(tone);
         }
     }
@@ -1032,12 +1035,29 @@ impl AppState {
                 mode = InsertMode::Type;
             }
         }
+        // Consecutive dictations into one app read as one sentence: a single
+        // leading space when the previous insert went to the same pid.
+        let spaced;
+        let spoken = if join_space_needed(self.last_insert, Instant::now(), pid, text) {
+            spaced = format!(" {text}");
+            spaced.as_str()
+        } else {
+            text
+        };
         // No post-paste wait here: the platform restores the clipboard on
         // its own background thread (~150 ms), and the app process
         // outlives it. Sleeping would stall the 20 ms tick.
-        match insert::insert_text(text, pid, mode, self.settings.restore_clipboard) {
-            Ok(()) => Ok(()),
+        match insert::insert_text(spoken, pid, mode, self.settings.restore_clipboard) {
+            Ok(()) => {
+                self.last_insert = pid.map(|pid| LastInsert {
+                    pid,
+                    at: Instant::now(),
+                    ends_ws: text.ends_with(char::is_whitespace),
+                });
+                Ok(())
+            }
             Err(e) => {
+                self.last_insert = None;
                 if e.downcast_ref::<FocusLost>().is_some() {
                     self.log("focus lost: text in Recent");
                     self.push_recent(text.to_string(), Some("not inserted".to_string()));
@@ -1049,6 +1069,39 @@ impl AppState {
                 }
             }
         }
+    }
+}
+
+/// Chunk RMS above which a dictate hold counts as speech (skips the decode
+/// when false). Same floor as the decoder's silence gate, so quiet speech
+/// the decoder can transcribe is not dropped here first.
+const HEARD_SPEECH_RMS: f32 = 0.01;
+
+/// How long a previous insert still counts as the same utterance thread.
+const JOIN_WINDOW: Duration = Duration::from_secs(60);
+
+/// True when `text` should get one leading space before it is inserted:
+/// the previous insert went to the same `pid` less than 60 s ago, that text
+/// did not end in whitespace, and `text` does not start with closing
+/// punctuation (`.,;:!?)'"`).
+pub(crate) fn join_space_needed(
+    prev: Option<LastInsert>,
+    now: Instant,
+    pid: Option<i32>,
+    text: &str,
+) -> bool {
+    let (Some(prev), Some(pid)) = (prev, pid) else {
+        return false;
+    };
+    if prev.pid != pid || prev.ends_ws {
+        return false;
+    }
+    if now.saturating_duration_since(prev.at) >= JOIN_WINDOW {
+        return false;
+    }
+    match text.chars().next() {
+        Some(c) => !matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | '\'' | '"'),
+        None => false,
     }
 }
 
@@ -1095,10 +1148,78 @@ pub(crate) fn is_bluetooth_name(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::join_space_needed;
     use super::no_cx_route;
     use super::NoCxRoute;
+    use super::{Duration, Instant};
+    use crate::app::state::LastInsert;
     use jisuno_logic::hold::HudState as LogicHud;
     use jisuno_logic::hold::{Effect, Mode};
+
+    /// Insert `ago` before `now`.
+    fn prev(now: Instant, pid: i32, ago: Duration, ends_ws: bool) -> Option<LastInsert> {
+        Some(LastInsert {
+            pid,
+            at: now.checked_sub(ago).unwrap_or(now),
+            ends_ws,
+        })
+    }
+
+    #[test]
+    fn join_space_for_consecutive_inserts_into_one_app() {
+        let now = Instant::now();
+        // The reported bug: "...microphone." then "Partial text check".
+        assert!(join_space_needed(
+            prev(now, 7, Duration::from_secs(3), false),
+            now,
+            Some(7),
+            "Partial text check"
+        ));
+        // Boundary: 59 s ago joins, 60 s ago does not.
+        assert!(join_space_needed(
+            prev(now, 7, Duration::from_secs(59), false),
+            now,
+            Some(7),
+            "next"
+        ));
+        assert!(!join_space_needed(
+            prev(now, 7, Duration::from_secs(60), false),
+            now,
+            Some(7),
+            "next"
+        ));
+    }
+
+    #[test]
+    fn no_join_space_when_a_condition_fails() {
+        let now = Instant::now();
+        let recent = || prev(now, 7, Duration::from_secs(3), false);
+        // No previous insert.
+        assert!(!join_space_needed(None, now, Some(7), "next"));
+        // Another target.
+        assert!(!join_space_needed(recent(), now, Some(8), "next"));
+        // No target at key-down (focus lost).
+        assert!(!join_space_needed(recent(), now, None, "next"));
+        // Previous text already ended in whitespace or a newline.
+        assert!(!join_space_needed(
+            prev(now, 7, Duration::from_secs(3), true),
+            now,
+            Some(7),
+            "next"
+        ));
+        // New text starts with punctuation.
+        for start in [".", ",", ";", ":", "!", "?", ")", "'", "\""] {
+            assert!(
+                !join_space_needed(recent(), now, Some(7), &format!("{start}next")),
+                "{start} must not get a space"
+            );
+        }
+        // Opening brackets and digits still join.
+        assert!(join_space_needed(recent(), now, Some(7), "(next"));
+        assert!(join_space_needed(recent(), now, Some(7), "2 items"));
+        // Empty text never gets a space.
+        assert!(!join_space_needed(recent(), now, Some(7), ""));
+    }
 
     fn is_dropped(effect: &Effect) -> bool {
         matches!(no_cx_route(effect), NoCxRoute::Dropped)

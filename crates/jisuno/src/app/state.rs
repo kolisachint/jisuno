@@ -90,6 +90,15 @@ pub(crate) struct ListeningUi {
     pub(crate) bluetooth_note: bool,
 }
 
+/// The last dictation insert that landed: target pid, when, and whether its
+/// text ended in whitespace. Feeds the join-space rule in `pipeline.rs`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LastInsert {
+    pub(crate) pid: i32,
+    pub(crate) at: Instant,
+    pub(crate) ends_ws: bool,
+}
+
 // Read by the popover (comes later); until then entries are logged on push.
 #[allow(dead_code)]
 pub(crate) struct RecentEntry {
@@ -190,6 +199,7 @@ pub(crate) struct AppState {
     pub(crate) model_line: String,
     pub(crate) perm_line: [String; 3],
     pub(crate) recent: VecDeque<RecentEntry>,
+    pub(crate) last_insert: Option<LastInsert>,
     pub(crate) announced_secure: Vec<String>,
     /// Devices whose Bluetooth note (H16) already showed this session.
     pub(crate) announced_bluetooth: Vec<String>,

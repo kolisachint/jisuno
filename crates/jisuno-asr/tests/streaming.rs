@@ -201,3 +201,50 @@ fn streaming_handles_edge_inputs() {
     let b = stream_all(&mut *session, &pcm).expect("second decode");
     assert_eq!(a, b);
 }
+
+/// A short, quiet utterance (about 1 s of speech under a 2 s hold) must
+/// decode at key-up. The whole-tail gate used to average the tail, so the
+/// trailing silence pushed quiet speech under the floor and finish() sent
+/// nothing. Scale a fixture to speech-level RMS around 0.01 and check it.
+#[test]
+#[ignore]
+fn quiet_short_utterance_decodes_at_finish() {
+    let model = jisuno_asr::setup::Model::ParakeetV3Int8;
+    if !model.is_ready() {
+        eprintln!("model not installed; skipping quiet-utterance test");
+        return;
+    }
+    let Some(dir) = fixtures_dir() else {
+        eprintln!("no fixtures dir; skipping quiet-utterance test");
+        return;
+    };
+    let Some((stem, wav)) = pairs(&dir).into_iter().next() else {
+        eprintln!("no fixture pairs; skipping quiet-utterance test");
+        return;
+    };
+    let loud = jisuno_audio::audio::load_wav_16k_mono(&wav).expect("load wav");
+    let short: Vec<f32> = loud.iter().take(24_000).copied().collect();
+    let mut session =
+        jisuno_asr::transcribe::load_streaming_with_config(model, StreamConfig::default())
+            .expect("load streaming session");
+    let full = stream_all(&mut *session, &short).expect("full-level decode");
+    // Quiet copy: 1.5 s of speech at RMS 0.0125 (frames above the 0.01
+    // floor), then 1.0 s of digital silence. The whole-tail RMS is about
+    // 0.0097, under the floor, so a whole-tail gate drops it.
+    let mean = (short.iter().map(|s| s * s).sum::<f32>() / short.len().max(1) as f32).sqrt();
+    if mean <= 1e-6 {
+        eprintln!("{stem}: silent prefix; skipping quiet-utterance test");
+        return;
+    }
+    let gain = 0.0125 / mean;
+    let mut quiet: Vec<f32> = short.iter().map(|s| s * gain).collect();
+    quiet.extend(std::iter::repeat_n(0.0, 16_000));
+    let quiet_text = stream_all(&mut *session, &quiet).expect("quiet decode");
+    println!("{stem}: full {full:?} quiet {quiet_text:?}");
+    if !full.is_empty() {
+        assert!(
+            !quiet_text.is_empty(),
+            "quiet copy of {stem} decoded to nothing"
+        );
+    }
+}
