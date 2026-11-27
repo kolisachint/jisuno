@@ -821,6 +821,20 @@ impl AppState {
                     self.input(cx, Input::Finished { hud: None, id }, "finished (empty)");
                     return;
                 }
+                if pending.target.is_none() {
+                    self.log("focus lost: text in Recent");
+                    self.push_recent(text.clone(), Some("not inserted".to_string()));
+                    self.input(
+                        cx,
+                        Input::TranscriptReady {
+                            text: String::new(),
+                            id,
+                        },
+                        "transcript ready (no target)",
+                    );
+                    self.show_ephemeral(cx, UiHud::FocusLost, "insert failed");
+                    return;
+                }
                 let (pid, bundle) = Self::insert_dest(&pending.target);
                 match self.insert_text(&text, pid, bundle) {
                     Ok(()) => {
