@@ -198,7 +198,7 @@ pub fn rss_bytes() -> Option<u64> {
                 return Some(kb * 1024);
             }
         }
-        return None;
+        None
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -290,7 +290,7 @@ pub fn machine_info() -> MachineInfo {
                         .map(|kb| kb * 1024)
                 })
             }),
-        };
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {

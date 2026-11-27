@@ -7,11 +7,8 @@
 //! Nothing found is `app not installed: <app>`. Launching uses `open -a`
 //! semantics with the resolved path.
 
-use std::path::Path;
-
-use super::expand_tilde_live;
-
 /// Where `app.open` looks for `<app>.app`, in order.
+#[cfg(target_os = "macos")]
 pub(crate) fn applications_dirs() -> Vec<String> {
     let mut dirs = vec![
         "/Applications".to_string(),
@@ -25,6 +22,7 @@ pub(crate) fn applications_dirs() -> Vec<String> {
 
 /// Find `<name>.app` under `dirs` (case-insensitive). Pure over the dir
 /// list: unit-tested on all OSes with temp dirs.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn find_app_bundle(name: &str, dirs: &[String]) -> Option<String> {
     let want = format!("{name}.app").to_lowercase();
     for dir in dirs {
@@ -41,12 +39,14 @@ pub(crate) fn find_app_bundle(name: &str, dirs: &[String]) -> Option<String> {
 
 /// How `arg` is opened: URLs go to the browser/handler, files open in the
 /// app. Pure: unit-tested on all OSes.
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArgKind {
     Url,
     Path,
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn classify_arg(arg: &str) -> ArgKind {
     if arg.contains("://") {
         ArgKind::Url
@@ -61,7 +61,7 @@ pub(crate) fn open_app(app: &str, arg: Option<&str>) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, arg);
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {
@@ -71,8 +71,11 @@ pub(crate) fn open_app(app: &str, arg: Option<&str>) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::path::Path;
+
     use objc2_foundation::NSString;
 
+    use super::super::expand_tilde_live;
     use super::*;
 
     /// Resolve a display name to an app bundle path, or fail with the spec

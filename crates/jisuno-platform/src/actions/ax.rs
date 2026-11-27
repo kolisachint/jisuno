@@ -19,7 +19,9 @@
 //! Missing elements fail with `AX element not found: <role> "<name>"`.
 
 /// Bounds for the fallback walk (see module docs).
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MAX_AX_DEPTH: usize = 4;
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const MAX_AX_ELEMENTS: usize = 300;
 
 /// Press the element: `ax.press {app, role, name}`.
@@ -27,7 +29,7 @@ pub(crate) fn press(app: &str, role: &str, name: &str) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, role, name);
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {
@@ -40,7 +42,7 @@ pub(crate) fn set_value(app: &str, role: &str, name: &str, value: &str) -> Resul
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, role, name, value);
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {

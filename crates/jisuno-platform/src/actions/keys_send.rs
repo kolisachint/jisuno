@@ -60,7 +60,7 @@ pub(crate) fn send_keys(keys: &str) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (keycode, flags);
-        return Err("jisuno-platform: macOS only".to_string());
+        Err("jisuno-platform: macOS only".to_string())
     }
     #[cfg(target_os = "macos")]
     {

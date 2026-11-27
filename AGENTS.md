@@ -74,6 +74,9 @@ unconditional. The whisper backend was dropped.
   cargo test
   ```
 - Linux needs ALSA headers for mic capture: `sudo apt-get install -y libasound2-dev`
+- Check Linux clippy from macOS (needs `rustup target add x86_64-unknown-linux-gnu`;
+  crates that need a C toolchain or ALSA will not build locally):
+  `cargo clippy --target x86_64-unknown-linux-gnu -p jisuno-platform -p jisuno-logic -p jisuno-ui --all-targets -- -D warnings`
 - Validate a model end-to-end locally with `--wav`:
   `cargo run --release -- transcribe --wav recording.wav`
 - If you create or modify a test, run it and iterate until it passes
