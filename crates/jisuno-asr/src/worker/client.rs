@@ -48,9 +48,9 @@ struct Pending {
     pong: Option<mpsc::Sender<()>>,
 }
 
-/// Parent-side handle to one helper child. `Drop` kills the child.
+/// Parent-side handle to one helper child. `Drop` kills and reaps the child.
 pub struct AsrWorker {
-    child: Mutex<Child>,
+    child: Mutex<Option<Child>>,
     /// Framed bytes for the writer thread. Bounded: `push` only blocks
     /// when the child is not draining (256 queued frames of headroom).
     tx: mpsc::SyncSender<Vec<u8>>,
@@ -81,7 +81,7 @@ impl AsrWorker {
             .spawn(move || reader_loop(stdout, reader_pending))
             .context("spawning worker reader thread")?;
         Ok(Self {
-            child: Mutex::new(child),
+            child: Mutex::new(Some(child)),
             tx,
             pending,
         })
@@ -103,8 +103,13 @@ impl AsrWorker {
         }
     }
 
+    fn lock_child(&self) -> std::sync::MutexGuard<'_, Option<Child>> {
+        self.child.lock().expect("child mutex poisoned")
+    }
+
     fn check_alive(&self) -> anyhow::Result<()> {
-        let mut child = self.child.lock().expect("child mutex poisoned");
+        let mut guard = self.lock_child();
+        let child = guard.as_mut().expect("worker child gone");
         match child.try_wait() {
             Ok(None) => Ok(()),
             _ => Err(WorkerCrashed.into()),
@@ -228,16 +233,16 @@ impl AsrWorker {
     }
 
     /// Ask the child to exit (it replies, then exits 0), wait up to 2 s,
-    /// then kill. The OS reclaims the whole child RSS on exit — that is
-    /// the point of the helper process.
+    /// then kill and reap. The OS reclaims the whole child RSS on exit —
+    /// that is the point of the helper process.
     pub fn unload(&self) -> anyhow::Result<()> {
         let _ = self.send(REQ_UNLOAD, &[]);
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
             let exited = self
-                .child
-                .lock()
-                .expect("child mutex poisoned")
+                .lock_child()
+                .as_mut()
+                .expect("worker child gone")
                 .try_wait()
                 .context("waiting for worker exit")?
                 .is_some();
@@ -249,17 +254,24 @@ impl AsrWorker {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        self.child
-            .lock()
-            .expect("child mutex poisoned")
+        let mut guard = self.lock_child();
+        let child = guard.as_mut().expect("worker child gone");
+        child
             .kill()
             .context("killing worker after UNLOAD timeout")?;
+        // Reap so no zombie is left behind.
+        child.wait().context("reaping worker after kill")?;
         Ok(())
     }
 
     /// True while the child has not been observed exited.
     pub fn is_alive(&self) -> bool {
         self.check_alive().is_ok()
+    }
+
+    /// OS pid of the helper child (diagnostics and tests).
+    pub fn pid(&self) -> u32 {
+        self.lock_child().as_ref().expect("worker child gone").id()
     }
 
     fn register(
@@ -301,8 +313,14 @@ impl AsrWorker {
 
 impl Drop for AsrWorker {
     fn drop(&mut self) {
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
+        let child = self.child.lock().expect("child mutex poisoned").take();
+        if let Some(mut child) = child {
+            // Kill and reap off-thread: `wait` blocks and `Drop` must not.
+            // The reader thread already ends on the child's stdout EOF.
+            std::thread::spawn(move || {
+                let _ = child.kill();
+                let _ = child.wait();
+            });
         }
     }
 }
