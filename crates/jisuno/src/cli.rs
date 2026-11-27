@@ -58,6 +58,8 @@ enum Command {
         #[command(subcommand)]
         command: control::ControlCommand,
     },
+    /// Talk to the running menu bar app over its control socket.
+    Model(ModelArgs),
     /// Start the menu bar app (macOS, `app` feature).
     #[cfg(all(feature = "app", target_os = "macos"))]
     App(AppArgs),
@@ -165,6 +167,62 @@ impl TranscribeArgs {
 /// Parse the command line and run the selected subcommand.
 /// `jisuno models` and its `download`/`remove`/`verify` subcommands.
 /// Exit codes: 0 ok, 1 error (mapped by [`run`]).
+#[derive(Args, Debug)]
+struct ModelArgs {
+    /// status, warm, or unload.
+    #[command(subcommand)]
+    command: ModelCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelCommand {
+    /// Print the model state (warm, loading, unloaded).
+    Status,
+    /// Start loading the model.
+    Warm,
+    /// Unload the model from memory.
+    Unload,
+}
+
+/// `jisuno model ...`: one socket round-trip. Exit 1 with
+/// `error: Jisuno is not running` when the app is down.
+fn run_model(args: ModelArgs) -> i32 {
+    use crate::ipc::{self, ClientError, Request};
+
+    let request = match args.command {
+        ModelCommand::Status => Request::Status,
+        ModelCommand::Warm => Request::Warm,
+        ModelCommand::Unload => Request::Unload,
+    };
+    let response = match ipc::send(&request) {
+        Err(ClientError::NotRunning) => {
+            eprintln!("error: Jisuno is not running");
+            return 1;
+        }
+        Err(ClientError::Failed(message)) => {
+            eprintln!("error: {message}");
+            return 1;
+        }
+        Ok(response) => response,
+    };
+    if !response.ok {
+        eprintln!(
+            "error: {}",
+            response.error.as_deref().unwrap_or("request failed")
+        );
+        return 1;
+    }
+    match args.command {
+        ModelCommand::Status => {
+            println!("{}", response.state.as_deref().unwrap_or("unloaded"));
+        }
+        ModelCommand::Warm | ModelCommand::Unload => {
+            println!("ok");
+        }
+    }
+    0
+}
+
 fn run_models(args: ModelsArgs) -> anyhow::Result<()> {
     match args.command {
         None => setup::list(),
@@ -217,6 +275,7 @@ pub fn run() {
             crate::serve::run(&args.model, args.silence_ms, args.partial_ms)
         }
         Some(Command::Control { command }) => std::process::exit(control::run(command)),
+        Some(Command::Model(args)) => std::process::exit(run_model(args)),
         #[cfg(all(feature = "app", target_os = "macos"))]
         Some(Command::App(args)) => {
             let mut opts = crate::app::AppOptions::from_env();

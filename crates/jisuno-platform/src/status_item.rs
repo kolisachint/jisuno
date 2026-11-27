@@ -91,6 +91,19 @@ impl StatusItem {
         }
     }
 
+    /// Open the status menu as if the user clicked the item: used by the
+    /// `jisuno.menu` voice command. Main thread only, like everything here.
+    pub fn pop_menu(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.inner.pop_menu();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = self;
+        }
+    }
+
     /// The first menu row: `Warm · ~0.9 GB · unloads in 10 min`,
     /// `Not loaded · loads on first use`, `Loading…`, `Not downloaded`.
     pub fn set_model_line(&self, text: &str) {
@@ -214,6 +227,15 @@ mod macos_impl {
                         return;
                     }
                 }
+            }
+        }
+
+        /// Click the status button so its menu opens (`jisuno.menu`).
+        pub(super) fn pop_menu(&self) {
+            if let Some(button) = self.item.button(self.mtm) {
+                // SAFETY: the button is a live AppKit object on the main
+                // thread; a nil sender click just opens the menu.
+                unsafe { button.performClick(None) };
             }
         }
 

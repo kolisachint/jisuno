@@ -2728,6 +2728,8 @@ dependencies = [
  "jisuno-logic",
  "jisuno-platform",
  "jisuno-ui",
+ "libc",
+ "serde",
  "serde_json",
  "tempfile",
 ]
