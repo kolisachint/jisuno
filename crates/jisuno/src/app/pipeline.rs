@@ -272,7 +272,7 @@ impl AppState {
 
     // --- Mic ---
 
-    pub(crate) fn open_mic(&mut self, _cx: &mut App) {
+    pub(crate) fn open_mic(&mut self, cx: &mut App) {
         // Captured only here: OpenMic runs exactly when the machine
         // accepted the press, so ignored presses can no longer overwrite
         // the target the utterance will insert into.
@@ -350,8 +350,12 @@ impl AppState {
                 self.last_partial_poll = Instant::now();
                 self.log(&format!("stream {stream} begun (warm)"));
             } else {
-                self.stream = None;
-                self.log("model worker gone — stream dropped");
+                // The worker thread is gone: respawn it and reload. The
+                // stream stays reserved and starts when the load lands
+                // (flush on Warm); a key-up before then decodes from
+                // fallback audio instead.
+                self.log("model worker gone at mic open — respawning");
+                self.recover_worker(cx, "mic open");
             }
         }
     }
@@ -752,13 +756,25 @@ impl AppState {
             })
             .is_err()
         {
-            self.log("model worker gone");
-            self.pending = None;
-            self.input(
-                cx,
-                Input::Finished { hud: None, id },
-                "finished (worker gone)",
-            );
+            // The worker thread is gone: respawn it and re-drive this
+            // utterance from the fallback audio, which the cold path decodes
+            // behind the fresh load. The buffer still holds the whole clip
+            // here (cleared only after a successful handoff).
+            self.log("model worker gone — respawning, decoding from fallback audio");
+            let fallback = match &self.debug_wav {
+                Some(path) => Some(AudioSource::Wav { path: path.clone() }),
+                None => Some(AudioSource::Mic {
+                    rate: self.mic_rate,
+                    pcm: std::mem::take(&mut self.buffer),
+                }),
+            };
+            self.clear_stream();
+            self.recover_worker(cx, "worker gone");
+            let _ = self.to_worker.send(ToWorker::Finish {
+                stream: 0,
+                reply: id,
+                fallback,
+            });
         }
     }
 

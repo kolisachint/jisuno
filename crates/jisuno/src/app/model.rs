@@ -3,6 +3,7 @@
 //! Split from `app.rs` with no behavior change (step 1).
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,7 @@ use jisuno_logic::settings::{self, Settings};
 use jisuno_ui::hud_model::{tail_text, HudState as UiHud, PARTIAL_TAIL_CHARS};
 
 use super::state::{text_summary, AppState};
-use super::worker::{FromWorker, ToWorker};
+use super::worker::{worker_main, FromWorker, ToWorker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelState {
@@ -191,7 +192,21 @@ impl AppState {
         }
     }
 
+    /// Unload is only safe with the mic closed and no transcribe pending:
+    /// unloading mid-hold drops the utterance being dictated. The socket
+    /// handler (socket.rs) maps this to a `busy` reply via the tick-
+    /// refreshed snapshot; menu/key/command paths just refuse and log.
+    pub(crate) fn can_unload(&self) -> bool {
+        !self.mic_open && self.pending.is_none()
+    }
+
     pub(crate) fn unload_model(&mut self, why: &str) {
+        if !self.can_unload() {
+            self.log(&format!(
+                "unload ({why}) refused: busy (mic open or transcribe pending)"
+            ));
+            return;
+        }
         if self.model_state == ModelState::Warm {
             let _ = self.to_worker.send(ToWorker::Unload);
             self.model_state = ModelState::Unloaded;
@@ -216,11 +231,7 @@ impl AppState {
 
     pub(crate) fn poll_idle_unload(&mut self) {
         let mins = self.settings.unload_after_idle_min;
-        if mins == 0
-            || self.model_state != ModelState::Warm
-            || self.pending.is_some()
-            || self.mic_open
-        {
+        if mins == 0 || !self.can_unload() || self.model_state != ModelState::Warm {
             return;
         }
         if self.last_active.elapsed() >= Duration::from_secs(u64::from(mins) * 60) {
@@ -274,7 +285,32 @@ impl AppState {
         self.log(&format!("stream {stream} begun (warm flush)"));
     }
 
-    fn clear_stream(&mut self) {
+    /// Spawn a fresh worker thread on new channels, replacing the dead one.
+    pub(crate) fn respawn_worker(&mut self) {
+        let (to_worker, worker_rx) = mpsc::channel();
+        let (worker_tx, from_worker) = mpsc::channel();
+        self.to_worker = to_worker;
+        self.from_worker = from_worker;
+        std::thread::spawn(move || worker_main(worker_rx, worker_tx));
+        self.log("model worker respawned");
+    }
+
+    /// The worker thread is gone (a `to_worker` send failed): respawn it,
+    /// forget the load, and start it again. The caller re-drives its
+    /// utterance from fallback audio, which the cold path decodes behind
+    /// the fresh load — dictation survives the restart.
+    pub(crate) fn recover_worker(&mut self, cx: &mut App, why: &str) {
+        self.respawn_worker();
+        self.model_state = ModelState::Unloaded;
+        self.machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_model_warm(false);
+        self.child_rss_mb = None;
+        self.start_load(cx, why);
+    }
+
+    pub(crate) fn clear_stream(&mut self) {
         self.stream = None;
         self.stream_begun = false;
         self.partial_in_flight = false;
