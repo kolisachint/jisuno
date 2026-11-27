@@ -2811,6 +2811,8 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "jisuno-logic",
+ "objc2-app-kit 0.3.2",
+ "raw-window-handle",
  "serde_json",
 ]
 

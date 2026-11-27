@@ -18,8 +18,12 @@ pub struct Screen {
     /// Full display size, including the menu bar area.
     pub height: f64,
     /// Top of the usable area (below the menu bar), in the same space as
-    /// `PlatformDisplay::visible_bounds().origin.y`.
+    /// `PlatformDisplay::visible_bounds().origin.y`. Not used for the HUD:
+    /// it is 0 while the menu bar auto-hides.
     pub usable_top: f64,
+    /// Bottom of the menu bar strip the notch and under-menu-bar HUD hang
+    /// from: see [`menu_bar_height`].
+    pub menu_bar_h: f64,
 }
 
 /// The HUD window size in points.
@@ -32,6 +36,41 @@ pub struct HudSize {
 /// Gap between the mouse pointer and the top of the cursor HUD (§3.1).
 pub const CURSOR_GAP: f64 = 24.0;
 
+/// Height of the menu bar strip on the primary screen (the one that owns the
+/// menu bar), from `safeAreaInsets.top` on a notched screen and the menu bar
+/// thickness otherwise. `0.0` when unknown. Call from the main thread.
+///
+/// The thickness, not `visibleFrame`, is used on purpose: `visibleFrame` spans
+/// the full screen while the menu bar auto-hides, which would put the HUD over
+/// the menu bar when it slides in.
+pub fn menu_bar_height() -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSScreen, NSStatusBar};
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return 0.0;
+        };
+        let safe_top = NSScreen::screens(mtm)
+            .firstObject()
+            .map_or(0.0, |screen| screen.safeAreaInsets().top);
+        menu_bar_height_for(safe_top, NSStatusBar::systemStatusBar().thickness())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0.0
+    }
+}
+
+/// Pure rule behind [`menu_bar_height`]: a notched screen (`safe_top > 0`)
+/// uses its safe-area inset, any other screen the menu bar thickness.
+pub fn menu_bar_height_for(safe_top: f64, status_thickness: f64) -> f64 {
+    if safe_top > 0.0 {
+        safe_top
+    } else {
+        status_thickness.max(0.0)
+    }
+}
+
 /// Top-left origin for the HUD window, or `None` for `hud: off` (and when
 /// `hud: cursor` but the pointer position is unknown).
 pub fn hud_origin(
@@ -43,9 +82,11 @@ pub fn hud_origin(
     use jisuno_logic::settings::Hud;
     match hud {
         Hud::Off => None,
+        // Hangs from the bottom of the notch, or of the menu bar on a Mac
+        // without one (`menu_bar_h` covers both).
         Hud::Notch => Some((
             ((screen.width - hud_size.width) / 2.0).max(0.0),
-            screen.usable_top,
+            screen.menu_bar_h.max(0.0),
         )),
         Hud::Cursor => {
             let (mx, my) = mouse?;
@@ -85,7 +126,8 @@ mod tests {
         Screen {
             width: 1512.0,
             height: 982.0,
-            usable_top: 24.0,
+            usable_top: 0.0,
+            menu_bar_h: 24.0,
         }
     }
 
@@ -102,6 +144,42 @@ mod tests {
             hud_origin(Hud::Notch, screen(), size(), None),
             Some(((1512.0 - 560.0) / 2.0, 24.0))
         );
+    }
+
+    #[test]
+    fn notch_hangs_from_the_notch_inset_on_a_notched_screen() {
+        let notched = Screen {
+            width: 1512.0,
+            height: 982.0,
+            usable_top: 38.0,
+            menu_bar_h: menu_bar_height_for(38.0, 24.0),
+        };
+        assert_eq!(
+            hud_origin(Hud::Notch, notched, size(), None),
+            Some(((1512.0 - 560.0) / 2.0, 38.0))
+        );
+    }
+
+    #[test]
+    fn notch_is_under_the_menu_bar_without_a_notch_even_when_it_auto_hides() {
+        // Auto-hidden menu bar: visible top is 0, the HUD still clears the strip.
+        let auto_hidden = Screen {
+            width: 1280.0,
+            height: 800.0,
+            usable_top: 0.0,
+            menu_bar_h: menu_bar_height_for(0.0, 24.0),
+        };
+        assert_eq!(
+            hud_origin(Hud::Notch, auto_hidden, size(), None),
+            Some(((1280.0 - 560.0) / 2.0, 24.0))
+        );
+    }
+
+    #[test]
+    fn menu_bar_height_uses_the_inset_only_on_notched_screens() {
+        assert_eq!(menu_bar_height_for(38.0, 24.0), 38.0);
+        assert_eq!(menu_bar_height_for(0.0, 24.0), 24.0);
+        assert_eq!(menu_bar_height_for(0.0, -1.0), 0.0);
     }
 
     #[test]
@@ -141,6 +219,7 @@ mod tests {
             width: 400.0,
             height: 300.0,
             usable_top: 24.0,
+            menu_bar_h: 24.0,
         };
         assert_eq!(
             hud_origin(Hud::Notch, small, size(), None),

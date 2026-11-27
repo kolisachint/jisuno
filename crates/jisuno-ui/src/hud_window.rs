@@ -13,9 +13,11 @@
 //! island height varies with partial text and notes.
 
 use gpui::{
-    prelude::*, px, size, AnyWindowHandle, App, Bounds, Point, WindowBounds, WindowHandle,
+    prelude::*, px, size, AnyWindowHandle, App, Bounds, Point, Window, WindowBounds, WindowHandle,
     WindowKind, WindowOptions,
 };
+use objc2_app_kit::NSView;
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::hud_view::HudView;
 use crate::{hud_model::HudState, tokens::HUD_MAX_W};
@@ -55,8 +57,29 @@ pub fn open_hud_window(
             window_background: gpui::WindowBackgroundAppearance::Transparent,
             ..Default::default()
         },
-        |_, cx| cx.new(|_| HudView::new(state)),
+        |window, cx| {
+            set_click_through(window);
+            cx.new(|_| HudView::new(state))
+        },
     )
+}
+
+/// Make the whole HUD window click-through (`NSWindow.ignoresMouseEvents`):
+/// the transparent margins and the island never take clicks meant for the
+/// menu bar or the app underneath. Set on every open, since each HUD state
+/// is a new window.
+fn set_click_through(window: &Window) {
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+        // SAFETY: GPUI's AppKit handle is this window's content NSView, which
+        // stays alive while the window is open (the callback runs during open).
+        let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+        if let Some(ns_window) = view.window() {
+            ns_window.setIgnoresMouseEvents(true);
+        }
+    }
 }
 
 /// Update the showing HUD window's state, if it is still open.
