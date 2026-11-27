@@ -7,10 +7,16 @@ on:
 permissions:
   contents: write
 
+# One release at a time: a second merge waits for the first run to finish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # ── 1. Resolve the version, bump, commit, tag ─────────────────────────
-  # Base version: the highest v* tag, bumped by the label. No v* tag yet: the
-  # manifest version is released as is (first release).
+  # Base version: the latest v* tag, bumped by the label. No v* tag yet: the
+  # manifest version is released as is (first release). A re-run finds the
+  # tag this merge already produced and only sets the outputs.
   bump-and-tag:
     if: >
       github.event.pull_request.merged == true && (
@@ -55,6 +61,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Re-run: a v* tag on the merge commit, or on the release commit made
+          # directly on top of it, is this release. Reuse it; push nothing.
+          for tag in $(git tag --list 'v*' --sort=-v:refname); do
+            commit="$(git rev-list -n 1 "$tag")"
+            parent="$(git rev-parse --verify --quiet "$commit^" || true)"
+            if [[ "$commit" == "$MERGE" || "$parent" == "$MERGE" ]]; then
+              echo "$tag already points at merge $MERGE; reusing it"
+              {
+                echo "reuse=true"
+                echo "bump=false"
+                echo "version=${tag#v}"
+                echo "tag=$tag"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
           manifest="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
           echo "Manifest version: $manifest"
 
@@ -81,13 +104,14 @@ jobs:
           if [[ "$manifest" == "$version" ]]; then bump=false; fi
 
           {
+            echo "reuse=false"
             echo "bump=$bump"
             echo "version=$version"
             echo "tag=v$version"
           } >> "$GITHUB_OUTPUT"
 
       - name: Bump version in Cargo.toml
-        if: steps.release.outputs.bump == 'true'
+        if: steps.release.outputs.reuse != 'true' && steps.release.outputs.bump == 'true'
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
@@ -100,6 +124,7 @@ jobs:
           cargo update --workspace
 
       - name: Commit and tag
+        if: steps.release.outputs.reuse != 'true'
         env:
           TAG: ${{ steps.release.outputs.tag }}
           BUMP: ${{ steps.release.outputs.bump }}
@@ -115,15 +140,18 @@ jobs:
           git tag -a "$TAG" "$target" -m "release: $TAG"
 
       - name: Push version bump and tag
+        if: steps.release.outputs.reuse != 'true'
         env:
           TAG: ${{ steps.release.outputs.tag }}
           BUMP: ${{ steps.release.outputs.bump }}
         run: |
           set -euo pipefail
+          # One atomic push: the release commit and its tag land together or not at all.
           if [[ "$BUMP" == "true" ]]; then
-            git push origin main
+            git push --atomic origin main "refs/tags/$TAG"
+          else
+            git push origin "refs/tags/$TAG"
           fi
-          git push origin "refs/tags/$TAG"
 
   # ── 2. Publish crates to crates.io ────────────────────────────────────
   # Published in dependency order. jisuno-platform and jisuno-ui are
