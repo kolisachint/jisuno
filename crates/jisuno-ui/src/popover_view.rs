@@ -326,7 +326,7 @@ fn kbd(text: &str, theme: &Theme) -> Div {
         .px(px(6.0))
         .py(px(2.0))
         .text_size(px(11.0))
-        .font_family("SF Mono")
+        .font_family("SF Pro")
         .text_color(rgb(theme.palette.soft))
         .child(text.to_string())
 }
