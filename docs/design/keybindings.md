@@ -4,7 +4,7 @@
 
 Status: signed off 2026-11-26. Decisions: `jisuno.md` §10.
 
-- Source of truth (planned): `defaults()` in `jisuno-logic`. No code exists yet; when code lands, `defaults()` wins over this doc.
+- Source of truth: `defaults()` in `jisuno-logic` (`crates/jisuno-logic/src/keybindings.rs`); it wins over this doc.
 - File: `~/.config/jisuno/keybindings.json`, an object:
   ```json
   {"$schema": "./schemas/keybindings.schema.json", "bindings": [{"key": "right_option", "hold": true, "command": "voice.dictate"}]}

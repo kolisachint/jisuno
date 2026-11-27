@@ -326,7 +326,7 @@ desktop and its windows.
 | 3 | Theme names | `voice-control.md` §2 examples: `quiet-dark`, `quiet-light` | inkuno: `Dark`, `Light` (and `Quiet Dark` legacy) | Resolved: `quiet-dark`, `quiet-light` (round 6, item 9) |
 | 4 | Whisper | prototypes v1, v2 list `whisper-small-en` | `jisuno.md` §10.2: whisper dropped | Resolved: dropped (round 6, item 9) |
 | 5 | `launch_at_login` | `jisuno.md` §4: "login item" | (no key name) | Resolved: `login_item`, as in `settings.schema.json` (round 6, item 6) |
-| 6 | Performance targets | v2 prototype: cold load ≤ 1.5 s; memory warm < 1 GB, unloaded < 60 MB | `jisuno.md` §6, §6.1: no such targets | Resolved: targets added to `jisuno.md` §6.1 and §5.2 here (round 6, item 3) |
+| 6 | Performance targets | v2 prototype: cold load ≤ 1.5 s; memory warm < 1 GB, unloaded < 60 MB | `jisuno.md` §6, §6.1: no such targets | Resolved: targets added to `jisuno.md` §6.1 and §5.2 here (round 6, item 3); warm memory raised to < 1.2 GB (round 9) |
 | 7 | `language` values | `jisuno.md` §4: key only | none | Resolved: `auto` only (round 6, item 9) |
 | 8 | Bluetooth and missing-device copy | `jisuno.md` §10.10: "explains", "a HUD note" | none | Resolved: new copy approved (round 6, item 9) |
 | 9 | Model download failure, v2 size | `jisuno.md` §9: ~650 MB (v3 only) | none | Resolved: v2 size shown as `optional download` (round 6, item 9) |
