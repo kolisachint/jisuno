@@ -609,7 +609,6 @@ impl AppState {
                     settings::ModelLoad::AtLogin => "at_login".into(),
                 },
                 unload_after_idle_min: s.unload_after_idle_min,
-                language: s.language.clone(),
             },
             keybinding_rows: keep_binding_ui
                 .map(|model| model.keybinding_rows.clone())

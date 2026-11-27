@@ -7,7 +7,7 @@ weights. The model weights are NVIDIA's, redistributed as ONNX exports under CC-
 
 | Model | Settings name | Size | Languages |
 |---|---|---|---|
-| Parakeet TDT 0.6B v3 int8 (default) | `parakeet-tdt-0.6b-v3-int8` | about 650 MB | Multilingual. `language: auto` detects the language for each utterance. |
+| Parakeet TDT 0.6B v3 int8 (default) | `parakeet-tdt-0.6b-v3-int8` | about 650 MB | Multilingual. The model detects the language of each utterance. |
 | Parakeet TDT 0.6B v2 int8 (optional) | `parakeet-tdt-0.6b-v2-int8` | about 630 MB | English only. |
 
 Choose the model in **Settings → Model**, or set `model` in `settings.json`. Only one model is

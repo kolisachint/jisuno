@@ -4,7 +4,7 @@ Jisuno keeps its settings in four files in `~/.config/jisuno/`:
 
 | File | What it holds |
 |---|---|
-| `settings.json` | Model, language, mic, limits, insertion, HUD, sounds, login item. See the table below. |
+| `settings.json` | Model, mic, limits, insertion, HUD, sounds, login item. See the table below. |
 | `keybindings.json` | Key bindings. See [Keybindings](keybindings.md). |
 | `theme.json` | Theme, accent colors and HUD look. See the `theme.json` section below. |
 | `voice-control-config.json` | Voice commands and workspaces. See [Voice commands](commands.md). |
@@ -40,7 +40,6 @@ is rejected, and the last good version stays live.
 |---|---|---|---|
 | `$schema` | string | none | Path to the local schema. Keep it. |
 | `model` | string | `parakeet-tdt-0.6b-v3-int8` | `parakeet-tdt-0.6b-v3-int8` (multilingual) or `parakeet-tdt-0.6b-v2-int8` (English only). See [Models](models.md). |
-| `language` | string | `auto` | Stored, not read by the app. The model detects the language of each utterance. |
 | `model_load` | enum | `on_demand` | `on_demand` loads when you start speaking. `at_login` loads at login. |
 | `unload_after_idle_min` | integer, 0 or more | `10` | Minutes without use before the model unloads. `0` means never. |
 | `input_device` | string | `system` | `system` for the system input, or the exact name of a device. If the device is not connected, Jisuno uses the system input and shows a HUD note. Pick it in Settings → Audio. |

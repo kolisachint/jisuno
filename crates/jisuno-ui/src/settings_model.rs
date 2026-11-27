@@ -142,7 +142,7 @@ impl ModelId {
     }
 }
 
-/// Model pane: selection, state line, load policy, idle unload, language.
+/// Model pane: selection, state line, load policy, idle unload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPaneModel {
     pub selected: ModelId,
@@ -156,7 +156,6 @@ pub struct ModelPaneModel {
     pub download_percent: Option<u32>,
     pub load_policy: String,
     pub unload_after_idle_min: u32,
-    pub language: String,
 }
 
 impl ModelPaneModel {
@@ -718,7 +717,6 @@ impl SettingsModel {
                 download_percent: None,
                 load_policy: "on_demand".into(),
                 unload_after_idle_min: 10,
-                language: "auto".into(),
             },
             keybinding_rows: KeybindingRow::all_from(&bindings),
             recording: None,

@@ -587,19 +587,6 @@ fn model_pane(model: &ModelPaneModel, theme: &Theme, on_intent: &SettingsEmit) -
             on_intent,
         ),
     ))
-    .child(field_row(
-        "Language",
-        Some("language · auto = the model detects"),
-        theme,
-        options(
-            &[("auto", "auto")],
-            &model.language,
-            theme,
-            "settings",
-            "language",
-            on_intent,
-        ),
-    ))
 }
 
 fn progress_bar(percent: u32, theme: &Theme) -> Div {
