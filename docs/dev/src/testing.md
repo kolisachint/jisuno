@@ -138,10 +138,8 @@ Logs from a live run go to stderr. `JISUNO_LOG_TEXT=1` adds the dictated text. U
 
 ## Known flaky areas
 
-- The model download test server (`jisuno-asr` download tests). Fixed in `bcc748b` (flaky test server) and
-  `3158a41` (non-blocking test sockets). If a download test hangs, check the test server first.
-- Live key and audio tests depend on the machine. The tone output stream is kept alive until the buffer has
-  played (`979cb6b`). Tests should not depend on timing of real audio devices.
-- Timing-based tests on a loaded machine. The latency numbers in [Performance](performance.md) were measured
-  with other work running, and the bench reports medians for that reason. Do not gate a unit test on wall
-  clock time.
+- The model download tests use a local test server (`jisuno-asr`). The flaky server was fixed in `bcc748b`, and
+  its sockets were made non-blocking in `3158a41`. If a download test hangs, check the test server first.
+- Timing on a loaded machine. Latency numbers in [Performance](performance.md) were measured with other work
+  running, so the bench reports medians. Do not gate a unit test on wall-clock time.
+- Live tests (`examples/`) depend on the Mac: permissions, focus, the audio device. They are not in `cargo test`.
