@@ -37,11 +37,13 @@ On the first run, Jisuno asks for Microphone and Accessibility access. It also a
 
 Jisuno reads the keyboard through an event tap. Without Input Monitoring the tap cannot start.
 
-- **At launch.** If Input Monitoring is not granted when Jisuno starts, it exits. Grant the permission in
-  System Settings, then open Jisuno again.
-- **While running.** The menu bar menu shows `Input Monitoring — Not allowed`. If Input Monitoring is off
-  when Jisuno restarts the key tap, for example after you save `keybindings.json`, the HUD shows
-  `Keys paused · Input Monitoring is off`. Grant the permission and open Jisuno again.
+- **At launch.** If the event tap cannot start, Jisuno exits with `grant Input Monitoring, then relaunch`.
+  Grant the permission in System Settings, then open Jisuno again. If the tap starts but the permission
+  is missing, the HUD shows an error at launch.
+- **While running.** The menu bar menu shows `Input Monitoring — Not allowed`. If the key tap cannot be
+  restarted, for example after you save `keybindings.json` while the permission is off, the HUD shows
+  `Keys paused: Input Monitoring is off · using last good config`. Grant the permission and open Jisuno
+  again.
 
 ## Changing a permission later
 
