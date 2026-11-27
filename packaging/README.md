@@ -25,13 +25,13 @@ Names only; values never go in the repo. The CI secrets are listed in `ci/README
 
 ## Release flow (CI)
 
-`.github/workflows/release.yml` runs after a `cargo:<bump>` PR is merged. Its `macos-app` job runs the steps below, then the `cask` job renders the cask. Nothing is done by hand.
+`.github/workflows/release.yml` runs after a `cargo:<bump>` PR is merged into `main`. Its `macos-app` job runs the steps below, then the `cask` job renders the cask. Nothing is done by hand. Version rules, re-runs and secrets: `ci/README.md`.
 
 1. `packaging/bundle.sh --version X.Y.Z --arch universal --out dist`: builds both targets and assembles `dist/Jisuno.app`, unsigned.
 2. If the signing secrets are set: `packaging/sign-notarize.sh --app dist/Jisuno.app --zip dist/Jisuno-X.Y.Z-universal.zip`: signs, notarizes, staples and zips. If not, the job zips the app unsigned and warns.
-3. Uploads `Jisuno-X.Y.Z-universal.zip` and its `.sha256` to the GitHub release `vX.Y.Z`. The version comes from the bump step; do not bump `Cargo.toml` by hand.
-4. `cask` job: sha256 of the uploaded zip, rendered into `homebrew/jisuno.rb` (`__VERSION__`, `__SHA256__`), uploaded to the release as `jisuno.rb`. The template is not edited in place.
-5. Copy `jisuno.rb` to the Homebrew tap. This is manual and out of scope for CI. Do not copy an unsigned build (the job warns). Then check the cask: `brew audit --cask --strict jisuno` and `brew install --cask jisuno`, launch, and confirm the four permissions.
+3. Uploads `Jisuno-X.Y.Z-universal.zip` and its `.sha256` to the GitHub release `vX.Y.Z`. The version comes from the bump step (highest `v*` tag plus the label; the manifest version on the first release). Do not bump `Cargo.toml` by hand.
+4. `cask` job: sha256 of the uploaded zip, rendered into `homebrew/jisuno.rb` (`__VERSION__`, `__SHA256__`). The rendered file is uploaded to the release as `jisuno.rb` only when the app was signed and notarized. For an unsigned build the job warns and skips the upload; add the secrets and re-run the workflow to publish it. The template is not edited in place.
+5. Copy `jisuno.rb` to the Homebrew tap. This is manual and out of scope for CI. Copy only the cask of a signed release. Then check the cask: `brew audit --cask --strict jisuno` and `brew install --cask jisuno`, launch, and confirm the four permissions.
 
 Local run (same steps, on a Mac with the Rust targets): run the two scripts above by hand with `--out target/packaging` (the script default).
 
