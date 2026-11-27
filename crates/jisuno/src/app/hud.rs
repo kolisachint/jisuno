@@ -36,11 +36,14 @@ impl AppState {
             height = display.bounds().size.height.to_f64();
             top = display.visible_bounds().origin.y.to_f64();
         }
+        // With an auto-hidden menu bar `visible_bounds` starts at 0; windows
+        // must still open below the menu bar strip.
+        let menu_bar_h = menu_bar_height();
         Screen {
             width,
             height,
-            usable_top: top,
-            menu_bar_h: menu_bar_height(),
+            usable_top: top.max(menu_bar_h),
+            menu_bar_h,
         }
     }
 
