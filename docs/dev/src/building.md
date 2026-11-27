@@ -68,8 +68,13 @@ JISUNO_CONFIG_DIR=/tmp/jisuno-test target/debug/jisuno app \
 ```
 
 The fake helper backend (no model; text is the sample count) serves the lifecycle tests. The
-`asr_worker` example runs the helper over binary frames on stdin and stdout, so a client drives it.
-`JISUNO_FAKE_WORKER=1` selects the fake backend in any `dev` build.
+`asr_worker` example runs the helper over binary frames on stdin and stdout:
+
+```sh
+cargo run -p jisuno-asr --example asr_worker --features dev -- --fake
+```
+
+`--fake` (or `JISUNO_FAKE_WORKER=1`) selects the fake backend. Without it the example loads the real model.
 
 Release builds have none of these. Do not add them to `bundle.sh`.
 
