@@ -54,7 +54,7 @@ use jisuno_platform::{
 };
 use jisuno_ui::hud_model::HudState as UiHud;
 
-use crate::app::config::{read_file, stamp};
+use crate::app::config::{mark_tap_down, read_file, stamp};
 use crate::app::model::{model_id, ModelState};
 use crate::app::state::{AppState, Holder, TICK_MS};
 use crate::app::worker::worker_main;
@@ -118,6 +118,7 @@ impl AppOptions {
 
 pub fn run(opts: AppOptions) {
     let start = Instant::now();
+    config::redirect_stderr_to_log();
 
     let dir = match ConfigDir::resolve() {
         Ok(dir) => dir,
@@ -382,10 +383,11 @@ pub fn run(opts: AppOptions) {
             Err(e) => {
                 stamp(start, &format!("event tap failed: {e:#}"));
                 if opts.debug_wav.is_none() && opts.debug_hold_ms.is_none() {
-                    eprintln!("jisuno app: grant Input Monitoring, then relaunch");
-                    std::process::exit(1);
+                    // Keys stay paused until the tick's retry gets a tap.
+                    mark_tap_down(Instant::now());
+                } else {
+                    stamp(start, "continuing tapless for the debug run");
                 }
-                stamp(start, "continuing tapless for the debug run");
                 (None, None)
             }
         };

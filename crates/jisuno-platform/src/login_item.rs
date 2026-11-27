@@ -1,5 +1,5 @@
 //! Launch at login: register or unregister the app through
-//! `SMAppService.mainApp` (macOS 13+).
+//! `SMAppService.mainAppService` (macOS 13+).
 //!
 //! Registration works only for a bundled, signed app. The caller checks
 //! [`in_app_bundle`] first and logs instead of failing when the app runs
@@ -62,8 +62,15 @@ mod macos {
     pub(super) fn set_enabled(enabled: bool) -> Result<()> {
         let class = AnyClass::get(c"SMAppService")
             .ok_or_else(|| anyhow!("SMAppService is unavailable (macOS 13 or later)"))?;
-        // SAFETY: `mainApp` is a class method returning the shared service object.
-        let service: Retained<AnyObject> = unsafe { msg_send![class, mainApp] };
+        // SAFETY: `mainAppService` is a class method returning the shared service object.
+        let service: Retained<AnyObject> = unsafe { msg_send![class, mainAppService] };
+        // SAFETY: `status` is an NSInteger property (0 not registered, 1 enabled,
+        // 2 requires approval, 3 not found).
+        let status: isize = unsafe { msg_send![&*service, status] };
+        let registered = status == 1 || status == 2;
+        if registered == enabled {
+            return Ok(());
+        }
         let mut error: *mut NSError = std::ptr::null_mut();
         // SAFETY: both selectors take one `NSError **` out-parameter and return BOOL.
         let ok: Bool = unsafe {

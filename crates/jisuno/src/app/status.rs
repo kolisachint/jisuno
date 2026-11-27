@@ -112,6 +112,9 @@ impl AppState {
         if self.last_config_error.is_some() {
             return true;
         }
+        if super::config::tap_is_down() {
+            return true;
+        }
         if self.model_state == ModelState::Failed {
             return true;
         }

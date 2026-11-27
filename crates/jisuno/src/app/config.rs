@@ -31,9 +31,23 @@ use super::tap_config_for;
 /// owns the mic, and `AppState` gains no field for it (see mod.rs).
 static PENDING_DICTATION_LIMIT_S: AtomicU64 = AtomicU64::new(0);
 
-/// A failed tap restart leaves the old tap running and asks the tick to
-/// show the keys-paused HUD once. Process-global for the same reason.
-static TAP_RESTART_FAILED: AtomicBool = AtomicBool::new(false);
+/// The event tap is down (no tap yet, or a restart failed): the retry
+/// schedule and whether the user has been told. `None` while the tap runs.
+/// Process-global for the same reason.
+static TAP_DOWN: Mutex<Option<TapDown>> = Mutex::new(None);
+
+/// Welcome was opened for a tap outage this launch; later outages show the
+/// keys-paused HUD instead.
+static TAP_WELCOME_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Retry cadence while the event tap is down.
+pub(crate) const TAP_RETRY: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TapDown {
+    next_try: Instant,
+    announced: bool,
+}
 
 /// Model switch seen while busy: the new model id, applied once idle.
 static PENDING_MODEL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -59,9 +73,36 @@ pub(crate) fn model_switch_action(state: &ModelState, busy: bool) -> ModelSwitch
     }
 }
 
-/// Take a pending tap-restart failure for one HUD report.
-pub(crate) fn take_tap_restart_failed() -> bool {
-    TAP_RESTART_FAILED.swap(false, Ordering::SeqCst)
+fn with_tap_down<R>(f: impl FnOnce(&mut Option<TapDown>) -> R) -> R {
+    f(&mut TAP_DOWN.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Whether the event tap is down (keys paused, badge shown).
+pub(crate) fn tap_is_down() -> bool {
+    with_tap_down(|down| down.is_some())
+}
+
+/// Start an outage: the first failure schedules a retry one interval out.
+/// A second failure within the same outage keeps the schedule.
+pub(crate) fn mark_tap_down(now: Instant) {
+    with_tap_down(|down| {
+        if down.is_none() {
+            *down = Some(TapDown {
+                next_try: now + TAP_RETRY,
+                announced: false,
+            });
+        }
+    });
+}
+
+/// End the outage; true if the tap was down.
+fn clear_tap_down() -> bool {
+    with_tap_down(|down| down.take().is_some())
+}
+
+/// Whether a tap retry is due at `now`. Pure: unit-tested below.
+pub(crate) fn tap_retry_due(next_try: Instant, now: Instant) -> bool {
+    now >= next_try
 }
 
 /// Take a deferred timing change once the machine is Idle: returns the
@@ -91,6 +132,53 @@ pub(crate) fn stamp(start: Instant, msg: &str) {
         e.as_secs() % 60,
         e.subsec_millis()
     );
+}
+
+/// The log file rotates to `jisuno.log.1` at startup above this size.
+const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// `~/Library/Logs/Jisuno` under `home`. Pure: unit-tested below.
+fn log_dir(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("Library").join("Logs").join("Jisuno")
+}
+
+/// Launched without a terminal (Finder, `open`, login item): send stderr to
+/// `~/Library/Logs/Jisuno/jisuno.log`, appending. A log over 5 MB moves to
+/// `jisuno.log.1` first. A terminal keeps stderr as it is. Best effort: a
+/// failure here leaves stderr where it was.
+pub(crate) fn redirect_stderr_to_log() {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    // SAFETY: a pure query on fd 2.
+    if unsafe { libc::isatty(libc::STDERR_FILENO) } == 1 {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+        return;
+    };
+    let dir = log_dir(std::path::Path::new(&home));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("jisuno.log");
+    let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES);
+    if too_big {
+        let _ = std::fs::rename(&path, dir.join("jisuno.log.1"));
+    }
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&path)
+    else {
+        return;
+    };
+    // SAFETY: both descriptors are open; dup2 copies the file into fd 2, and
+    // `file` can close afterwards.
+    unsafe {
+        libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+    }
 }
 
 // --- Polls ---
@@ -412,7 +500,7 @@ impl AppState {
         self.perm_granted = [
             self.mic_satisfied || permissions::microphone() == PermissionState::Granted,
             permissions::accessibility() == PermissionState::Granted,
-            permissions::input_monitoring() == PermissionState::Granted,
+            permissions::input_monitoring() == PermissionState::Granted && !tap_is_down(),
         ];
         self.model_present = self.model_files_present();
         let on = secure_input::is_secure_input_enabled();
@@ -426,7 +514,9 @@ impl AppState {
         }
     }
 
-    pub(crate) fn restart_tap(&mut self) {
+    /// Start the event tap with the current bindings and capture mode, then
+    /// replace the old one. The old tap stays up when the new one fails.
+    pub(crate) fn start_tap(&mut self) -> Result<()> {
         let machine_w = Arc::clone(&self.machine);
         let tap_capture_w = Arc::clone(&self.tap_capture);
         let should_capture: ShouldCapture = Arc::new(move |captured: Captured| {
@@ -440,24 +530,94 @@ impl AppState {
                 Captured::Chord(_) => true,
             }
         });
-        match KeyTap::start(
+        let (tap, rx) = KeyTap::start(
             tap_config_for(&self.bindings, self.key_capturing.is_some()),
             should_capture,
-        ) {
-            Ok((tap, rx)) => {
-                if let Some(old) = self.tap.take() {
-                    if let Err(e) = old.shutdown() {
-                        self.log(&format!("tap shutdown: {e:#}"));
-                    }
+        )?;
+        if let Some(old) = self.tap.replace(tap) {
+            if let Err(e) = old.shutdown() {
+                self.log(&format!("tap shutdown: {e:#}"));
+            }
+        }
+        self.tap_rx = Some(rx);
+        Ok(())
+    }
+
+    pub(crate) fn restart_tap(&mut self) {
+        match self.start_tap() {
+            Ok(()) => {
+                if clear_tap_down() {
+                    self.perm_granted[2] = true;
                 }
-                self.tap = Some(tap);
-                self.tap_rx = Some(rx);
                 self.log("tap restarted");
             }
             Err(e) => {
-                self.log(&format!("tap restart failed, keeping old tap: {e:#}"));
-                TAP_RESTART_FAILED.store(true, Ordering::SeqCst);
+                // The old tap stays up; the tick retries until a tap starts.
+                self.log(&format!("tap restart failed: {e:#}"));
+                mark_tap_down(Instant::now());
             }
+        }
+    }
+
+    /// Retry the event tap while it is down. The first tick of an outage
+    /// requests Input Monitoring once and shows Welcome (or the keys-paused
+    /// HUD when Welcome was already shown). Each retry checks the permission
+    /// first, so no tap is created until it is granted.
+    pub(crate) fn poll_tap_retry(&mut self, cx: &mut App) {
+        let Some(down) = with_tap_down(|down| *down) else {
+            return;
+        };
+        if !down.announced {
+            with_tap_down(|down| {
+                if let Some(down) = down {
+                    down.announced = true;
+                }
+            });
+            self.announce_tap_down(cx);
+        }
+        let now = Instant::now();
+        if !tap_retry_due(down.next_try, now) {
+            return;
+        }
+        with_tap_down(|down| {
+            if let Some(down) = down {
+                down.next_try = now + TAP_RETRY;
+            }
+        });
+        if permissions::input_monitoring() != PermissionState::Granted {
+            return;
+        }
+        match self.start_tap() {
+            Ok(()) => {
+                clear_tap_down();
+                self.perm_granted[2] = true;
+                self.log("event tap started");
+            }
+            Err(e) => self.log(&format!("event tap retry failed: {e:#}")),
+        }
+    }
+
+    fn announce_tap_down(&mut self, cx: &mut App) {
+        self.log("event tap down: keys paused until Input Monitoring is granted");
+        self.perm_granted[2] = false;
+        if let Err(e) = permissions::request_input_monitoring() {
+            self.log(&format!("input monitoring request failed: {e:#}"));
+        }
+        // An open Welcome shows the permission rows live: nothing more to say.
+        if self.welcome_win.is_some() {
+            return;
+        }
+        if !TAP_WELCOME_SHOWN.swap(true, Ordering::SeqCst) {
+            self.open_welcome(cx);
+        } else {
+            self.show_ephemeral(
+                cx,
+                UiHud::ConfigError {
+                    location: "Keys paused".to_string(),
+                    message: "Input Monitoring is off".to_string(),
+                },
+                "tap down",
+            );
         }
     }
 }
@@ -466,6 +626,45 @@ impl AppState {
 mod tests {
     use super::{pending_timing_take, PENDING_DICTATION_LIMIT_S};
     use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn log_dir_is_under_library_logs() {
+        assert_eq!(
+            super::log_dir(std::path::Path::new("/Users/x")),
+            std::path::PathBuf::from("/Users/x/Library/Logs/Jisuno")
+        );
+    }
+
+    /// The tap retry waits the full interval, then is due at and after it.
+    #[test]
+    fn tap_retry_is_due_after_interval() {
+        use super::{tap_retry_due, TAP_RETRY};
+        let now = Instant::now();
+        let next = now + TAP_RETRY;
+        assert!(!tap_retry_due(next, now));
+        assert!(!tap_retry_due(next, now + Duration::from_millis(1999)));
+        assert!(tap_retry_due(next, next));
+        assert!(tap_retry_due(next, next + Duration::from_secs(5)));
+    }
+
+    /// One outage: the first failure schedules, a second keeps the schedule,
+    /// and clearing reports whether a tap was down.
+    #[test]
+    fn tap_outage_marks_and_clears() {
+        use super::{clear_tap_down, mark_tap_down, tap_is_down, with_tap_down, TAP_RETRY};
+        let now = Instant::now();
+        assert!(!clear_tap_down());
+        mark_tap_down(now);
+        mark_tap_down(now + Duration::from_secs(1));
+        assert!(tap_is_down());
+        assert_eq!(
+            with_tap_down(|down| down.map(|d| d.next_try)),
+            Some(now + TAP_RETRY)
+        );
+        assert!(clear_tap_down());
+        assert!(!tap_is_down());
+    }
 
     /// A model change switches at once while idle and loaded, waits while
     /// busy, and renames only when nothing is loaded.
