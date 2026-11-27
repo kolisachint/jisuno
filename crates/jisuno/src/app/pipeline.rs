@@ -103,6 +103,23 @@ pub(crate) enum NoCxRoute {
     Dropped,
 }
 
+/// Effect name for logs, without payloads (`ShowConfirm` carries spoken text).
+fn effect_kind(effect: &Effect) -> &'static str {
+    match effect {
+        Effect::OpenMic => "OpenMic",
+        Effect::CloseMic { .. } => "CloseMic",
+        Effect::StartModelLoad => "StartModelLoad",
+        Effect::CancelModelLoad => "CancelModelLoad",
+        Effect::ShowHud(_) => "ShowHud",
+        Effect::HideHud => "HideHud",
+        Effect::Transcribe { .. } => "Transcribe",
+        Effect::RunCommand => "RunCommand",
+        Effect::ShowConfirm { .. } => "ShowConfirm",
+        Effect::PassThrough => "PassThrough",
+        Effect::Countdown { .. } => "Countdown",
+    }
+}
+
 /// Route one machine effect for the headless contexts; see [`NoCxRoute`].
 pub(crate) fn no_cx_route(effect: &Effect) -> NoCxRoute {
     match effect {
@@ -761,7 +778,10 @@ impl AppState {
                     }
                 }
                 NoCxRoute::Dropped => {
-                    self.log(&format!("hold {tag}: {effect:?} has no headless path"));
+                    self.log(&format!(
+                        "hold {tag}: {} has no headless path",
+                        effect_kind(&effect)
+                    ));
                 }
             }
         }
