@@ -14,7 +14,8 @@ holds it when **Secure Keyboard Entry** is on. Jisuno resumes by itself.
 tap, usually after you saved `keybindings.json` without Input Monitoring. Grant Input Monitoring in
 System Settings → Privacy & Security, then open Jisuno again. See [Permissions](permissions.md).
 
-**Jisuno exits when it opens.** Input Monitoring is not granted. Grant it, then open Jisuno again.
+**Jisuno exits when it opens** with `grant Input Monitoring, then relaunch` in the log. The event tap
+could not start. Grant Input Monitoring, then open Jisuno again.
 
 **The menu shows a permission as `Not allowed`.** Click the row to open its System Settings pane. See
 [Permissions](permissions.md).
