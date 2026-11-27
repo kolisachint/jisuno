@@ -119,3 +119,21 @@ through `jisuno control`. See [Agents](agents.md).
 Every key is optional. A key you leave out uses its default. An invalid value is rejected like any other
 invalid file: the last good theme stays live. Where the HUD appears is set in `settings.json` (`hud`), and
 live partial text is set in `settings.json` (`partials`).
+
+## Environment variables
+
+Flags override their variables. `transcribe` and `serve` also read the model and timing variables.
+
+| Variable | Used by | Meaning |
+|---|---|---|
+| `JISUNO_CONFIG_DIR` | app, `control`, `model` | Config folder. Default `~/.config/jisuno`. |
+| `JISUNO_MODELS_DIR` | all | Model folder. Default `~/Library/Application Support/jisuno/models` on macOS. |
+| `JISUNO_MODEL` | `transcribe`, `serve` | Model id. Default `parakeet-tdt-0.6b-v3-int8`. |
+| `JISUNO_SILENCE_MS` | `transcribe`, `serve` | Trailing silence before the capture ends, in ms. Default `600`. |
+| `JISUNO_PARTIAL_MS` | `serve` | Minimum gap between `PARTIAL` lines, in ms. Default `400`. `0` turns partials off. |
+| `JISUNO_LOG_TEXT` | app | `1` puts dictated and partial text in the logs. Default: counts only. |
+| `SSL_CERT_FILE` | downloads | PEM bundle of extra trusted CA certificates. |
+| `JISUNO_BIN` | hoocode TUI | Path to the `jisuno` binary that the TUI starts. See [Use from a TUI](tui.md). |
+
+Developer variables (`JISUNO_PROFILE`, `JISUNO_FAKE_WORKER`, the `JISUNO_DEBUG_*` hooks in `dev` builds, and the
+test fixture variables) are in the [developer guide](../../dev/src/building.md).
