@@ -23,7 +23,7 @@ use jisuno_ui::hud_model::HudState as UiHud;
 
 use super::hold_kind_for;
 use super::model::ModelState;
-use super::state::{AppState, ListeningUi, PendingTranscribe, RecentEntry};
+use super::state::{text_summary, AppState, ListeningUi, PendingTranscribe, RecentEntry};
 use super::worker::{AudioSource, ToWorker};
 
 /// Where a machine effect goes when there is no `&mut App`.
@@ -867,10 +867,11 @@ impl AppState {
     /// popover reads this once it exists; until then it is logged.
     pub(crate) fn push_recent(&mut self, text: String, tag: Option<String>) {
         self.log(&format!(
-            "recent{}: {text:?}",
+            "recent{}: {}",
             tag.as_deref()
                 .map(|t| format!(" [{t}]"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            text_summary(&text)
         ));
         self.recent.push_back(RecentEntry { text, tag });
         while self.recent.len() > 5 {

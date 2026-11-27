@@ -20,7 +20,7 @@ use jisuno_logic::voice_control::{self, Config, WindowDef};
 use jisuno_platform::actions::{self, MacActions};
 use jisuno_ui::hud_model::HudState as UiHud;
 
-use super::state::AppState;
+use super::state::{text_summary, AppState};
 use crate::runtime::{build_runtime, scan_installed_apps, THEMES};
 
 /// Installed-apps cache TTL: re-scanned at most once an hour.
@@ -326,7 +326,7 @@ impl AppState {
             }
             R::NoMatch { hud } => {
                 self.input(cx, Input::Finished { hud: None, id }, "finished (no match)");
-                self.log(&format!("{hud} for {text:?}"));
+                self.log(&format!("{hud} for {}", text_summary(&text)));
                 self.push_recent(text.clone(), Some("failed".to_string()));
                 self.show_ephemeral(cx, UiHud::NoCommandMatched, "no command matched");
             }

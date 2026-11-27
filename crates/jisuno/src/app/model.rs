@@ -11,7 +11,7 @@ use jisuno_logic::hold::Input;
 use jisuno_logic::settings::{self, Settings};
 use jisuno_ui::hud_model::{tail_text, HudState as UiHud, PARTIAL_TAIL_CHARS};
 
-use super::state::AppState;
+use super::state::{text_summary, AppState};
 use super::worker::{FromWorker, ToWorker};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,7 +368,7 @@ impl AppState {
                             if let Some(listening) = &mut self.listening {
                                 listening.partial = Some(tail.clone());
                             }
-                            self.log(&format!("partial: {tail}"));
+                            self.log(&format!("partial: {}", text_summary(&tail)));
                             self.refresh_hud_now(cx);
                         }
                     }
