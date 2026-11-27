@@ -16,8 +16,8 @@ CI runs the same checks in more places:
 | CI job | Runner | Runs |
 |---|---|---|
 | `core` (`ci.yml`) | ubuntu-latest | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace` |
-| `macos` (`ci.yml`) | macos-14 (Apple silicon) | clippy on the workspace; clippy with `-p jisuno --features app`; `cargo test --workspace`; `cargo test -p jisuno --features app,dev`; release app build and unsigned bundle |
-| `bench` (`ci.yml`) | macos-14 | only on `main` pushes and manual runs; numbers only, never gated (see [Bench](#bench)) |
+| `macos` (`ci.yml`) | macos-latest (Apple silicon) | clippy on the workspace; clippy with `-p jisuno --features app`; `cargo test --workspace`; `cargo test -p jisuno --features app,dev`; release app build and unsigned bundle |
+| `bench` (`ci.yml`) | macos-latest | only on `main` pushes and manual runs; numbers only, never gated (see [Bench](#bench)) |
 
 The `macos` job is the only one that compiles `jisuno-platform` and `jisuno-ui` on a Mac, and the only one
 that runs the `dev` tests. Run `cargo test -p jisuno --features app,dev` locally on a Mac before a change

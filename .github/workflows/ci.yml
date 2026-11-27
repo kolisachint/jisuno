@@ -18,7 +18,7 @@ jobs:
     name: Core (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -34,9 +34,9 @@ jobs:
 
   macos:
     name: macOS (Apple silicon)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -56,7 +56,7 @@ jobs:
       - name: Zip app
         run: ditto -c -k --keepParent dist/Jisuno.app dist/Jisuno-0.0.0-arm64.zip
       - name: Upload unsigned app
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Jisuno-app-unsigned-arm64
           path: dist/Jisuno-0.0.0-arm64.zip
@@ -66,17 +66,17 @@ jobs:
     name: Bench (numbers only, no gate)
     # Shared runners record numbers; the reference Mac signs off (design §6.1).
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       MODEL_ID: parakeet-tdt-0.6b-v3-int8
       JISUNO_MODELS_DIR: ${{ github.workspace }}/models
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Restore model cache
         id: model-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.JISUNO_MODELS_DIR }}
           key: jisuno-models-${{ env.MODEL_ID }}-v1
@@ -109,7 +109,7 @@ jobs:
             > "$out/jisuno-bench.json"
           cat "$out/jisuno-bench.json"
       - name: Upload bench results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jisuno-bench
           path: ${{ runner.temp }}/bench-out/jisuno-bench.json

@@ -15,8 +15,8 @@ per workflow and ref; a new run cancels the older one in progress.
 | Job | Runner | Steps |
 |--|--|--|
 | `core` | ubuntu-latest | installs `libasound2-dev`; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace` |
-| `macos` | macos-14 (Apple silicon) | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p jisuno --features app --all-targets -- -D warnings`; `cargo test --workspace`; `cargo test -p jisuno --features app,dev` (debug hooks); `cargo build --release -p jisuno --features app`; `packaging/bundle.sh --version 0.0.0 --arch arm64 --out dist`; uploads the unsigned app zip as `Jisuno-app-unsigned-arm64` (7 days) |
-| `bench` | macos-14 | only on `workflow_dispatch` and on push to `main`. Restores the model cache (`jisuno-models-<model id>-v1`, `JISUNO_MODELS_DIR=$GITHUB_WORKSPACE/models`) and downloads the pinned model on a miss. Generates two `say` fixtures (converted to 16 kHz mono WAV with `afconvert`), runs `cargo run --release -p jisuno-bench -- --json --model parakeet-tdt-0.6b-v3-int8 --fixtures-dir <fixtures>`, uploads `jisuno-bench` (JSON, 7 days). Never gated: no `--gate`. |
+| `macos` | macos-latest (Apple silicon) | `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p jisuno --features app --all-targets -- -D warnings`; `cargo test --workspace`; `cargo test -p jisuno --features app,dev` (debug hooks); `cargo build --release -p jisuno --features app`; `packaging/bundle.sh --version 0.0.0 --arch arm64 --out dist`; uploads the unsigned app zip as `Jisuno-app-unsigned-arm64` (7 days) |
+| `bench` | macos-latest | only on `workflow_dispatch` and on push to `main`. Restores the model cache (`jisuno-models-<model id>-v1`, `JISUNO_MODELS_DIR=$GITHUB_WORKSPACE/models`) and downloads the pinned model on a miss. Generates two `say` fixtures (converted to 16 kHz mono WAV with `afconvert`), runs `cargo run --release -p jisuno-bench -- --json --model parakeet-tdt-0.6b-v3-int8 --fixtures-dir <fixtures>`, uploads `jisuno-bench` (JSON, 7 days). Never gated: no `--gate`. |
 
 `--version 0.0.0` is used for CI bundles because `bundle.sh` accepts only
 `X.Y.Z`.
@@ -47,7 +47,7 @@ Runs are queued in the `release` concurrency group and never cancelled.
    `timeout-minutes: 90`.
 3. **create-release** — creates the GitHub release `v<version>` with
    auto-generated notes (idempotent). Runs in parallel with `publish`.
-4. **macos-app** — macos-14. Builds the universal `Jisuno.app` with
+4. **macos-app** — macos-latest. Builds the universal `Jisuno.app` with
    `packaging/bundle.sh --arch universal`, then:
    - if all signing secrets are set: imports the Developer ID certificate into a
      temporary keychain, runs `packaging/sign-notarize.sh` (sign, notarize,
@@ -58,7 +58,7 @@ Runs are queued in the `release` concurrency group and never cancelled.
    Outputs `signed` (`true`/`false`) for the cask job.
 5. **cli** — builds `jisuno` without the `app` feature (`cargo build --release
    --locked -p jisuno --target <t>`) for `aarch64-apple-darwin`,
-   `x86_64-apple-darwin` (cross-built on macos-14) and
+   `x86_64-apple-darwin` (cross-built on macos-latest) and
    `x86_64-unknown-linux-gnu` (installs ALSA). Uploads
    `jisuno-<version>-<target>.tar.gz` and its `.sha256`.
 6. **cask** — downloads the release zip, computes its sha256, renders
