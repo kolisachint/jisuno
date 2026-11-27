@@ -3,7 +3,7 @@
 //! Non-interactive: stdin is null, the shell is never a login prompt, and
 //! the command runs behind the step runner's `confirm` gate (validation
 //! rejects `shell.run` without `"confirm": true`). A 60 s timeout kills the
-//! child; the failure reason stays the spec string (`shell exited <code>`,
+//! child's process group (the command runs in its own group); the failure reason stays the spec string (`shell exited <code>`,
 //! `shell timed out after 60 s`). Stdout is discarded; stderr is drained (so a chatty
 //! child can never block on a full pipe) and only its tail is kept — the
 //! reason text itself never carries output.
@@ -34,13 +34,18 @@ pub(crate) fn run_command(cmd: &str, cwd: Option<&str>) -> Result<(), String> {
             .filter(|cwd| !cwd.is_empty())
             .map(super::expand_tilde_live)
             .unwrap_or_default();
-        run(cmd, if dir.is_empty() { None } else { Some(&dir) })
+        run(
+            cmd,
+            if dir.is_empty() { None } else { Some(&dir) },
+            SHELL_TIMEOUT,
+        )
     }
 }
 
 #[cfg(target_os = "macos")]
-fn run(cmd: &str, dir: Option<&str>) -> Result<(), String> {
+fn run(cmd: &str, dir: Option<&str>, timeout: Duration) -> Result<(), String> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
 
@@ -49,6 +54,8 @@ fn run(cmd: &str, dir: Option<&str>) -> Result<(), String> {
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
+    // Own process group: a timeout kills the shell and everything it started.
+    command.process_group(0);
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
@@ -75,13 +82,18 @@ fn run(cmd: &str, dir: Option<&str>) -> Result<(), String> {
         });
     }
 
-    let deadline = std::time::Instant::now() + SHELL_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
+                    // Kill the whole group: grandchildren holding the pipes
+                    // would otherwise keep the reader threads alive.
+                    // SAFETY: the group id is the child's pid (process_group(0)).
+                    unsafe {
+                        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+                    }
                     let _ = child.wait();
                     return Err("shell timed out after 60 s".to_string());
                 }
@@ -127,6 +139,32 @@ mod tests {
             Err("shell exited 3".to_string())
         );
         assert!(run_command("echo hi", Some("~")).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn timeout_kills_the_process_group() {
+        let pid_file =
+            std::env::temp_dir().join(format!("jisuno-shell-test-{}", std::process::id()));
+        let cmd = format!("sleep 30 & echo $! > '{}'; sleep 30", pid_file.display());
+        let result = run(&cmd, None, Duration::from_millis(500));
+        assert_eq!(result, Err("shell timed out after 60 s".to_string()));
+        // The background child must be gone too, not just the shell.
+        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while unsafe { libc::kill(pid, 0) } == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "grandchild {pid} survived"
+        );
     }
 
     #[test]
