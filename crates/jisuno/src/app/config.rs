@@ -632,7 +632,11 @@ impl AppState {
         if let Err(e) = permissions::request_input_monitoring() {
             self.log(&format!("input monitoring request failed: {e:#}"));
         }
-        if self.welcome_win.is_none() && !TAP_WELCOME_SHOWN.swap(true, Ordering::SeqCst) {
+        // An open Welcome shows the permission rows live: nothing more to say.
+        if self.welcome_win.is_some() {
+            return;
+        }
+        if !TAP_WELCOME_SHOWN.swap(true, Ordering::SeqCst) {
             self.open_welcome(cx);
         } else {
             self.show_ephemeral(
