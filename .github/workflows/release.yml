@@ -19,7 +19,8 @@ jobs:
   # tag this merge already produced and only sets the outputs.
   bump-and-tag:
     if: >
-      github.event.pull_request.merged == true && (
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' && (
         contains(github.event.pull_request.labels.*.name, 'cargo:patch') ||
         contains(github.event.pull_request.labels.*.name, 'cargo:minor') ||
         contains(github.event.pull_request.labels.*.name, 'cargo:major')
@@ -34,6 +35,7 @@ jobs:
           ref: main
           fetch-depth: 0
           fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -386,12 +388,13 @@ jobs:
           ruby -c dist/jisuno.rb
           cat dist/jisuno.rb
 
-      - name: Warn if the app is unsigned
-        if: env.SIGNED != 'true'
-        run: echo "::warning::App zip is unsigned; do not copy the cask to the tap until the app is notarized"
-
       - name: Upload cask
+        if: env.SIGNED == 'true'
         run: gh release upload "$TAG" dist/jisuno.rb --clobber
+
+      - name: Skip cask upload if the app is unsigned
+        if: env.SIGNED != 'true'
+        run: echo "::warning::App zip is unsigned or not notarized; jisuno.rb was rendered but not uploaded. Add the signing secrets and re-run the workflow to publish it."
 
   # ── 7. Aggregate SHA256SUMS ───────────────────────────────────────────
   checksums:
