@@ -231,3 +231,42 @@ the same sessions with the same baked-in config.
 Follow-up for the app wiring (not this change): spawn on first use,
 `load` on setup/install, `PARTIAL_REQ` on `--partial-ms`, `unload` on
 quit; treat `WorkerCrashed` as "re-spawn and reload".
+
+## Experiment: streaming end to end (2026-11-27, kept)
+
+The helper child now serves streaming utterances on one shared session
+(`worker/server.rs`: BEGIN/PUSH/PARTIAL_REQ/FINISH/CANCEL drive a single
+`ParakeetStreamingSession`; TRANSCRIBE runs full-clip on the same worker
+sessions — one model in memory). PARTIAL returns joined finished segments
+(no re-decode). The app feeds debug WAVs in 100 ms wall-clock chunks
+while the hold is down, drains the mic through `StreamingResampler`
+(chunked output == one-shot within 1e-5), and draws live partials in the
+HUD (`ListeningUi.partial` → `listening_state` → `refresh_hud_now` on
+arrival, only when `settings.partials`).
+
+Measured live with the release app, isolated `JISUNO_CONFIG_DIR`
+(model `at_login`, `partials: true`, `hud: off`), `say` WAVs at 16 kHz
+mono, `--debug-hold-ms` = duration + 300 ms, holds started warm. The
+screen was locked (Secure Input on, loginwindow holding it), so holds
+used a temporary local bypass — reverted before commit (`grep`
+`JISUNO_E2E` clean) — TextEdit could not come frontmost, and the HUD
+could not render: numbers below are from the `key-up -> text` / `partial`
+log lines only.
+
+| clip | length | pauses | key-up→text (3 runs) | median | finish ms | target ≤ 150 ms |
+|--|--|--|--|--|--|--|
+| `say` meeting | 7.0 s | 1 × 0.6 s | 22, 21, 22 | **22** | 0, 0, 0 | ✅ |
+| `say` mixed | 17.4 s | 3 × 0.5 s | 21, 21, 50 | **21** | 9, 16, 44 | ✅ |
+| `say` numbers, no pause | 5.8 s | none | 162 | 162 | 150 | ❌ (marginal) |
+
+Text parity: all three clips decode to the expected words (19/32/6
+words; `Dr. Alvarez`, `$1256.18`, `order 4793` intact). Partials logged
+every 400 ms mid-hold, growing as segments finished
+(`Please schedule…` → full first sentence → …); the no-pause clip
+logged no partials — correct, nothing had finished. Key-up in trailing
+silence skips the tail encode (finish 0 ms); the 50 ms w19 run caught a
+mid-utterance tail (finish 44 ms ≈ 0.6 s of tail).
+
+Before → after: with-pauses key-up→text 360 ms (full-clip at key-up) →
+~21 ms (tail only), −94 %. Without pauses it degrades to a full-clip
+tail decode (162 ms at 5.8 s) — the documented limit, not a regression.
