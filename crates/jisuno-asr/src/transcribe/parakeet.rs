@@ -579,6 +579,22 @@ impl PauseSplitter {
     }
 }
 
+/// Frames above the exit threshold a tail needs before `finish` decodes it
+/// (100 ms). Far below any real utterance, so short quiet speech passes.
+const TAIL_MIN_SPEECH_FRAMES: usize = 5;
+
+/// True when `tail` holds enough 20 ms frames above `silence_lo` to decode.
+///
+/// Counts frames, not the mean: a mean over the whole tail is diluted by
+/// trailing silence, so a short quiet utterance (2 s hold, 1.2 s of speech)
+/// was dropped without a decode.
+fn tail_has_speech(tail: &[f32], silence_lo: f32) -> bool {
+    tail.chunks(FRAME_SAMPLES)
+        .filter(|frame| jisuno_logic::vad::rms(frame) > silence_lo)
+        .count()
+        >= TAIL_MIN_SPEECH_FRAMES
+}
+
 /// Join pause-bounded segment texts into one transcript.
 ///
 /// Segments after the first are continuations, not new sentences: when the
@@ -862,13 +878,12 @@ impl StreamingTranscriber for ParakeetStreamingSession {
             return Ok(String::new());
         }
         self.drain_done();
-        // Tail since the last cut; skip the encode when it holds no speech
-        // (the same gate the splitter applies).
+        // Tail since the last cut; skip the encode when it holds no speech.
         let tail = &self.audio[self.seg_start..];
-        let send_tail = if tail.is_empty() || jisuno_logic::vad::rms(tail) < self.plan.silence_lo {
-            Vec::new()
-        } else {
+        let send_tail = if tail_has_speech(tail, self.plan.silence_lo) {
             tail.to_vec()
+        } else {
+            Vec::new()
         };
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         self.send(StreamReq::Finish {
@@ -970,6 +985,25 @@ mod tests {
         // "hello" flushed when "▁world" starts; "world" still buffered.
         assert_eq!(out, vec!["hello"]);
         assert_eq!(word, "world");
+    }
+
+    #[test]
+    fn tail_gate_counts_speech_frames_not_mean() {
+        // 1.2 s of quiet speech (frames at 0.012) after 0.6 s of digital
+        // silence: the mean is far below the floor, the speech is not.
+        let mut tail = vec![0.0; 9600];
+        tail.extend(vec![0.012; 19200]);
+        assert!(tail_has_speech(&tail, 0.01));
+        // 0.4 s of speech is the shortest utterance that must decode.
+        let mut short = vec![0.0; 3200];
+        short.extend(vec![0.012; 6400]);
+        assert!(tail_has_speech(&short, 0.01));
+        // Four frames (80 ms) of speech, and pure silence, do not.
+        let mut brief = vec![0.0; 3200];
+        brief.extend(vec![0.012; 1280]);
+        assert!(!tail_has_speech(&brief, 0.01));
+        assert!(!tail_has_speech(&vec![0.0; 32000], 0.01));
+        assert!(!tail_has_speech(&[], 0.01));
     }
 
     #[test]

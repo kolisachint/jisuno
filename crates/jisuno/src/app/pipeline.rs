@@ -582,7 +582,7 @@ impl AppState {
             if rms > self.level {
                 self.level = rms;
             }
-            if !chunk.iter().all(|s| *s == 0.0) && rms > 0.02 {
+            if !chunk.iter().all(|s| *s == 0.0) && rms > HEARD_SPEECH_RMS {
                 self.heard_speech = true;
             }
             if let Some(vad) = &mut self.handsfree_vad {
@@ -1071,6 +1071,11 @@ impl AppState {
         }
     }
 }
+
+/// Chunk RMS above which a dictate hold counts as speech (skips the decode
+/// when false). Same floor as the decoder's silence gate, so quiet speech
+/// the decoder can transcribe is not dropped here first.
+const HEARD_SPEECH_RMS: f32 = 0.01;
 
 /// How long a previous insert still counts as the same utterance thread.
 const JOIN_WINDOW: Duration = Duration::from_secs(60);
