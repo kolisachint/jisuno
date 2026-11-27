@@ -786,6 +786,7 @@ impl AppState {
                 fallback,
             });
         }
+        self.buffer.clear();
     }
 
     pub(crate) fn on_transcript(
