@@ -9,21 +9,23 @@ the config file, so matching is fast.
 
 ## Examples
 
-These examples come from the sample config in the design. A new install has only the default
-commands: "open jisuno", "open settings", "dark mode", "light mode" and "warm up".
+A new install has five commands: "open jisuno", "open settings", "dark mode", "light mode" and
+"warm up". The other examples below are not installed. Add them in `voice-control-config.json`, or
+with `jisuno control add` (see [Agents](agents.md)).
 
 | Say | What runs |
 |---|---|
 | "open jisuno" | Opens the menu bar popover. |
 | "open settings" | Opens Settings. |
+| "dark mode" / "light mode" | Switches the theme. |
+| "warm up" | Loads the model. |
 | "start working" | Opens the `work` workspace: launches the windows listed for it and places them. |
 | "stop working" | Closes the `work` workspace windows. |
 | "focus terminal" | Focuses the window `terminal`, or a running app named "terminal". |
 | "move terminal to right half" | Moves and resizes the window `terminal` to the right half of the screen. |
-| "open note standup" | Opens `standup.md` in Inkuno. `standup` is the free-text slot `{name}`. |
+| "open note standup" | Opens `standup.md` in the app set for the command. `standup` is the free-text slot `{name}`. |
 | "send it" | Presses the button named Send in the focused app. |
 | "clean build" | Asks you to confirm, then runs `cargo clean`. |
-| "dark mode" / "light mode" | Switches the theme. |
 | "reply" | Presses the button named Reply. Runs only when Mail is the frontmost app. |
 | "open project jisuno" | Opens `~/github/jisuno` in Zed. `jisuno` is a fixed-list slot. |
 
@@ -45,7 +47,7 @@ or hold an empty value. Text such as `${HOME}` in a shell command is not a slot.
 
 Window places: `left-half`, `right-half`, `top-half`, `bottom-half`, `left-top`, `left-bottom`,
 `right-top`, `right-bottom`, `full`, `center`. Spoken, they read as "left half", "right top" and so
-on.
+on. `center` is a window 60% of the visible frame size, centered on the screen.
 
 ## How a phrase is matched
 
@@ -54,8 +56,8 @@ on.
 2. Jisuno compares the words you said with each phrase. Small differences are allowed, such as a
    misheard word, but the word must start with the same letter. Hyphens count as spaces, so
    "open-settings" and "open settings" are the same phrase.
-3. Very long utterances (more than four times the longest phrase, plus 8 words) are rejected,
-   and the HUD says `No command matched`.
+3. Very long utterances are rejected, and the HUD says `No command matched`. An utterance is too long
+   when it has more than 4 times the word count of the longest phrase, plus 8 words.
 4. The best phrase runs if it is close enough. If two phrases are almost equally close, nothing
    runs.
 5. If nothing matches, the HUD says `Did you mean "start working"?` (with the closest phrase) and
@@ -104,6 +106,7 @@ Recent shows the failed command. Common reasons:
 | `AX element not found: AXButton "Send"` | The focused app has no button with that role and name. |
 | `no focused app` | There is no frontmost app for `keys.send`. |
 | `shell exited 1` | The command ran and exited with a non-zero status. |
+| `shell timed out after 60 s` | The command ran longer than 60 seconds and was stopped. |
 | `unknown theme "quiet-blue"` | No installed theme has that name. |
 | `Could not run "open project": no matched value for slot "project"` | The command's slots could not be filled from what you said. Nothing ran. |
 | `model not installed` | `model.warm` ran before a model was downloaded. |
@@ -122,10 +125,10 @@ Each step has `"do"` and its arguments.
 | `window.tile` | `window`, `place` | Moves and resizes a window. |
 | `workspace.open` | `workspace` | Opens each window of a workspace: launches apps, opens targets, runs commands, places windows. |
 | `workspace.close` | `workspace` | Closes a workspace's windows. |
-| `ax.press` | `app`, `role`, `name` | Presses one button found by app, role and name. `"focused"` means the frontmost app. |
+| `ax.press` | `app`, `role`, `name` | Presses one element found by app, role and name. `"focused"` means the frontmost app. Jisuno first checks the focused window's default and cancel buttons. If that fails, it searches the focused window, up to 4 levels deep and 300 elements. |
 | `ax.set_value` | `app`, `role`, `name`, `value` | Sets the value of one field found the same way. |
 | `keys.send` | `keys` | Sends a key combination to the focused app, written as in [Keybindings](keybindings.md). |
-| `shell.run` | `cmd`; optional `cwd` | Runs a shell command. Needs `"confirm": true`. |
+| `shell.run` | `cmd`; optional `cwd` | Runs `cmd` with `/bin/zsh -lc`. Standard input is closed. The command is stopped after 60 seconds. Needs `"confirm": true`. |
 | `theme.set` | `theme` | Switches the theme. |
 | `model.warm` | none | Loads the model. |
 | `model.unload` | none | Unloads the model. |
