@@ -259,18 +259,11 @@ impl AppState {
             self.log("model worker gone — stream dropped");
             return;
         }
-        // Debug WAV is already 16 kHz; the mic buffer needs one-shot
-        // resampling (the streaming resampler restarts fresh after this).
-        let pcm16 = if self.debug_wav.is_some() {
-            std::mem::take(&mut self.buffer)
-        } else {
-            let pcm16 = jisuno_audio::audio::resample_to_16k(&self.buffer, self.mic_rate);
-            self.resampler = Some(jisuno_audio::audio::StreamingResampler::new(
-                self.mic_rate,
-                jisuno_audio::audio::TARGET_RATE,
-            ));
-            pcm16
-        };
+        // The buffer is already 16 kHz (drained incrementally per chunk),
+        // debug WAV included: send it as-is instead of resampling the
+        // whole clip on the tick. The resampler keeps its state so the
+        // following chunks continue with the right filter context.
+        let pcm16 = std::mem::take(&mut self.buffer);
         if self
             .to_worker
             .send(ToWorker::Push { stream, pcm: pcm16 })

@@ -2,6 +2,7 @@
 //!
 //! Split from `app.rs` with no behavior change (step 1).
 
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -16,7 +17,7 @@ use jisuno_platform::{
     insert::{self, FocusLost, InsertMode},
     keys::KeyEvent,
     permissions::{self},
-    secure_input,
+    secure_input::{self, SecureInputHolder},
     status_item::MenuAction,
 };
 use jisuno_ui::hud_model::HudState as UiHud;
@@ -34,6 +35,63 @@ use super::worker::{AudioSource, ToWorker};
 /// path and is logged loudly — never silently dropped. The `match` is
 /// exhaustive over [`Effect`], so a new variant fails to compile until it
 /// is routed here.
+/// Secure-input holder lookup (spawns `ioreg` + `ps`): cached for 5 s.
+static SECURE_HOLDER_CACHE: OnceLock<Mutex<(Option<Instant>, Option<SecureInputHolder>)>> =
+    OnceLock::new();
+
+pub(crate) fn cached_secure_input_holder() -> Option<SecureInputHolder> {
+    if !secure_input::is_secure_input_enabled() {
+        return None;
+    }
+    let now = Instant::now();
+    if let Ok(cache) = SECURE_HOLDER_CACHE
+        .get_or_init(|| Mutex::new((None, None)))
+        .lock()
+    {
+        if let (Some(at), holder) = (&cache.0, &cache.1) {
+            if now.duration_since(*at) < Duration::from_secs(5) {
+                return holder.clone();
+            }
+        }
+    }
+    let holder = secure_input::secure_input_holder();
+    if let Ok(mut cache) = SECURE_HOLDER_CACHE
+        .get_or_init(|| Mutex::new((None, None)))
+        .lock()
+    {
+        *cache = (Some(now), holder.clone());
+    }
+    holder
+}
+
+/// `cpal` input-device enumeration: cached for 5 s.
+static INPUT_DEVICE_CACHE: OnceLock<Mutex<(Option<Instant>, Vec<String>)>> = OnceLock::new();
+
+pub(crate) fn cached_input_device_names() -> Vec<String> {
+    let now = Instant::now();
+    if let Ok(cache) = INPUT_DEVICE_CACHE
+        .get_or_init(|| Mutex::new((None, Vec::new())))
+        .lock()
+    {
+        if let (Some(at), names) = (&cache.0, &cache.1) {
+            if now.duration_since(*at) < Duration::from_secs(5) {
+                return names.clone();
+            }
+        }
+    }
+    let names = cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
+    if let Ok(mut cache) = INPUT_DEVICE_CACHE
+        .get_or_init(|| Mutex::new((None, Vec::new())))
+        .lock()
+    {
+        *cache = (Some(now), names.clone());
+    }
+    names
+}
+
 pub(crate) enum NoCxRoute {
     CloseMic { discard: bool },
     CancelLoad,
@@ -245,7 +303,7 @@ impl AppState {
 
     pub(crate) fn check_hold_ready(&mut self, cx: &mut App) -> bool {
         if secure_input::is_secure_input_enabled() {
-            let holder = secure_input::secure_input_holder();
+            let holder = cached_secure_input_holder();
             let name = holder
                 .as_ref()
                 .and_then(|h| h.name.clone())
@@ -320,18 +378,18 @@ impl AppState {
                 }
             }
         } else {
-            match jisuno_audio::mic::start() {
-                Ok(capture) => {
-                    self.mic_rate = capture.input_rate;
-                    self.capture = Some(capture);
-                    self.log(&format!("mic open ({} Hz)", self.mic_rate));
-                }
-                Err(e) => {
-                    self.log(&format!("mic open failed: {e:#}"));
-                    self.mic_open = false;
-                    self.input_no_cx(Input::Resync, "resync (mic failed)");
-                }
+            // Measure the synchronous open; it only moves off the tick with
+            // evidence (> 10 ms).
+            let started = Instant::now();
+            let opened = jisuno_audio::mic::start();
+            let elapsed = started.elapsed();
+            if elapsed > Duration::from_millis(10) {
+                self.log(&format!(
+                    "mic start blocked tick for {} ms",
+                    elapsed.as_millis()
+                ));
             }
+            match opened {
             self.resampler = Some(jisuno_audio::audio::StreamingResampler::new(
                 self.mic_rate,
                 jisuno_audio::audio::TARGET_RATE,
@@ -467,7 +525,9 @@ impl AppState {
             if rms > self.level {
                 self.level = rms;
             }
-            self.buffer.extend_from_slice(&chunk);
+            if !self.stream_begun {
+                self.buffer.extend_from_slice(&chunk);
+            }
             if self.stream_begun {
                 if let Some(stream) = self.stream {
                     let _ = self.to_worker.send(ToWorker::Push { stream, pcm: chunk });
@@ -503,18 +563,18 @@ impl AppState {
                     silence = true;
                 }
             }
-            self.buffer.extend_from_slice(chunk);
-            // Stream to the helper without blocking: the worker queues it
-            // for the child. A failed send means the worker thread is
-            // gone; the crash surfaces through its next reply. The
-            // streaming resampler keeps filter state across chunks (a
-            // per-chunk one-shot would corrupt edges).
+            // Resample once per chunk into 16 kHz: the buffer stays at the
+            // decode rate, so a later Warm flush sends it without a
+            // whole-buffer resample on the tick. The streaming resampler
+            // keeps filter state across chunks (a per-chunk one-shot would
+            // corrupt edges).
+            let pcm16 = match self.resampler.as_mut() {
+                Some(r) => r.push(chunk),
+                None => jisuno_audio::audio::resample_to_16k(chunk, self.mic_rate),
+            };
+            self.buffer.extend_from_slice(&pcm16);
             if self.stream_begun {
                 if let Some(stream) = self.stream {
-                    let pcm16 = match self.resampler.as_mut() {
-                        Some(r) => r.push(chunk),
-                        None => jisuno_audio::audio::resample_to_16k(chunk, self.mic_rate),
-                    };
                     if !pcm16.is_empty() {
                         let _ = self.to_worker.send(ToWorker::Push { stream, pcm: pcm16 });
                     }
@@ -755,7 +815,7 @@ impl AppState {
                 None => (
                     self.stream.unwrap_or(0),
                     Some(AudioSource::Mic {
-                        rate: self.mic_rate,
+                        rate: jisuno_audio::audio::TARGET_RATE,
                         pcm: std::mem::take(&mut self.buffer),
                     }),
                 ),
@@ -785,7 +845,7 @@ impl AppState {
             let fallback = match &self.debug_wav {
                 Some(path) => Some(AudioSource::Wav { path: path.clone() }),
                 None => Some(AudioSource::Mic {
-                    rate: self.mic_rate,
+                    rate: jisuno_audio::audio::TARGET_RATE,
                     pcm: std::mem::take(&mut self.buffer),
                 }),
             };
@@ -968,11 +1028,9 @@ pub(crate) fn default_input_name() -> Option<String> {
 }
 
 pub(crate) fn find_input_device(wanted: &str) -> Option<String> {
-    let host = cpal::default_host();
-    host.input_devices().ok()?.find_map(|device| {
-        let name = device.name().ok()?;
-        (name == wanted).then_some(name)
-    })
+    cached_input_device_names()
+        .into_iter()
+        .find(|name| name == wanted)
 }
 
 pub(crate) fn is_bluetooth_name(name: &str) -> bool {

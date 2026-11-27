@@ -108,6 +108,8 @@ pub(crate) struct AppState {
     pub(crate) capture: Option<Capture>,
     pub(crate) mic_open: bool,
     pub(crate) mic_rate: u32,
+    /// 16 kHz mono samples accumulated while the stream is not begun (the
+    /// cold path decodes this buffer when the load lands).
     pub(crate) buffer: Vec<f32>,
     pub(crate) heard_speech: bool,
     pub(crate) handsfree_vad: Option<jisuno_logic::vad::Vad>,
