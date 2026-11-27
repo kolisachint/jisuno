@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{atomic::AtomicBool, mpsc, Arc, Mutex};
 use std::time::Instant;
 
 use gpui::{AnyWindowHandle, App};
@@ -26,8 +26,15 @@ use jisuno_ui::tokens::ThemeJson;
 
 use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
+use super::model::{ActiveDownload, DownloadEvent};
 use super::socket::SocketSnapshot;
+use super::windows::{BenchEvent, BenchValues, PopoverHandle, SettingsHandle, WelcomeHandle};
 use super::worker::{FromWorker, ToWorker};
+use super::DebugOpen;
+use jisuno_logic::keybindings::{Command as KeyCommand, When as KeyWhen};
+use jisuno_ui::popover_model::PopoverIntent;
+use jisuno_ui::settings_model::SettingsIntent;
+use jisuno_ui::welcome_model::WelcomeIntent;
 
 /// Last-good holder with show-once errors, keyed by message. `LastGood` in
 /// `jisuno-logic` fixes its error type to the settings diagnostic, so the
@@ -116,6 +123,34 @@ pub(crate) struct AppState {
     pub(crate) tap: Option<KeyTap>,
     pub(crate) menu_rx: mpsc::Receiver<MenuAction>,
     pub(crate) status: StatusItem,
+    pub(crate) download: Option<ActiveDownload>,
+    pub(crate) download_tx: mpsc::Sender<DownloadEvent>,
+    pub(crate) download_rx: mpsc::Receiver<DownloadEvent>,
+    /// Keybinding recording: the Settings Keybindings pane is waiting for
+    pub(crate) debug_open: Option<DebugOpen>,
+    /// Keybinding recording: the Settings Keybindings pane is waiting for
+    /// the next chord/hold (Esc cancels). While set, the tap runs in
+    /// capture mode and forwards keys to `feed_recorded_key`.
+    pub(crate) key_capturing: Option<(KeyCommand, Option<KeyWhen>)>,
+    /// The tap thread swallows chords/keys while this is set (recording).
+    /// Shared with the `ShouldCapture` closure, which cannot borrow state.
+    pub(crate) tap_capture: Arc<AtomicBool>,
+    pub(crate) settings_win: Option<SettingsHandle>,
+    pub(crate) settings_tx: mpsc::Sender<SettingsIntent>,
+    pub(crate) settings_rx: mpsc::Receiver<SettingsIntent>,
+    pub(crate) welcome_win: Option<WelcomeHandle>,
+    pub(crate) welcome_tx: mpsc::Sender<WelcomeIntent>,
+    pub(crate) welcome_rx: mpsc::Receiver<WelcomeIntent>,
+    /// Last bench numbers (cache file or a finished run) and run state.
+    pub(crate) bench_report: Option<BenchValues>,
+    pub(crate) bench_error: Option<String>,
+    pub(crate) bench_running: bool,
+    pub(crate) bench_tx: mpsc::Sender<BenchEvent>,
+    pub(crate) bench_rx: mpsc::Receiver<BenchEvent>,
+    pub(crate) popover: Option<PopoverHandle>,
+    pub(crate) popover_toast: Option<(String, Instant)>,
+    pub(crate) popover_tx: mpsc::Sender<PopoverIntent>,
+    pub(crate) popover_rx: mpsc::Receiver<PopoverIntent>,
     pub(crate) model_line: String,
     pub(crate) perm_line: [String; 3],
     pub(crate) recent: VecDeque<RecentEntry>,

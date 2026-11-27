@@ -19,12 +19,19 @@ use std::sync::mpsc;
 
 use crate::permissions::Pane;
 
-/// An action from the status-item menu. Sent to the app thread.
+/// An action from the status item. Sent to the app thread.
+///
+/// Left-click toggles the popover ([`MenuAction::TogglePopover`]); the
+/// fallback menu (right-click, or VoiceOver) still carries the rows below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
+    /// The status button was left-clicked: toggle the popover window.
+    TogglePopover,
     WarmModel,
     UnloadModel,
     OpenPane(Pane),
+    OpenSettings,
+    OpenWelcome,
     Quit,
 }
 
@@ -91,8 +98,22 @@ impl StatusItem {
         }
     }
 
-    /// Open the status menu as if the user clicked the item: used by the
-    /// `jisuno.menu` voice command. Main thread only, like everything here.
+    /// Screen frame of the status button `(x, y, w, h)`, for anchoring the
+    /// popover window under the item. Main thread only, like everything here.
+    pub fn button_frame(&self) -> Option<(f64, f64, f64, f64)> {
+        #[cfg(target_os = "macos")]
+        {
+            self.inner.button_frame()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
+    /// Click the status button as if the user clicked the item: used by the
+    /// `jisuno.menu` voice command (toggles the popover, like a click).
+    /// Main thread only, like everything here.
     pub fn pop_menu(&self) {
         #[cfg(target_os = "macos")]
         {
@@ -149,9 +170,10 @@ mod macos_impl {
     use objc2::runtime::{AnyObject, NSObject};
     use objc2::{define_class, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+        NSApplication, NSEventMask, NSEventModifierFlags, NSEventType, NSImage, NSMenu, NSMenuItem,
+        NSStatusBar, NSStatusBarButton, NSStatusItem, NSView,
     };
-    use objc2_foundation::NSString;
+    use objc2_foundation::{NSPoint, NSString};
 
     use super::*;
 
@@ -162,6 +184,8 @@ mod macos_impl {
     pub(super) const ITEM_AX: isize = 5;
     pub(super) const ITEM_HID: isize = 6;
     const ITEM_QUIT: isize = 7;
+    const ITEM_SETTINGS: isize = 8;
+    const ITEM_WELCOME: isize = 9;
 
     fn tag_action(tag: isize) -> Option<MenuAction> {
         match tag {
@@ -170,6 +194,8 @@ mod macos_impl {
             ITEM_MIC => Some(MenuAction::OpenPane(Pane::Microphone)),
             ITEM_AX => Some(MenuAction::OpenPane(Pane::Accessibility)),
             ITEM_HID => Some(MenuAction::OpenPane(Pane::InputMonitoring)),
+            ITEM_SETTINGS => Some(MenuAction::OpenSettings),
+            ITEM_WELCOME => Some(MenuAction::OpenWelcome),
             ITEM_QUIT => Some(MenuAction::Quit),
             _ => None,
         }
@@ -177,6 +203,8 @@ mod macos_impl {
 
     struct TargetIvars {
         sender: Mutex<mpsc::Sender<MenuAction>>,
+        /// The fallback menu, popped on right-click. Set once in `create`.
+        menu: Mutex<Option<Retained<NSMenu>>>,
     }
 
     define_class!(
@@ -195,6 +223,22 @@ mod macos_impl {
                     let _ = sender.send(action);
                 }
             }
+
+            /// Status button click: left-click toggles the popover,
+            /// right-click pops the fallback menu at the button.
+            #[unsafe(method(jisunoClick:))]
+            fn on_click(&self, button: Option<&NSStatusBarButton>) {
+                let right = MainThreadMarker::new()
+                    .and_then(|mtm| NSApplication::sharedApplication(mtm).currentEvent())
+                    .map(|event| event.r#type() == NSEventType::RightMouseUp)
+                    .unwrap_or(false);
+                if right {
+                    self.pop_fallback(button);
+                    return;
+                }
+                let sender = self.ivars().sender.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = sender.send(MenuAction::TogglePopover);
+            }
         }
     );
 
@@ -203,6 +247,7 @@ mod macos_impl {
             let this = mtm.alloc::<Self>();
             let this = this.set_ivars(TargetIvars {
                 sender: Mutex::new(sender),
+                menu: Mutex::new(None),
             });
             unsafe { objc2::msg_send![super(this), init] }
         }
@@ -210,33 +255,68 @@ mod macos_impl {
         fn as_object(&self) -> &AnyObject {
             self.as_super().as_super()
         }
+
+        /// Pop the fallback menu under `button` (right-click path).
+        fn pop_fallback(&self, button: Option<&NSStatusBarButton>) {
+            let (Some(button), Some(menu)) = (
+                button,
+                self.ivars()
+                    .menu
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone(),
+            ) else {
+                return;
+            };
+            let view: &NSView = button.as_super().as_super().as_super();
+            let height = view.bounds().size.height;
+            menu.popUpMenuPositioningItem_atLocation_inView(
+                None,
+                NSPoint { x: 0.0, y: height },
+                Some(view),
+            );
+        }
     }
 
     pub(super) struct Inner {
         item: Retained<NSStatusItem>,
         _target: Retained<MenuTarget>,
+        menu: Retained<NSMenu>,
         mtm: MainThreadMarker,
     }
 
     impl Inner {
         pub(super) fn set_item_title(&self, tag: isize, text: &str) {
-            if let Some(menu) = self.item.menu(self.mtm) {
-                for child in menu.itemArray().iter() {
-                    if child.tag() == tag {
-                        child.setTitle(&NSString::from_str(text));
-                        return;
-                    }
+            for child in self.menu.itemArray().iter() {
+                if child.tag() == tag {
+                    child.setTitle(&NSString::from_str(text));
+                    return;
                 }
             }
         }
 
-        /// Click the status button so its menu opens (`jisuno.menu`).
+        /// Click the status button (toggles the popover, like a click).
+        /// Used by the `jisuno.menu` voice command.
         pub(super) fn pop_menu(&self) {
             if let Some(button) = self.item.button(self.mtm) {
                 // SAFETY: the button is a live AppKit object on the main
-                // thread; a nil sender click just opens the menu.
+                // thread; its action reports back over the channel.
                 unsafe { button.performClick(None) };
             }
+        }
+
+        /// Screen frame of the status button `(x, y, w, h)`.
+        pub(super) fn button_frame(&self) -> Option<(f64, f64, f64, f64)> {
+            let button = self.item.button(self.mtm)?;
+            let view: &NSView = button.as_super().as_super().as_super();
+            let window = view.window()?;
+            let frame = window.frame();
+            Some((
+                frame.origin.x,
+                frame.origin.y,
+                frame.size.width,
+                frame.size.height,
+            ))
         }
 
         pub(super) fn set_icon(&self, state: IconState, warning: bool, secure: bool) {
@@ -283,6 +363,12 @@ mod macos_impl {
             button.setToolTip(Some(&NSString::from_str(
                 IconState::Idle { model_warm: false }.label(),
             )));
+            // Left-click toggles the popover; right-click pops the
+            // fallback menu. The menu is no longer the button's menu, so
+            // a plain click reaches the action instead of opening it.
+            unsafe { button.setTarget(Some(target.as_object())) };
+            unsafe { button.setAction(Some(sel!(jisunoClick:))) };
+            button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
         }
 
         let menu = NSMenu::new(mtm);
@@ -338,13 +424,28 @@ mod macos_impl {
                 NSEventModifierFlags::empty(),
             );
             menu.addItem(&NSMenuItem::separatorItem(mtm));
+            add(
+                "Settings…",
+                ITEM_SETTINGS,
+                ",",
+                NSEventModifierFlags::Control | NSEventModifierFlags::Option,
+            );
+            add("Welcome…", ITEM_WELCOME, "", NSEventModifierFlags::empty());
             add("Quit Jisuno", ITEM_QUIT, "q", NSEventModifierFlags::empty());
         }
-        item.setMenu(Some(&menu));
+        // No `setMenu`: the button action reports clicks (left toggles the
+        // popover, right pops this menu). VoiceOver and the `jisuno.menu`
+        // voice command reach the same rows through the popover/click path.
+        *target
+            .ivars()
+            .menu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(menu.clone());
 
         Ok(Inner {
             item,
             _target: target,
+            menu,
             mtm,
         })
     }

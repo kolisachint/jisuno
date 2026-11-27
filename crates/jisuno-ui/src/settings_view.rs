@@ -136,7 +136,14 @@ fn field_row(label: &str, hint: Option<&str>, theme: &Theme, control: Div) -> Di
                 .child(label_text(label.to_string(), theme))
                 .children(hint.map(|hint| caption(hint.to_string(), theme))),
         )
-        .child(div().flex().items_center().child(control))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .min_w(px(240.0))
+                .child(control),
+        )
 }
 
 fn toggle(on: bool, theme: &Theme, file: &'static str, key: &str, on_intent: &SettingsEmit) -> Div {
@@ -164,50 +171,56 @@ fn options(
     key: &str,
     on_intent: &SettingsEmit,
 ) -> Div {
-    div().flex().flex_row().flex_wrap().gap(px(6.0)).children(
-        choices
-            .iter()
-            .map(|(value, label)| {
-                let selected = *value == current;
-                let on_intent = on_intent.clone();
-                let value = value.to_string();
-                let key = key.to_string();
-                let mut pill = div()
-                    .min_h(px(CONTROL_MIN_H))
-                    .px(px(10.0))
-                    .flex()
-                    .items_center()
-                    .rounded(px(RADIUS_CONTROL))
-                    .text_size(px(LABEL.size))
-                    .font_family("SF Pro");
-                if selected {
-                    pill = pill
-                        .bg(rgb(theme.dictate_fill))
-                        .text_color(rgb(theme.button_label));
-                } else {
-                    pill = pill
-                        .bg(rgb(theme.palette.chip))
-                        .text_color(rgb(theme.palette.text))
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
-                                on_intent(
-                                    SettingsIntent::SetSetting {
-                                        file,
-                                        key: key.clone(),
-                                        value: serde_json::Value::String(value.clone()),
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            },
-                        );
-                }
-                pill.child(label.to_string())
-            })
-            .collect::<Vec<_>>(),
-    )
+    div()
+        .flex()
+        .flex_row()
+        .flex_nowrap()
+        .flex_shrink_0()
+        .gap(px(6.0))
+        .children(
+            choices
+                .iter()
+                .map(|(value, label)| {
+                    let selected = *value == current;
+                    let on_intent = on_intent.clone();
+                    let value = value.to_string();
+                    let key = key.to_string();
+                    let mut pill = div()
+                        .min_h(px(CONTROL_MIN_H))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(RADIUS_CONTROL))
+                        .text_size(px(LABEL.size))
+                        .font_family("SF Pro");
+                    if selected {
+                        pill = pill
+                            .bg(rgb(theme.dictate_fill))
+                            .text_color(rgb(theme.button_label));
+                    } else {
+                        pill = pill
+                            .bg(rgb(theme.palette.chip))
+                            .text_color(rgb(theme.palette.text))
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                move |_, window: &mut gpui::Window, cx: &mut gpui::App| {
+                                    on_intent(
+                                        SettingsIntent::SetSetting {
+                                            file,
+                                            key: key.clone(),
+                                            value: serde_json::Value::String(value.clone()),
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            );
+                    }
+                    pill.child(label.to_string())
+                })
+                .collect::<Vec<_>>(),
+        )
 }
 
 fn stepper(

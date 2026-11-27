@@ -159,6 +159,15 @@ fn voice_defaults() -> Config {
     })
 }
 
+/// Split `Could not run "<label>": <reason>` back into its parts; fall
+/// back to the whole line as the reason when the shape is unexpected.
+fn split_resolve_failed(hud: &str) -> (String, String) {
+    hud.strip_prefix("Could not run \"")
+        .and_then(|rest| rest.split_once("\": "))
+        .map(|(label, reason)| (label.to_string(), reason.to_string()))
+        .unwrap_or_else(|| (String::new(), hud.to_string()))
+}
+
 /// `Did you mean "x"?` carries the full copy; the HUD needs the phrase.
 pub(crate) fn extract_suggestion(copy: &str) -> Option<String> {
     copy.strip_prefix("Did you mean \"")?
@@ -317,9 +326,9 @@ impl AppState {
             }
             R::NoMatch { hud } => {
                 self.input(cx, Input::Finished { hud: None, id }, "finished (no match)");
-                // No close HUD copy exists: log the line (dictate-silence
-                // stays quiet the same way) instead of paraphrasing it.
                 self.log(&format!("{hud} for {text:?}"));
+                self.push_recent(text.clone(), Some("failed".to_string()));
+                self.show_ephemeral(cx, UiHud::NoCommandMatched, "no command matched");
             }
             R::Failed { hud } => {
                 self.input(
@@ -327,9 +336,11 @@ impl AppState {
                     Input::Finished { hud: None, id },
                     "finished (resolve failed)",
                 );
-                // Unreachable with a validated config: log + Recent only.
+                // Unreachable with a validated config: log + Recent + HUD.
                 self.log(&hud);
                 self.push_recent(text.clone(), Some("failed".to_string()));
+                let (label, reason) = split_resolve_failed(&hud);
+                self.show_ephemeral(cx, UiHud::ResolveFailed { label, reason }, "resolve failed");
             }
         }
     }

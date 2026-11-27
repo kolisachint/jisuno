@@ -28,13 +28,17 @@ pub(crate) mod pipeline;
 pub(crate) mod socket;
 pub(crate) mod state;
 pub(crate) mod status;
+pub(crate) mod windows;
 pub(crate) mod worker;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 use gpui::{ActivationPolicy, App, AsyncApp};
@@ -62,6 +66,28 @@ pub struct AppOptions {
     /// Simulate one internal dictate hold of this many ms, starting ~1 s
     /// after launch (hidden debug flag; bypasses the event tap).
     pub debug_hold_ms: Option<u64>,
+    /// Open a window right after launch for screenshots (hidden debug
+    /// flag, `JISUNO_DEBUG_OPEN` or `--debug-open`).
+    pub debug_open: Option<DebugOpen>,
+}
+
+/// Which window `--debug-open` opens after launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugOpen {
+    Popover,
+    Settings,
+    Welcome,
+}
+
+impl DebugOpen {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "popover" => Some(Self::Popover),
+            "settings" => Some(Self::Settings),
+            "welcome" => Some(Self::Welcome),
+            _ => None,
+        }
+    }
 }
 
 impl AppOptions {
@@ -71,6 +97,9 @@ impl AppOptions {
             debug_hold_ms: std::env::var("JISUNO_DEBUG_HOLD_MS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
+            debug_open: std::env::var("JISUNO_DEBUG_OPEN")
+                .ok()
+                .and_then(|s| DebugOpen::parse(&s)),
         }
     }
 }
@@ -85,6 +114,8 @@ pub fn run(opts: AppOptions) {
             std::process::exit(1);
         }
     };
+    // First run is a missing settings.json *before* the defaults are written.
+    let first_run = !dir.settings_path().exists();
     match dir.ensure_first_run(&embedded_app_files()) {
         Ok(written) => {
             for path in written {
@@ -212,11 +243,17 @@ pub fn run(opts: AppOptions) {
     let mut missing: Vec<(Pane, UiHud)> = Vec::new();
     let mic = permissions::microphone();
     if !mic_override && mic == PermissionState::NotDetermined {
-        stamp(start, "microphone: not determined — requesting");
-        match permissions::request_microphone() {
+        // The system prompt blocks until answered, so it must never run on
+        // the main thread: the Welcome window and the run loop come up while
+        // the prompt is showing, and Welcome's 1 s poll picks up the answer.
+        stamp(
+            start,
+            "microphone: not determined — requesting in background",
+        );
+        std::thread::spawn(move || match permissions::request_microphone() {
             Ok(state) => stamp(start, &format!("microphone prompt answered: {state:?}")),
             Err(e) => stamp(start, &format!("microphone prompt failed: {e:#}")),
-        }
+        });
     }
     if !mic_override && permissions::microphone() != PermissionState::Granted {
         stamp(start, "microphone: not granted");
@@ -314,9 +351,14 @@ pub fn run(opts: AppOptions) {
             !missing.iter().any(|(p, _)| *p == Pane::InputMonitoring),
         );
 
-        let tap_config = tap_config_for(&bindings_holder.current);
+        let tap_config = tap_config_for(&bindings_holder.current, false);
         let machine_w = Arc::clone(&machine);
+        let tap_capture = Arc::new(AtomicBool::new(false));
+        let tap_capture_w = Arc::clone(&tap_capture);
         let should_capture: ShouldCapture = Arc::new(move |captured: Captured| {
+            if tap_capture_w.load(Ordering::SeqCst) {
+                return true;
+            }
             let machine = machine_w.lock().unwrap_or_else(|e| e.into_inner());
             match captured {
                 Captured::Escape => machine.captures(CapturedKey::Escape),
@@ -338,6 +380,12 @@ pub fn run(opts: AppOptions) {
         };
 
         let settings = settings_holder.current.clone();
+        let (popover_tx, popover_rx) = mpsc::channel();
+        let (download_tx, download_rx) = mpsc::channel();
+        let (settings_tx, settings_rx) = mpsc::channel();
+        let (welcome_tx, welcome_rx) = mpsc::channel();
+        let (bench_tx, bench_rx) = mpsc::channel();
+        let bench_report = crate::app::windows::load_cached_bench();
         let state = Rc::new(RefCell::new(AppState {
             start,
             machine,
@@ -371,6 +419,27 @@ pub fn run(opts: AppOptions) {
             tap_rx,
             tap,
             menu_rx,
+            debug_open: opts.debug_open.or(first_run.then_some(DebugOpen::Welcome)),
+            welcome_win: None,
+            welcome_tx,
+            welcome_rx,
+            bench_report,
+            bench_error: None,
+            bench_running: false,
+            bench_tx,
+            bench_rx,
+            key_capturing: None,
+            tap_capture,
+            settings_win: None,
+            settings_tx,
+            settings_rx,
+            download: None,
+            download_tx,
+            download_rx,
+            popover: None,
+            popover_toast: None,
+            popover_tx,
+            popover_rx,
             status,
             model_line: String::new(),
             perm_line: [String::new(), String::new(), String::new()],
@@ -434,7 +503,7 @@ pub fn run(opts: AppOptions) {
     }
 }
 
-pub(crate) fn tap_config_for(bindings: &Keybindings) -> TapConfig {
+pub(crate) fn tap_config_for(bindings: &Keybindings, capturing: bool) -> TapConfig {
     let mut holds = Vec::new();
     let mut chords = Vec::new();
     for binding in &bindings.bindings {
@@ -448,7 +517,59 @@ pub(crate) fn tap_config_for(bindings: &Keybindings) -> TapConfig {
             }
         }
     }
+    if capturing {
+        // Keybinding recording: report every chord so the host can feed
+        // the next one to `feed_recorded_key` (Esc cancels). Bare keys and
+        // every modifier combination are covered; the hold keys stay as-is.
+        chords = capture_chords(&chords);
+    }
     TapConfig { holds, chords }
+}
+
+/// Every reportable chord: the configured ones plus all modifier
+/// combinations over every known keycode, so recording catches any press.
+fn capture_chords(configured: &[Key]) -> Vec<Key> {
+    use jisuno_logic::keybindings::Modifier;
+    use jisuno_platform::keys::keycode_name;
+    let mut out: Vec<Key> = configured.to_vec();
+    let combos: [Vec<Modifier>; 16] = [
+        vec![],
+        vec![Modifier::Ctrl],
+        vec![Modifier::Opt],
+        vec![Modifier::Shift],
+        vec![Modifier::Cmd],
+        vec![Modifier::Ctrl, Modifier::Opt],
+        vec![Modifier::Ctrl, Modifier::Shift],
+        vec![Modifier::Ctrl, Modifier::Cmd],
+        vec![Modifier::Opt, Modifier::Shift],
+        vec![Modifier::Opt, Modifier::Cmd],
+        vec![Modifier::Shift, Modifier::Cmd],
+        vec![Modifier::Ctrl, Modifier::Opt, Modifier::Shift],
+        vec![Modifier::Ctrl, Modifier::Opt, Modifier::Cmd],
+        vec![Modifier::Ctrl, Modifier::Shift, Modifier::Cmd],
+        vec![Modifier::Opt, Modifier::Shift, Modifier::Cmd],
+        vec![
+            Modifier::Ctrl,
+            Modifier::Opt,
+            Modifier::Shift,
+            Modifier::Cmd,
+        ],
+    ];
+    for code in 0..=255u16 {
+        let Some(name) = keycode_name(code) else {
+            continue;
+        };
+        for modifiers in &combos {
+            let key = Key::Chord {
+                modifiers: modifiers.clone(),
+                key: name.to_string(),
+            };
+            if !out.contains(&key) {
+                out.push(key);
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn hold_kind_for(bindings: &Keybindings, key: RightKey) -> Option<HoldKind> {
