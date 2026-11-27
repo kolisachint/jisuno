@@ -125,6 +125,110 @@ fn crash_mid_utterance_fails_pending_calls() {
     assert!(is_crashed(&w.ping(TIMEOUT).unwrap_err()));
 }
 
+/// Real-model parity and overhead (ignored: needs the installed model).
+///
+/// Run: `cargo test --release -p jisuno-asr --test worker -- --ignored
+/// --nocapture`. Skips quietly without the model or fixtures. Compares a
+/// 5 s clip decoded in-process vs via the helper child (one PUSH +
+/// FINISH), and cold start (spawn + LOAD) vs in-process load.
+#[test]
+#[ignore = "needs the installed Parakeet model"]
+fn helper_process_matches_in_process() {
+    use jisuno_asr::setup::Model;
+    use std::path::Path;
+
+    let model = Model::parse("parakeet-tdt-0.6b-v3-int8").expect("known model");
+    if !model.is_ready() {
+        eprintln!("worker parity: model not installed, skipping");
+        return;
+    }
+    // 5 s clip: first fixture sliced/looped to exactly 80k samples, else a
+    // 440 Hz sine (equality of the two paths is what matters, not WER).
+    let clip = five_second_clip();
+    assert_eq!(clip.len(), 80_000);
+
+    // In-process baseline.
+    let t0 = Instant::now();
+    let mut direct = jisuno_asr::transcribe::load(model).expect("in-process load");
+    let direct_load_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let t0 = Instant::now();
+    let mut direct_parts = Vec::new();
+    direct
+        .transcribe(&clip, &mut |s: &str| direct_parts.push(s.to_string()))
+        .expect("in-process decode");
+    let direct_text = direct_parts.join(" ").trim().to_string();
+    let direct_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    drop(direct);
+
+    // Helper child: cold start, then one PUSH + FINISH of the same clip.
+    let t0 = Instant::now();
+    let w = AsrWorker::spawn(&example_bin(), &[]).expect("spawn real worker");
+    let spawn_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let t0 = Instant::now();
+    let load_ms = w
+        .load(model.id(), Duration::from_secs(300))
+        .expect("worker load");
+    let load_wall_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let id = 11;
+    w.begin(id).expect("begin");
+    w.push(id, &clip).expect("push");
+    let t0 = Instant::now();
+    let worker_text = w.finish(id, Duration::from_secs(300)).expect("finish");
+    let finish_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    // PARTIAL path decodes the same audio: spot-check parity too.
+    w.begin(id).expect("begin");
+    w.push(id, &clip).expect("push");
+    let partial_text = w.partial(id, Duration::from_secs(300)).expect("partial");
+    w.cancel(id).expect("cancel");
+    assert_eq!(partial_text, worker_text, "partial must match finish");
+    let t0 = Instant::now();
+    w.unload().expect("unload");
+    let unload_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    assert!(!w.is_alive());
+
+    assert_eq!(worker_text, direct_text, "helper must decode identically");
+    eprintln!(
+        "worker parity 5 s: in-process load {direct_load_ms:.0} ms, decode {direct_ms:.1} ms"
+    );
+    eprintln!(
+        "worker parity 5 s: spawn {spawn_ms:.0} ms + LOAD {load_ms:.0} ms (wall {load_wall_ms:.0} ms), finish {finish_ms:.1} ms (overhead {:.1} ms), unload {unload_ms:.1} ms",
+        finish_ms - direct_ms,
+    );
+    eprintln!("worker parity 5 s text: {worker_text:?}");
+    let _ = Path::new("");
+}
+
+/// Exactly 80_000 samples (5 s at 16 kHz) from the first fixture WAV, or a
+/// 440 Hz sine when no fixtures are present.
+fn five_second_clip() -> Vec<f32> {
+    let dir = std::env::var("JISUNO_FIXTURES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/fixtures"));
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut wavs: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "wav"))
+            .collect();
+        wavs.sort();
+        if let Some(wav) = wavs.first() {
+            if let Ok(pcm) = jisuno_audio::audio::load_wav_16k_mono(wav) {
+                if !pcm.is_empty() {
+                    let mut clip = Vec::with_capacity(80_000);
+                    while clip.len() < 80_000 {
+                        let take = (80_000 - clip.len()).min(pcm.len());
+                        clip.extend_from_slice(&pcm[..take]);
+                    }
+                    return clip;
+                }
+            }
+        }
+    }
+    (0..80_000)
+        .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 16_000.0).sin() * 0.1)
+        .collect()
+}
+
 #[test]
 #[cfg(unix)]
 fn drop_kills_the_child() {
