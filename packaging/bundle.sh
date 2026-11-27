@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the release binary and assemble Jisuno.app (unsigned).
-# Signing and notarization are separate: run sign-notarize.sh on the result.
+# Build the release binary and assemble Jisuno.app, ad-hoc sealed.
+# Developer ID signing and notarization are separate: run sign-notarize.sh on the result.
 #
 # Usage: packaging/bundle.sh --version X.Y.Z [--arch arm64|x86_64|universal] [--out DIR]
 #   --arch  default universal (needs both rustup targets installed)
@@ -207,5 +207,16 @@ if [[ -f "$ICON" ]]; then
 else
   echo "warning: $ICON not found; the bundle has no app icon (generic icon will show)" >&2
 fi
+
+# Ad-hoc seal: nested code first, then the bundle (no --deep). sign-notarize.sh
+# replaces this signature with the Developer ID one.
+echo "==> ad-hoc sealing $APP"
+while IFS= read -r -d '' lib; do
+  codesign --force --sign - --timestamp=none "$lib"
+done < <(find "$FW_DIR" -name '*.dylib' -print0 2>/dev/null)
+codesign --force --sign - --timestamp=none "$BENCH"
+codesign --force --sign - --timestamp=none "$BIN"
+codesign --force --sign - --timestamp=none "$APP"
+codesign --verify --strict "$APP"
 
 echo "==> built $APP (version $VERSION, $ARCH)"
