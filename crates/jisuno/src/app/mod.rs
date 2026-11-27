@@ -243,11 +243,17 @@ pub fn run(opts: AppOptions) {
     let mut missing: Vec<(Pane, UiHud)> = Vec::new();
     let mic = permissions::microphone();
     if !mic_override && mic == PermissionState::NotDetermined {
-        stamp(start, "microphone: not determined — requesting");
-        match permissions::request_microphone() {
+        // The system prompt blocks until answered, so it must never run on
+        // the main thread: the Welcome window and the run loop come up while
+        // the prompt is showing, and Welcome's 1 s poll picks up the answer.
+        stamp(
+            start,
+            "microphone: not determined — requesting in background",
+        );
+        std::thread::spawn(move || match permissions::request_microphone() {
             Ok(state) => stamp(start, &format!("microphone prompt answered: {state:?}")),
             Err(e) => stamp(start, &format!("microphone prompt failed: {e:#}")),
-        }
+        });
     }
     if !mic_override && permissions::microphone() != PermissionState::Granted {
         stamp(start, "microphone: not granted");
