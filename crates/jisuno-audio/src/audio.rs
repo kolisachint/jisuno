@@ -126,6 +126,241 @@ fn low_pass(input: &[f32], cutoff_hz: f32, sample_rate: f32) -> Vec<f32> {
     out
 }
 
+// --- Streaming resampler ---
+
+/// Windowed-sinc low-pass kernel shared by [`low_pass`] and
+/// [`StreamingResampler`]. Normalized to unity DC gain.
+fn low_pass_kernel(cutoff_hz: f32, sample_rate: f32) -> [f32; LOWPASS_TAPS] {
+    let fc = (cutoff_hz / sample_rate).clamp(0.0, 0.5);
+    let half = (LOWPASS_TAPS / 2) as isize;
+    let mut kernel = [0f32; LOWPASS_TAPS];
+    let mut sum = 0f32;
+    for (i, tap) in kernel.iter_mut().enumerate() {
+        let n = i as isize - half;
+        let sinc = if n == 0 {
+            2.0 * fc
+        } else {
+            let x = 2.0 * PI * fc * n as f32;
+            x.sin() / (PI * n as f32)
+        };
+        let hann = 0.5 - 0.5 * (2.0 * PI * i as f32 / (LOWPASS_TAPS as f32 - 1.0)).cos();
+        *tap = sinc * hann;
+        sum += *tap;
+    }
+    for tap in &mut kernel {
+        *tap /= sum;
+    }
+    kernel
+}
+
+/// Incremental version of [`resample`]: feeds native-rate mic chunks and
+/// emits target-rate samples, keeping filter state across chunks.
+///
+/// Per-chunk [`resample`] calls re-run the low-pass from zero state, so
+/// chunk edges get the wrong filter context and the joined output drifts
+/// from the one-shot result. This keeps the raw input (pruned past the
+/// filter support) plus the interpolation position, delays output samples
+/// whose filter support is not fully available yet, and zero-pads the tail
+/// on [`flush`](Self::flush) exactly like the one-shot edges. Chunked
+/// `push` + `flush` output matches one-shot [`resample`] within 1e-5.
+pub struct StreamingResampler {
+    from_rate: u32,
+    to_rate: u32,
+    kernel: Option<[f32; LOWPASS_TAPS]>,
+    half: isize,
+    /// Raw input samples not yet pruned (absolute index `base + k`).
+    input: Vec<f32>,
+    /// Absolute input index of `input[0]`.
+    base: usize,
+    /// Total raw samples ever pushed.
+    total_in: usize,
+    /// Output samples emitted so far.
+    emitted: usize,
+    /// True once `flush` ran (tail zero-pads like the one-shot end edge).
+    flushed: bool,
+}
+
+impl StreamingResampler {
+    /// New resampler from `from_rate` to `to_rate`. Same-rate is a
+    /// passthrough: `push` echoes the chunk, `flush` is empty.
+    pub fn new(from_rate: u32, to_rate: u32) -> Self {
+        let kernel = if to_rate < from_rate {
+            Some(low_pass_kernel(0.45 * to_rate as f32, from_rate as f32))
+        } else {
+            None
+        };
+        Self {
+            from_rate,
+            to_rate,
+            kernel,
+            half: (LOWPASS_TAPS / 2) as isize,
+            input: Vec::new(),
+            base: 0,
+            total_in: 0,
+            emitted: 0,
+            flushed: false,
+        }
+    }
+
+    fn step(&self) -> f64 {
+        f64::from(self.from_rate) / f64::from(self.to_rate)
+    }
+
+    fn out_len_total(&self) -> usize {
+        ((self.total_in as f64) * f64::from(self.to_rate) / f64::from(self.from_rate)).round()
+            as usize
+    }
+
+    /// Raw sample at absolute index `a`; zeros outside `[0, total_in)`
+    /// once flushed, `None` when the future is not yet known.
+    fn raw_at(&self, a: isize) -> Option<f32> {
+        if a < 0 {
+            return Some(0.0);
+        }
+        let a = a as usize;
+        if a < self.base {
+            return None;
+        }
+        let k = a - self.base;
+        if k < self.input.len() {
+            return Some(self.input[k]);
+        }
+        if self.flushed && a < self.total_in {
+            return None;
+        }
+        if self.flushed {
+            return Some(0.0);
+        }
+        None
+    }
+
+    /// Filtered value at absolute input index `a` (`None` when its
+    /// support needs input that has not arrived yet).
+    fn filtered_at(&self, a: usize) -> Option<f32> {
+        let Some(kernel) = &self.kernel else {
+            return self.raw_at(a as isize);
+        };
+        let mut acc = 0f32;
+        for (k, &tap) in kernel.iter().enumerate() {
+            let j = a as isize + k as isize - self.half;
+            acc += self.raw_at(j)? * tap;
+        }
+        Some(acc)
+    }
+
+    /// Next output sample, or `None` when its filter support is incomplete.
+    /// Mirrors the one-shot interpolation, including the last-sample clamp.
+    fn next_sample(&self) -> Option<f32> {
+        if self.from_rate == self.to_rate {
+            return None;
+        }
+        let total_out = if self.flushed {
+            self.out_len_total()
+        } else {
+            usize::MAX
+        };
+        if self.emitted >= total_out {
+            return None;
+        }
+        let pos = self.emitted as f64 * self.step();
+        let idx = pos.floor() as usize;
+        if self.kernel.is_some() {
+            let last = if self.flushed {
+                self.total_in.saturating_sub(1)
+            } else {
+                return match (self.filtered_at(idx), self.filtered_at(idx + 1)) {
+                    (Some(a), Some(b)) => {
+                        let frac = (pos - idx as f64) as f32;
+                        Some(a * (1.0 - frac) + b * frac)
+                    }
+                    _ => None,
+                };
+            };
+            if idx >= last {
+                return self.filtered_at(last);
+            }
+            match (self.filtered_at(idx), self.filtered_at(idx + 1)) {
+                (Some(a), Some(b)) => {
+                    let frac = (pos - idx as f64) as f32;
+                    Some(a * (1.0 - frac) + b * frac)
+                }
+                _ => None,
+            }
+        } else {
+            // Upsampling: no filter, interpolate the raw input directly.
+            if idx >= self.total_in.saturating_sub(1) {
+                if !self.flushed {
+                    return None;
+                }
+                return self.raw_at(self.total_in.saturating_sub(1) as isize);
+            }
+            match (self.raw_at(idx as isize), self.raw_at(idx as isize + 1)) {
+                (Some(a), Some(b)) => {
+                    let frac = (pos - idx as f64) as f32;
+                    Some(a * (1.0 - frac) + b * frac)
+                }
+                _ => None,
+            }
+        }
+    }
+
+    /// Drop raw input no future output can reference anymore.
+    fn prune(&mut self) {
+        if self.input.is_empty() {
+            return;
+        }
+        // Future outputs need filtered/raw at `floor(emitted*step)` and up;
+        // the filter reaches `half` behind that.
+        let need = (self.emitted as f64 * self.step()).floor() as isize - self.half - 2;
+        if need <= self.base as isize {
+            return;
+        }
+        let drop = (need as usize - self.base).min(self.input.len());
+        self.input.drain(..drop);
+        self.base += drop;
+    }
+
+    /// Feed one chunk; returns the newly completed output samples.
+    pub fn push(&mut self, chunk: &[f32]) -> Vec<f32> {
+        if chunk.is_empty() {
+            return Vec::new();
+        }
+        if self.from_rate == self.to_rate {
+            self.total_in += chunk.len();
+            self.emitted += chunk.len();
+            return chunk.to_vec();
+        }
+        if self.flushed {
+            return Vec::new();
+        }
+        self.input.extend_from_slice(chunk);
+        self.total_in += chunk.len();
+        let mut out = Vec::new();
+        while let Some(s) = self.next_sample() {
+            out.push(s);
+            self.emitted += 1;
+        }
+        self.prune();
+        out
+    }
+
+    /// End of input: zero-pad the tail like the one-shot end edge and emit
+    /// everything up to `round(total_in * to_rate / from_rate)`.
+    pub fn flush(&mut self) -> Vec<f32> {
+        if self.from_rate == self.to_rate || self.flushed {
+            return Vec::new();
+        }
+        self.flushed = true;
+        let mut out = Vec::new();
+        while let Some(s) = self.next_sample() {
+            out.push(s);
+            self.emitted += 1;
+        }
+        self.prune();
+        out
+    }
+}
+
 /// Load a WAV file as 16 kHz mono f32. Supports integer and float PCM at any
 /// rate/channel count; everything is downmixed and resampled.
 pub fn load_wav_16k_mono<P: AsRef<Path>>(path: P) -> anyhow::Result<Vec<f32>> {
@@ -214,5 +449,63 @@ mod tests {
             rms(&trim(&high)),
             rms(&trim(&low))
         );
+    }
+
+    #[test]
+    fn streaming_matches_one_shot_downsample() {
+        // Speech-ish sum of sines at 48 kHz, odd chunk sizes spanning
+        // filter support and interpolation boundaries.
+        let n = 48_000;
+        let pcm: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 48_000.0;
+                (2.0 * PI * 440.0 * t).sin() * 0.5
+                    + (2.0 * PI * 1_200.0 * t).sin() * 0.3
+                    + (2.0 * PI * 5_000.0 * t).sin() * 0.1
+            })
+            .collect();
+        let expected = resample_to_16k(&pcm, 48_000);
+        for &chunk in &[7usize, 100, 1_000, 1_601, 4_096] {
+            let mut s = StreamingResampler::new(48_000, 16_000);
+            let mut out = Vec::new();
+            for c in pcm.chunks(chunk) {
+                out.extend(s.push(c));
+            }
+            out.extend(s.flush());
+            assert_eq!(out.len(), expected.len(), "chunk {chunk}");
+            let max = out
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(max < 1e-5, "chunk {chunk}: max diff {max}");
+        }
+    }
+
+    #[test]
+    fn streaming_matches_one_shot_upsample_and_passthrough() {
+        let pcm: Vec<f32> = (0..800).map(|i| (i as f32 * 0.11).sin()).collect();
+        let expected = resample(&pcm, 8_000, 16_000);
+        let mut s = StreamingResampler::new(8_000, 16_000);
+        let mut out = Vec::new();
+        for c in pcm.chunks(137) {
+            out.extend(s.push(c));
+        }
+        out.extend(s.flush());
+        assert_eq!(out.len(), expected.len());
+        let max = out
+            .iter()
+            .zip(&expected)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(max < 1e-5, "upsample max diff {max}");
+        // Same-rate passthrough echoes chunks; flush is empty.
+        let mut s = StreamingResampler::new(16_000, 16_000);
+        let mut out = Vec::new();
+        for c in pcm.chunks(200) {
+            out.extend(s.push(c));
+        }
+        out.extend(s.flush());
+        assert_eq!(out, pcm);
     }
 }
