@@ -200,6 +200,17 @@ impl AppState {
         !self.mic_open && self.pending.is_none()
     }
 
+    /// The model id changed while idle: drop the old load (a still-running
+    /// load is cancelled) and start the new one.
+    pub(crate) fn switch_model(&mut self, cx: &mut App, why: &str) {
+        if self.model_state == ModelState::Warm {
+            self.unload_model(why);
+        } else if matches!(self.model_state, ModelState::Loading { .. }) {
+            self.cancel_load();
+        }
+        self.start_load(cx, why);
+    }
+
     pub(crate) fn unload_model(&mut self, why: &str) {
         if !self.can_unload() {
             self.log(&format!(

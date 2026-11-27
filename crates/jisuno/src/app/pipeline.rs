@@ -79,7 +79,7 @@ pub(crate) fn cached_input_device_names() -> Vec<String> {
             }
         }
     }
-    let names = cpal::default_host()
+    let names: Vec<String> = cpal::default_host()
         .input_devices()
         .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default();
@@ -154,6 +154,7 @@ impl AppState {
         self.poll_partials();
         self.drain_watch(cx);
         self.apply_pending_timing();
+        self.apply_pending_model(cx);
         self.poll_secure(cx);
         self.poll_idle_unload();
         self.refresh_hud_level(cx);
@@ -390,6 +391,17 @@ impl AppState {
                 ));
             }
             match opened {
+                Ok(capture) => {
+                    self.mic_rate = capture.input_rate;
+                    self.capture = Some(capture);
+                    self.log(&format!("mic open ({} Hz)", self.mic_rate));
+                }
+                Err(e) => {
+                    self.log(&format!("mic open failed: {e:#}"));
+                    self.mic_open = false;
+                    self.input_no_cx(Input::Resync, "resync (mic failed)");
+                }
+            }
             self.resampler = Some(jisuno_audio::audio::StreamingResampler::new(
                 self.mic_rate,
                 jisuno_audio::audio::TARGET_RATE,

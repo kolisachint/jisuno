@@ -4,7 +4,7 @@
 
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ use jisuno_platform::{
 };
 use jisuno_ui::hud_model::HudState as UiHud;
 
-use super::model::model_id;
+use super::model::{model_id, ModelState};
 use super::state::{AppState, SECURE_POLL_MS};
 use super::tap_config_for;
 
@@ -34,6 +34,30 @@ static PENDING_DICTATION_LIMIT_S: AtomicU64 = AtomicU64::new(0);
 /// A failed tap restart leaves the old tap running and asks the tick to
 /// show the keys-paused HUD once. Process-global for the same reason.
 static TAP_RESTART_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Model switch seen while busy: the new model id, applied once idle.
+static PENDING_MODEL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+/// What a model change does: switch now, defer until idle, or just rename
+/// (nothing loaded yet — the next hold loads on demand).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModelSwitch {
+    Now,
+    Defer,
+    RenameOnly,
+}
+
+/// Pure decision for [`ModelSwitch`]: switch while idle and something is
+/// loaded/loading, defer while busy, rename when unloaded.
+pub(crate) fn model_switch_action(state: &ModelState, busy: bool) -> ModelSwitch {
+    if busy {
+        return ModelSwitch::Defer;
+    }
+    match state {
+        ModelState::Warm | ModelState::Loading { .. } => ModelSwitch::Now,
+        ModelState::Unloaded | ModelState::Failed => ModelSwitch::RenameOnly,
+    }
+}
 
 /// Take a pending tap-restart failure for one HUD report.
 pub(crate) fn take_tap_restart_failed() -> bool {
@@ -171,7 +195,22 @@ impl AppState {
                     self.apply_timing(limit_s);
                 }
             }
-            self.model_name = model_id(&fresh);
+            let new_model = model_id(&fresh);
+            if new_model != self.model_name {
+                self.model_name.clone_from(&new_model);
+                match model_switch_action(&self.model_state, !self.can_unload()) {
+                    ModelSwitch::Now => self.switch_model(cx, "model switch"),
+                    ModelSwitch::Defer => {
+                        if let Ok(mut pending) =
+                            PENDING_MODEL.get_or_init(|| Mutex::new(None)).lock()
+                        {
+                            *pending = Some(new_model);
+                        }
+                        self.log("model switch deferred until idle");
+                    }
+                    ModelSwitch::RenameOnly => {}
+                }
+            }
             self.settings = fresh;
         }
         self.last_config_error = None;
@@ -207,6 +246,35 @@ impl AppState {
     pub(crate) fn apply_pending_timing(&mut self) {
         if let Some(limit_s) = pending_timing_take(self.session_active()) {
             self.apply_timing(limit_s);
+        }
+    }
+
+    /// Apply a deferred model switch once idle. A newer reload supersedes
+    /// the pending name; if the model already unloaded meanwhile, the
+    /// rename stands and the next hold loads on demand.
+    pub(crate) fn apply_pending_model(&mut self, cx: &mut App) {
+        let pending = PENDING_MODEL
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map(|mut slot| slot.take())
+            .unwrap_or(None);
+        let Some(name) = pending else {
+            return;
+        };
+        if name != self.model_name {
+            return;
+        }
+        if !self.can_unload() {
+            if let Ok(mut slot) = PENDING_MODEL.get_or_init(|| Mutex::new(None)).lock() {
+                *slot = Some(name);
+            }
+            return;
+        }
+        if matches!(
+            self.model_state,
+            ModelState::Warm | ModelState::Loading { .. }
+        ) {
+            self.switch_model(cx, "model switch");
         }
     }
 
@@ -411,6 +479,35 @@ impl AppState {
 mod tests {
     use super::{pending_timing_take, PENDING_DICTATION_LIMIT_S};
     use std::sync::atomic::Ordering;
+
+    /// A model change switches at once while idle and loaded, waits while
+    /// busy, and renames only when nothing is loaded.
+    #[test]
+    fn model_switch_decision() {
+        use super::model_switch_action;
+        use super::ModelState;
+        use super::ModelSwitch;
+        assert_eq!(
+            model_switch_action(&ModelState::Warm, false),
+            ModelSwitch::Now
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Loading { gen: 1 }, false),
+            ModelSwitch::Now
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Warm, true),
+            ModelSwitch::Defer
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Unloaded, false),
+            ModelSwitch::RenameOnly
+        );
+        assert_eq!(
+            model_switch_action(&ModelState::Failed, false),
+            ModelSwitch::RenameOnly
+        );
+    }
 
     /// A timing change waits while a session is live and is taken exactly
     /// once when Idle.
