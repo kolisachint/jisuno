@@ -647,7 +647,7 @@ fn keybinding_row_view(
         .rounded(px(4.0))
         .bg(rgb(theme.palette.chip))
         .text_size(px(KBD.size))
-        .font_family("SF Mono")
+        .font_family("SF Pro")
         .text_color(rgb(if recording {
             theme.dictate_text
         } else {

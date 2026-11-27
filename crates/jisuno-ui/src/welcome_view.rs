@@ -153,9 +153,9 @@ pub fn welcome_view(model: &WelcomeModel, theme: &Theme, on_intent: WelcomeEmit)
                         .font_family("SF Pro")
                         .text_color(rgb(ok_color(theme)))
                         .child(if model.files_written {
-                            "Written to ~/.config/jisuno/"
+                            format!("Written to {}", model.config_path)
                         } else {
-                            "Writing to ~/.config/jisuno/…"
+                            format!("Writing to {}…", model.config_path)
                         }),
                 )
                 .child(
