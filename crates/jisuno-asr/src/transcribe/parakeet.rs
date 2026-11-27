@@ -647,6 +647,13 @@ enum StreamReq {
         tail: Vec<f32>,
         reply: Sender<String>,
     },
+    /// Full-clip decode on the same sessions (helper TRANSCRIBE path).
+    /// Bypasses the segment list so streaming state is untouched; this is
+    /// what shares the one loaded model between streaming and one-shot.
+    Full {
+        audio: Vec<f32>,
+        reply: Sender<String>,
+    },
     /// Drop buffered segments (generation change).
     Reset { gen: u64 },
     /// Exit the thread.
@@ -714,6 +721,10 @@ fn stream_worker(
                 }
                 let _ = reply.send(join_segments(&segments));
             }
+            StreamReq::Full { audio, reply } => {
+                let text = decode_text(&mut t, &audio);
+                let _ = reply.send(text);
+            }
             StreamReq::Reset { gen: g } => {
                 gen = g;
                 segments.clear();
@@ -774,6 +785,25 @@ impl ParakeetStreamingSession {
             Some(tx) => tx.send(req).context("streaming decode thread gone"),
             None => Err(anyhow!("streaming session closed")),
         }
+    }
+
+    /// Full-clip decode of `pcm` on the worker's sessions (same model as
+    /// the streaming path — one copy in memory). Does not touch the
+    /// segment list, so it is safe between utterances.
+    pub fn transcribe_full(&mut self, pcm: &[f32]) -> anyhow::Result<String> {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        self.send(StreamReq::Full {
+            audio: pcm.to_vec(),
+            reply: tx,
+        })?;
+        rx.recv().context("streaming decode thread gone")
+    }
+
+    /// [`StreamingTranscriber::partial`] plus a drain, so a PARTIAL arriving
+    /// between pushes still reports newly finished segments.
+    pub fn partial_drained(&mut self) -> Option<String> {
+        self.drain_done();
+        self.partial()
     }
 
     /// Move newly completed segment texts into `finished`, dropping stale
