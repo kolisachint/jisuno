@@ -12,7 +12,7 @@ use anyhow::{Context as _, Result};
 use gpui::App;
 use jisuno_logic::hold::{CapturedKey, HoldMachine, Input, Timing};
 use jisuno_logic::keybindings::{self, Keybindings};
-use jisuno_logic::settings::{self, ConfigDir, EmbeddedFile, Settings};
+use jisuno_logic::settings::{ConfigDir, Settings};
 use jisuno_logic::voice_control::{self, Config};
 use jisuno_platform::{
     keys::{Captured, KeyTap, ShouldCapture},
@@ -78,35 +78,6 @@ pub(crate) fn pending_timing_take(session_active: bool) -> Option<u64> {
 }
 
 // --- Startup: config files, permissions -----------------------------------
-
-pub(crate) fn embedded_app_files() -> Vec<EmbeddedFile> {
-    let mut files: Vec<EmbeddedFile> = settings::embedded_settings_files().to_vec();
-    files.push(EmbeddedFile {
-        name: "keybindings.json",
-        contents: include_str!("../../../jisuno-logic/defaults/keybindings.json"),
-    });
-    files.push(EmbeddedFile {
-        name: "schemas/keybindings.schema.json",
-        contents: include_str!("../../../jisuno-logic/schemas/keybindings.schema.json"),
-    });
-    files.push(EmbeddedFile {
-        name: "theme.json",
-        contents: include_str!("../../../jisuno-logic/defaults/theme.json"),
-    });
-    files.push(EmbeddedFile {
-        name: "schemas/theme.schema.json",
-        contents: include_str!("../../../jisuno-logic/schemas/theme.schema.json"),
-    });
-    files.push(EmbeddedFile {
-        name: "voice-control-config.json",
-        contents: include_str!("../../../jisuno-logic/defaults/voice-control-config.json"),
-    });
-    files.push(EmbeddedFile {
-        name: "schemas/voice-control-config.schema.json",
-        contents: include_str!("../../../jisuno-logic/schemas/voice-control-config.schema.json"),
-    });
-    files
-}
 
 pub(crate) fn read_file(path: &std::path::Path) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))

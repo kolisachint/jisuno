@@ -25,14 +25,16 @@ Not yet in CI: the ASR fixture job (design §3, "ASR fixtures", ubuntu).
 
 ## `release.yml`
 
-Triggered when a PR with a `cargo:patch`, `cargo:minor`, or `cargo:major` label
-is merged. Only `main` is pushed to; every later job checks out the tag
-`v<version>` so the artifacts match the released commit.
+Triggered when a PR is merged into `main` and carries a `cargo:patch`,
+`cargo:minor` or `cargo:major` label. Only `main` is pushed to; every later job
+checks out the tag `v<version>` so the artifacts match the released commit.
+Runs are queued in the `release` concurrency group and never cancelled.
 
-1. **bump-and-tag** — reads the workspace version from `Cargo.toml`, bumps it by
-   the label, updates the version pins on the `crates/*` path dependencies in
-   the root `Cargo.toml`, runs `cargo update --workspace`, commits
-   `release: v<version>` to `main`, pushes, and creates an annotated `v*` tag.
+1. **bump-and-tag** — resolves the version (rules below), bumps `Cargo.toml`
+   and the internal dependency pins, runs `cargo update --workspace`, commits
+   `release: v<version>` to `main`, and creates an annotated `v*` tag. The commit
+   and the tag go out in one atomic push. Nothing is pushed on a re-run that
+   reuses a tag.
 2. **publish** — publishes `jisuno-logic`, `jisuno-audio`, `jisuno-asr`,
    `jisuno-platform`, `jisuno-ui`, then `jisuno` to crates.io in dependency
    order (`jisuno`'s optional `app` feature depends on platform and ui, and
@@ -56,10 +58,65 @@ is merged. Only `main` is pushed to; every later job checks out the tag
    `x86_64-unknown-linux-gnu` (installs ALSA). Uploads
    `jisuno-<version>-<target>.tar.gz` and its `.sha256`.
 6. **cask** — downloads the release zip, computes its sha256, renders
-   `packaging/homebrew/jisuno.rb` (`__VERSION__`, `__SHA256__`), checks it with
-   `ruby -c`, and uploads `jisuno.rb` to the release. Warns when the app is
-   unsigned. Copying the cask to the Homebrew tap is manual and out of scope.
+   `packaging/homebrew/jisuno.rb` (`__VERSION__`, `__SHA256__`) and checks it
+   with `ruby -c`. Uploads `jisuno.rb` to the release only when the app was
+   signed and notarized (`macos-app` output `signed` is `true`). Otherwise it
+   warns and skips the upload. Copying the cask to the Homebrew tap is manual
+   and out of scope.
 7. **checksums** — aggregates every `*.sha256` asset into `SHA256SUMS`.
+
+### Version rules
+
+- Base: the highest `v*` tag reachable from `main` (`git tag --merged`, sorted
+  by version). The label bumps it: `patch`, `minor` or `major`.
+- No `v*` tag yet (first release): the `[workspace.package] version` in
+  `Cargo.toml` is released unchanged. If the manifest already has that version,
+  no bump commit is made; the tag `v<version>` points at the merge commit. The
+  label is still required. With the manifest at `0.1.0`, the first labelled PR
+  merged releases `v0.1.0`.
+- Never edit `version` in a feature PR, and never tag by hand.
+
+### Re-runs
+
+- Re-run a failed run from the Actions UI (`Re-run failed jobs`, or
+  `Re-run all jobs`). Every job is idempotent: the publish step skips versions
+  already on crates.io, `gh release create` skips an existing release, and
+  uploads use `--clobber`.
+- `bump-and-tag` reuses the release when a `v*` tag points at this PR's merge
+  commit, or at a commit whose parent is that merge commit (the release commit
+  made on top of it). It then sets the `version` and `tag` outputs, pushes
+  nothing, and the later jobs run against that tag.
+- Caveat: if other commits landed on `main` after the merge, the release commit
+  is no longer directly on top of it, the reuse check misses it, and a re-run
+  bumps again. Check `git tag --list 'v*'` and `git log --oneline` before
+  re-running in that case.
+- To ship the signed app and cask after adding the signing secrets, re-run all
+  jobs of the same run; the signing check runs again.
+
+### Labels
+
+The workflow only fires for these three labels. They must exist in the repo
+(`/pr` creates them when missing). To create them by hand:
+
+```bash
+gh label create cargo:patch --color 0E8A16 --description "Release: patch bump on merge"
+gh label create cargo:minor --color FBCA04 --description "Release: minor bump on merge"
+gh label create cargo:major --color B60205 --description "Release: major bump on merge"
+```
+
+An error that the label already exists means it is there; ignore it.
+
+### Push permission on `main`
+
+`bump-and-tag` pushes the release commit and tag to `main`. The token is
+`secrets.RELEASE_TOKEN` when that secret is set, else `GITHUB_TOKEN`.
+
+- No branch protection on `main`, or protection that lets `github-actions[bot]`
+  push: `GITHUB_TOKEN` is enough.
+- `main` is protected against that bot: set `RELEASE_TOKEN`, a fine-grained PAT
+  (or GitHub App token) with Contents read/write on this repo, owned by a user
+  who can bypass the protection. Commits pushed with `RELEASE_TOKEN` also trigger
+  `ci.yml` on `main`; `GITHUB_TOKEN` pushes do not.
 
 ### Secrets
 
@@ -68,16 +125,18 @@ Names only; values are never in the repo.
 | Secret | Used by | Purpose |
 |--|--|--|
 | `CRATES_IO_TOKEN` | publish | crates.io API token |
+| `RELEASE_TOKEN` | bump-and-tag | optional. Pushes the release commit and tag to `main` when `GITHUB_TOKEN` is not allowed to (see above) |
 | `MACOS_CERT_P12_BASE64` | macos-app | base64 of the Developer ID Application `.p12` |
 | `MACOS_CERT_PASSWORD` | macos-app | password of that `.p12` |
 | `DEVELOPER_ID_APPLICATION` | macos-app | signing identity name, e.g. `Developer ID Application: Name (TEAMID)` |
 | `APPLE_ID` | macos-app | Apple ID for notarization |
 | `APPLE_TEAM_ID` | macos-app | Team ID for notarization |
 | `APPLE_APP_PASSWORD` | macos-app | app-specific password for notarization |
-| `GITHUB_TOKEN` | all | provided by Actions; release and asset writes |
+| `GITHUB_TOKEN` | all | provided by Actions; release and asset writes. Pushes the bump commit only if `main` allows it |
 
 The signing secrets are all-or-nothing: if any one is missing the app is
-published unsigned with a warning. `NOTARY_KEYCHAIN_PROFILE` is not used in CI.
+published unsigned with a warning, and the cask is not uploaded.
+`NOTARY_KEYCHAIN_PROFILE` is not used in CI.
 
 ## `mirror-models.yml`
 
@@ -89,11 +148,14 @@ is a copy of the same file; keep both identical.
 
 ## PR-based release flow
 
-1. Run `/pr patch` (or `minor` / `major`). This opens a PR with the `cargo:<bump>`
-   label (`.agents/commands/pr.md`).
-2. Merge the PR. `release.yml` runs.
-3. The workflow bumps the version, tags, publishes the crates, creates the
-   release, and attaches the app zip, CLI archives, cask, and `SHA256SUMS`.
+1. Run `/pr patch` (or `minor` / `major`). The command creates the
+   `cargo:<bump>` label if missing and opens a PR with it
+   (`.agents/commands/pr.md`).
+2. Merge the PR into `main`. `release.yml` runs.
+3. The workflow takes the version (highest `v*` tag plus the label; the
+   manifest version on the first release), bumps, tags, publishes the crates,
+   creates the release, and attaches the app zip, CLI archives, the cask (signed
+   builds only) and `SHA256SUMS`.
 
 Do not edit `version` in a feature PR, and do not tag by hand.
 

@@ -7,24 +7,35 @@ on:
 permissions:
   contents: write
 
+# One release at a time: a second merge waits for the first run to finish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  # ── 1. Bump version, commit, push, annotated tag ──────────────────────
+  # ── 1. Resolve the version, bump, commit, tag ─────────────────────────
+  # Base version: the latest v* tag, bumped by the label. No v* tag yet: the
+  # manifest version is released as is (first release). A re-run finds the
+  # tag this merge already produced and only sets the outputs.
   bump-and-tag:
     if: >
-      github.event.pull_request.merged == true && (
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' && (
         contains(github.event.pull_request.labels.*.name, 'cargo:patch') ||
         contains(github.event.pull_request.labels.*.name, 'cargo:minor') ||
         contains(github.event.pull_request.labels.*.name, 'cargo:major')
       )
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.bump.outputs.version }}
-      tag: ${{ steps.bump.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,43 +55,105 @@ jobs:
             echo "type=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump version in Cargo.toml
-        id: bump
+      - name: Resolve version
+        id: release
+        env:
+          MERGE: ${{ github.event.pull_request.merge_commit_sha }}
+          BUMP_TYPE: ${{ steps.release-type.outputs.type }}
         run: |
-          CURRENT_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          echo "Current version: $CURRENT_VERSION"
+          set -euo pipefail
 
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          # Re-run: a v* tag on the merge commit, or on the release commit made
+          # directly on top of it, is this release. Reuse it; push nothing.
+          for tag in $(git tag --list 'v*' --sort=-v:refname); do
+            commit="$(git rev-list -n 1 "$tag")"
+            parent="$(git rev-parse --verify --quiet "$commit^" || true)"
+            if [[ "$commit" == "$MERGE" || "$parent" == "$MERGE" ]]; then
+              echo "$tag already points at merge $MERGE; reusing it"
+              {
+                echo "reuse=true"
+                echo "bump=false"
+                echo "version=${tag#v}"
+                echo "tag=$tag"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
 
-          BUMP_TYPE="${{ steps.release-type.outputs.type }}"
-          case "$BUMP_TYPE" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
+          manifest="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          echo "Manifest version: $manifest"
 
-          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "New version: $NEW_VERSION"
+          # Base: the highest v* tag reachable from main (not `git describe`,
+          # which picks the nearest tag and can pick an older one). None yet:
+          # release the manifest version unchanged.
+          latest="$(git tag --merged HEAD --list 'v*' --sort=-v:refname | head -n1)"
+          if [[ -z "$latest" ]]; then
+            version="$manifest"
+            echo "No v* tag yet: releasing manifest version $version"
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${latest#v}"
+            case "$BUMP_TYPE" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              patch) PATCH=$((PATCH + 1)) ;;
+            esac
+            version="$MAJOR.$MINOR.$PATCH"
+            echo "Latest tag $latest: $BUMP_TYPE bump to $version"
+          fi
 
+          # No bump commit when the manifest already has the version.
+          bump=true
+          if [[ "$manifest" == "$version" ]]; then bump=false; fi
+
+          {
+            echo "reuse=false"
+            echo "bump=$bump"
+            echo "version=$version"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in Cargo.toml
+        if: steps.release.outputs.reuse != 'true' && steps.release.outputs.bump == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
           # Workspace version, then the version pins on the workspace path
           # dependencies (root Cargo.toml [workspace.dependencies]). A stale pin
           # would make cargo reject the crates after a minor or major bump.
-          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-          sed -i "/path = \"crates\//s/version = \"[^\"]*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          sed -i "/path = \"crates\//s/version = \"[^\"]*\"/version = \"$VERSION\"/" Cargo.toml
           cargo update --workspace
 
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Commit and tag
+        if: steps.release.outputs.reuse != 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BUMP: ${{ steps.release.outputs.bump }}
+          MERGE: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          VERSION="${{ steps.bump.outputs.version }}"
-          git add Cargo.toml Cargo.lock
-          git commit -m "release: v${VERSION}"
-          git tag -a "v${VERSION}" -m "release: v${VERSION}"
+          set -euo pipefail
+          target="$MERGE"
+          if [[ "$BUMP" == "true" ]]; then
+            git add Cargo.toml Cargo.lock
+            git commit -m "release: $TAG"
+            target="$(git rev-parse HEAD)"
+          fi
+          git tag -a "$TAG" "$target" -m "release: $TAG"
 
       - name: Push version bump and tag
-        run: git push --follow-tags origin main
+        if: steps.release.outputs.reuse != 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BUMP: ${{ steps.release.outputs.bump }}
+        run: |
+          set -euo pipefail
+          # One atomic push: the release commit and its tag land together or not at all.
+          if [[ "$BUMP" == "true" ]]; then
+            git push --atomic origin main "refs/tags/$TAG"
+          else
+            git push origin "refs/tags/$TAG"
+          fi
 
   # ── 2. Publish crates to crates.io ────────────────────────────────────
   # Published in dependency order. jisuno-platform and jisuno-ui are
@@ -315,12 +388,13 @@ jobs:
           ruby -c dist/jisuno.rb
           cat dist/jisuno.rb
 
-      - name: Warn if the app is unsigned
-        if: env.SIGNED != 'true'
-        run: echo "::warning::App zip is unsigned; do not copy the cask to the tap until the app is notarized"
-
       - name: Upload cask
+        if: env.SIGNED == 'true'
         run: gh release upload "$TAG" dist/jisuno.rb --clobber
+
+      - name: Skip cask upload if the app is unsigned
+        if: env.SIGNED != 'true'
+        run: echo "::warning::App zip is unsigned or not notarized; jisuno.rb was rendered but not uploaded. Add the signing secrets and re-run the workflow to publish it."
 
   # ── 7. Aggregate SHA256SUMS ───────────────────────────────────────────
   checksums:

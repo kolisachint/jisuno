@@ -152,15 +152,17 @@ Parakeet is unconditional. The whisper backend was dropped.
 ### Flow (do NOT bump versions or tag by hand)
 
 **Never edit `version = "…"` in `Cargo.toml` inside a feature PR.** The release
-workflow is the sole owner of the version: it computes the next version from the
-latest `v*` git tag plus the PR's `cargo:<bump>` label, then rewrites the
-manifest. A manual bump is at best ignored and at worst confusing (it can cause
-a skipped version number). Leave the version untouched and just apply the label.
+workflow is the sole owner of the version: it takes the base from the highest
+`v*` git tag, applies the PR's `cargo:<bump>` label, then rewrites the manifest.
+A manual bump is at best ignored and at worst confusing (it can cause a skipped
+version number). Leave the version untouched and just apply the label.
 
-1. `/pr <bump>` opens a PR labeled `cargo:<bump>`.
-2. On merge, `release.yml` derives the next version from the latest `v*` tag,
-   bumps `Cargo.toml`, updates `Cargo.lock`, commits `release: v<version>`,
-   tags `v<version>`, and pushes `main`.
+1. `/pr <bump>` creates the `cargo:<bump>` label if missing and opens a PR with it.
+2. On merge into `main`, `release.yml` picks the version: the highest `v*` tag
+   bumped by the label, or the manifest version when no `v*` tag exists yet
+   (the first release, `v0.1.0`). It bumps `Cargo.toml` and `Cargo.lock`,
+   commits `release: v<version>` and tags it, in one atomic push. A re-run
+   reuses the tag and pushes nothing.
 3. The same workflow then publishes `jisuno-logic`, `jisuno-audio`, `jisuno-asr`,
    `jisuno` to crates.io in dependency order (skipping a
    version already on the index) and builds + attaches binaries for macOS
@@ -168,7 +170,8 @@ a skipped version number). Leave the version untouched and just apply the label.
    the GitHub release.
 
 Secrets required: `CRATES_IO_TOKEN` (crates.io publish). `GITHUB_TOKEN` is
-provided automatically.
+provided automatically; if `main` is protected, set `RELEASE_TOKEN` (see
+`ci/README.md`).
 
 Manual fallback (only if asked): `git tag vX.Y.Z && git push origin vX.Y.Z`.
 

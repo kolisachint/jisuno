@@ -43,6 +43,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{ActivationPolicy, App, AsyncApp};
 use jisuno_asr::setup::Model as AsrModel;
+use jisuno_logic::embedded;
 use jisuno_logic::hold::{CapturedKey, HoldKind, HoldMachine, Timing};
 use jisuno_logic::keybindings::{self, Command, Key, Keybindings};
 use jisuno_logic::settings::{self, ConfigDir, LastGood, Settings};
@@ -53,7 +54,7 @@ use jisuno_platform::{
 };
 use jisuno_ui::hud_model::HudState as UiHud;
 
-use crate::app::config::{embedded_app_files, read_file, stamp};
+use crate::app::config::{read_file, stamp};
 use crate::app::model::{model_id, ModelState};
 use crate::app::state::{AppState, Holder, TICK_MS};
 use crate::app::worker::worker_main;
@@ -127,7 +128,7 @@ pub fn run(opts: AppOptions) {
     };
     // First run is a missing settings.json *before* the defaults are written.
     let first_run = !dir.settings_path().exists();
-    match dir.ensure_first_run(&embedded_app_files()) {
+    match dir.ensure_first_run(&embedded::first_run_files()) {
         Ok(written) => {
             for path in written {
                 stamp(start, &format!("wrote {}", path.display()));
@@ -144,10 +145,7 @@ pub fn run(opts: AppOptions) {
         last_error: None,
     };
     let mut bindings_holder = Holder {
-        current: keybindings::parse(include_str!(
-            "../../../jisuno-logic/defaults/keybindings.json"
-        ))
-        .unwrap_or_else(|e| {
+        current: keybindings::parse(embedded::KEYBINDINGS_DEFAULTS).unwrap_or_else(|e| {
             eprintln!("jisuno app: embedded keybindings invalid: {e:?}");
             std::process::exit(1);
         }),
