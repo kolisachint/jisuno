@@ -28,9 +28,11 @@ use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
 use super::socket::SocketSnapshot;
 use super::model::{ActiveDownload, DownloadEvent};
-use super::windows::PopoverHandle;
+use super::windows::{PopoverHandle, SettingsHandle};
 use super::worker::{FromWorker, ToWorker};
+use jisuno_logic::keybindings::{Command as KeyCommand, When as KeyWhen};
 use jisuno_ui::popover_model::PopoverIntent;
+use jisuno_ui::settings_model::SettingsIntent;
 
 /// Last-good holder with show-once errors, keyed by message. `LastGood` in
 /// `jisuno-logic` fixes its error type to the settings diagnostic, so the
@@ -122,6 +124,13 @@ pub(crate) struct AppState {
     pub(crate) download: Option<ActiveDownload>,
     pub(crate) download_tx: mpsc::Sender<DownloadEvent>,
     pub(crate) download_rx: mpsc::Receiver<DownloadEvent>,
+    /// Keybinding recording: the Settings Keybindings pane is waiting for
+    /// the next chord/hold (Esc cancels). While set, the tap runs in
+    /// capture mode and forwards keys to `feed_recorded_key`.
+    pub(crate) key_capturing: Option<(KeyCommand, Option<KeyWhen>)>,
+    pub(crate) settings_win: Option<SettingsHandle>,
+    pub(crate) settings_tx: mpsc::Sender<SettingsIntent>,
+    pub(crate) settings_rx: mpsc::Receiver<SettingsIntent>,
     pub(crate) popover: Option<PopoverHandle>,
     pub(crate) popover_toast: Option<(String, Instant)>,
     pub(crate) popover_tx: mpsc::Sender<PopoverIntent>,

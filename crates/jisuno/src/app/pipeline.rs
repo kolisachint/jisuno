@@ -36,6 +36,7 @@ impl AppState {
         self.drain_menu(cx);
         self.drain_download();
         self.drain_popover(cx);
+        self.drain_settings(cx);
         self.drain_tap(cx);
         self.drain_worker(cx);
         self.drain_hook_requests(cx);
@@ -56,6 +57,7 @@ impl AppState {
         self.refresh_hud_level(cx);
         self.refresh_chrome();
         self.poll_popover(cx);
+        self.poll_settings(cx);
         if let Some((down, up, sent)) = self.debug_hold {
             let now = Instant::now();
             if !sent && now >= down {
@@ -91,7 +93,7 @@ impl AppState {
         while let Ok(action) = self.menu_rx.try_recv() {
             match action {
                 MenuAction::TogglePopover => self.toggle_popover(cx),
-                MenuAction::OpenSettings => self.log("settings window comes later"),
+                MenuAction::OpenSettings => self.open_settings(cx),
                 MenuAction::WarmModel => self.start_load(cx, "menu"),
                 MenuAction::UnloadModel => self.unload_model("menu"),
                 MenuAction::OpenPane(pane) => {
@@ -167,7 +169,7 @@ impl AppState {
             }
             Some(Command::Warm) => self.start_load(cx, "warm key"),
             Some(Command::Unload) => self.unload_model("unload key"),
-            Some(Command::Settings) => self.log("settings window comes later"),
+            Some(Command::Settings) => self.open_settings(cx),
             Some(Command::Menu) => self.toggle_popover(cx),
             Some(command) => self.log(&format!("chord for {command:?} — no app action yet")),
             None => {}
