@@ -14,11 +14,7 @@ also builds on Linux.
 
 ## Homebrew
 
-```sh
-brew install --cask jisuno
-```
-
-The cask downloads the release zip from GitHub.
+There is no Homebrew tap yet. Signed releases attach the cask file (`jisuno.rb`), but install from the release zip above.
 
 ## Command-line tool only
 
@@ -49,7 +45,7 @@ Signing and notarization are in `packaging/sign-notarize.sh`. Build and debug de
 
 ## Updates
 
-Jisuno does not check for updates. To update, run `brew upgrade` or download the new zip.
+Jisuno does not check for updates. To update, download the new zip from Releases.
 
 ## First run
 

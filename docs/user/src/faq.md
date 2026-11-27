@@ -126,7 +126,7 @@ An unsigned build is blocked by Gatekeeper. Open **System Settings → Privacy &
 Anyway**. See [Install](install.md).
 
 **How do I update?**
-Run `brew upgrade --cask jisuno`, or download the new zip.
+Download the new zip from Releases. Jisuno does not check for updates.
 
 **How do I uninstall it completely?**
 Turn off **Launch at login** in Settings → General first. Then delete `Jisuno.app` and these folders:

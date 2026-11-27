@@ -15,7 +15,7 @@ Status: v0.1, pre-release. Builds are unsigned unless a release says otherwise.
 **Menu bar app (macOS 13 or later):**
 
 - Download the Jisuno zip from [Releases](../../releases), unzip it, and move `Jisuno.app` to `/Applications`.
-- Or: `brew install --cask jisuno`.
+- There is no Homebrew tap yet. The cask file (`jisuno.rb`) is attached to signed releases; install from the zip.
 
 **Command line only:**
 
