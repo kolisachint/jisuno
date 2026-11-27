@@ -319,10 +319,14 @@ impl AppState {
         frontmost: Option<String>,
     ) {
         use Resolution as R;
+        // The machine pairs replies by id: if the transcribe timeout already
+        // fired, it ignores the reply — drop the plan/result instead of
+        // running or showing anything stale. Recent keeps the utterance
+        // either way; it is host history, not machine state.
         match self.voice_commands().resolve(&text, frontmost.as_deref()) {
             R::Run(plan) => {
                 self.pending_plan = Some(plan.clone());
-                self.input(
+                if !self.input_checked(
                     cx,
                     Input::CommandResolved {
                         needs_confirm: false,
@@ -330,11 +334,14 @@ impl AppState {
                         id,
                     },
                     "command resolved",
-                );
+                ) {
+                    self.log(&format!("stale command {id} (machine moved on) — dropped"));
+                    self.pending_plan = None;
+                }
             }
             R::Confirm(plan) => {
                 self.pending_plan = Some(plan.clone());
-                self.input(
+                if !self.input_checked(
                     cx,
                     Input::CommandResolved {
                         needs_confirm: true,
@@ -342,31 +349,46 @@ impl AppState {
                         id,
                     },
                     "command resolved (confirm)",
-                );
+                ) {
+                    self.log(&format!("stale command {id} (machine moved on) — dropped"));
+                    self.pending_plan = None;
+                }
             }
             R::DidYouMean(copy) => {
-                self.input(cx, Input::Finished { hud: None, id }, "finished (no match)");
-                self.push_recent(text.clone(), Some("failed".to_string()));
-                let suggestion = extract_suggestion(&copy).unwrap_or(copy);
-                self.show_ephemeral(cx, UiHud::NoMatch { suggestion }, "no match");
+                if self.input_checked(cx, Input::Finished { hud: None, id }, "finished (no match)")
+                {
+                    self.push_recent(text.clone(), Some("failed".to_string()));
+                    let suggestion = extract_suggestion(&copy).unwrap_or(copy);
+                    self.show_ephemeral(cx, UiHud::NoMatch { suggestion }, "no match");
+                } else {
+                    self.push_recent(text.clone(), Some("failed".to_string()));
+                }
             }
             R::NoMatch { hud } => {
-                self.input(cx, Input::Finished { hud: None, id }, "finished (no match)");
                 self.log(&format!("{hud} for {}", text_summary(&text)));
                 self.push_recent(text.clone(), Some("failed".to_string()));
-                self.show_ephemeral(cx, UiHud::NoCommandMatched, "no command matched");
+                if self.input_checked(cx, Input::Finished { hud: None, id }, "finished (no match)")
+                {
+                    self.show_ephemeral(cx, UiHud::NoCommandMatched, "no command matched");
+                }
             }
             R::Failed { hud } => {
-                self.input(
-                    cx,
-                    Input::Finished { hud: None, id },
-                    "finished (resolve failed)",
-                );
-                // Unreachable with a validated config: log + Recent + HUD.
+                // Unreachable with a validated config: log + Recent either
+                // way, HUD only while the machine is still waiting.
                 self.log(&hud);
                 self.push_recent(text.clone(), Some("failed".to_string()));
                 let (label, reason) = split_resolve_failed(&hud);
-                self.show_ephemeral(cx, UiHud::ResolveFailed { label, reason }, "resolve failed");
+                if self.input_checked(
+                    cx,
+                    Input::Finished { hud: None, id },
+                    "finished (resolve failed)",
+                ) {
+                    self.show_ephemeral(
+                        cx,
+                        UiHud::ResolveFailed { label, reason },
+                        "resolve failed",
+                    );
+                }
             }
         }
     }

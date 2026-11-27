@@ -900,21 +900,30 @@ impl AppState {
         self.last_active = Instant::now();
         match pending.mode {
             Mode::Dictate => {
+                // Probe the machine first: if the transcribe timeout already
+                // fired (or the utterance moved on), the reply is ignored —
+                // never insert stale text. Acceptance releases the machine,
+                // so the text below needs no second feed.
+                if !self.input_checked(
+                    cx,
+                    Input::TranscriptReady {
+                        text: String::new(),
+                        id,
+                    },
+                    "transcript ready",
+                ) {
+                    self.log(&format!(
+                        "stale transcript {id} (machine moved on) — kept in Recent"
+                    ));
+                    self.push_recent(text, Some("not inserted".to_string()));
+                    return;
+                }
                 if text.trim().is_empty() {
-                    self.input(cx, Input::Finished { hud: None, id }, "finished (empty)");
                     return;
                 }
                 if pending.target.is_none() {
                     self.log("focus lost: text in Recent");
                     self.push_recent(text.clone(), Some("not inserted".to_string()));
-                    self.input(
-                        cx,
-                        Input::TranscriptReady {
-                            text: String::new(),
-                            id,
-                        },
-                        "transcript ready (no target)",
-                    );
                     self.show_ephemeral(cx, UiHud::FocusLost, "insert failed");
                     return;
                 }
@@ -923,7 +932,6 @@ impl AppState {
                     Ok(()) => {
                         let words = text.split_whitespace().count();
                         self.push_recent(text.clone(), None);
-                        self.input(cx, Input::TranscriptReady { text, id }, "transcript ready");
                         let latency = self.show_latency.then_some(key_up_ms as u64);
                         self.show_ephemeral(
                             cx,
@@ -935,14 +943,6 @@ impl AppState {
                         );
                     }
                     Err(kind) => {
-                        self.input(
-                            cx,
-                            Input::TranscriptReady {
-                                text: String::new(),
-                                id,
-                            },
-                            "transcript ready (insert failed)",
-                        );
                         let hud = match kind {
                             InsertFailure::FocusLost => UiHud::FocusLost,
                             InsertFailure::Blocked => UiHud::InsertBlocked,

@@ -360,100 +360,151 @@ impl AppState {
         }
     }
 
+    /// The worker thread is gone (channel disconnect): forget the load and
+    /// resolve any pending transcribe as finished-with-error, like a crash.
+    /// Quiet once handled — the disconnect recurs every tick until a
+    /// respawn replaces the channel.
+    pub(crate) fn on_worker_disconnected(&mut self, cx: &mut App) {
+        self.clear_stream();
+        self.child_rss_mb = None;
+        self.set_socket_rss(None);
+        if self.model_state != ModelState::Unloaded {
+            self.model_state = ModelState::Unloaded;
+            self.model_gen = self.model_gen.wrapping_add(1);
+            self.machine
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_model_warm(false);
+            self.log("model worker thread exited");
+        }
+        if let Some(pending) = self.pending.take() {
+            let id = pending.id;
+            self.input(
+                cx,
+                Input::Finished { hud: None, id },
+                "finished (worker gone)",
+            );
+            if !self.worker_crash_shown {
+                self.worker_crash_shown = true;
+                self.show_ephemeral(
+                    cx,
+                    UiHud::ConfigError {
+                        location: "transcribe".to_string(),
+                        message: "model worker exited · restarts on next hold".to_string(),
+                    },
+                    "worker gone",
+                );
+            }
+        }
+    }
+
     pub(crate) fn drain_worker(&mut self, cx: &mut App) {
-        while let Ok(msg) = self.from_worker.try_recv() {
-            match msg {
-                FromWorker::Warm {
-                    gen,
-                    load_ms,
-                    child_rss_mb,
-                } => {
-                    if gen != self.model_gen {
-                        continue;
-                    }
-                    self.model_state = ModelState::Warm;
-                    self.last_active = Instant::now();
-                    self.machine
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .handle(Input::ModelWarm, self.now_ms());
-                    self.child_rss_mb = Some(child_rss_mb);
-                    self.set_socket_rss(Some(child_rss_mb));
-                    self.worker_crash_shown = false;
-                    self.log(&format!(
-                        "model warm (load {load_ms} ms, child {child_rss_mb} MB)"
-                    ));
-                    self.flush_cold_stream();
-                    if !self.mic_open && self.pending.is_none() {
-                        self.show_ephemeral(cx, UiHud::ModelReady, "model ready");
-                    }
+        loop {
+            match self.from_worker.try_recv() {
+                Ok(msg) => self.handle_worker_msg(cx, msg),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.on_worker_disconnected(cx);
+                    break;
                 }
-                FromWorker::LoadFailed { gen, err } => {
-                    if gen != self.model_gen {
-                        continue;
-                    }
-                    self.model_state = ModelState::Failed;
-                    self.machine
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .handle(Input::LoadFailed, self.now_ms());
-                    self.log(&format!("model load failed: {err}"));
+            }
+        }
+    }
+
+    pub(crate) fn handle_worker_msg(&mut self, cx: &mut App, msg: FromWorker) {
+        match msg {
+            FromWorker::Warm {
+                gen,
+                load_ms,
+                child_rss_mb,
+            } => {
+                if gen != self.model_gen {
+                    return;
                 }
-                FromWorker::Partial { stream, text } => {
-                    self.partial_in_flight = false;
-                    if self.settings.partials && self.stream == Some(stream) && self.mic_open {
-                        let tail = tail_text(text.trim(), PARTIAL_TAIL_CHARS).to_string();
-                        if !tail.is_empty() {
-                            self.partial_text = Some(tail.clone());
-                            if let Some(listening) = &mut self.listening {
-                                listening.partial = Some(tail.clone());
-                            }
-                            self.log(&format!("partial: {}", text_summary(&tail)));
-                            self.refresh_hud_now(cx);
+                self.model_state = ModelState::Warm;
+                self.last_active = Instant::now();
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .handle(Input::ModelWarm, self.now_ms());
+                self.child_rss_mb = Some(child_rss_mb);
+                self.set_socket_rss(Some(child_rss_mb));
+                self.worker_crash_shown = false;
+                self.log(&format!(
+                    "model warm (load {load_ms} ms, child {child_rss_mb} MB)"
+                ));
+                self.flush_cold_stream();
+                if !self.mic_open && self.pending.is_none() {
+                    self.show_ephemeral(cx, UiHud::ModelReady, "model ready");
+                }
+            }
+            FromWorker::LoadFailed { gen, err } => {
+                if gen != self.model_gen {
+                    return;
+                }
+                self.model_state = ModelState::Failed;
+                self.machine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .handle(Input::LoadFailed, self.now_ms());
+                self.log(&format!("model load failed: {err}"));
+            }
+            FromWorker::Partial { stream, text } => {
+                self.partial_in_flight = false;
+                if self.settings.partials && self.stream == Some(stream) && self.mic_open {
+                    let tail = tail_text(text.trim(), PARTIAL_TAIL_CHARS).to_string();
+                    if !tail.is_empty() {
+                        self.partial_text = Some(tail.clone());
+                        if let Some(listening) = &mut self.listening {
+                            listening.partial = Some(tail.clone());
                         }
+                        self.log(&format!("partial: {}", text_summary(&tail)));
+                        self.refresh_hud_now(cx);
                     }
                 }
-                FromWorker::PartialFailed { stream } => {
-                    if self.stream == Some(stream) {
-                        self.partial_in_flight = false;
-                    }
+            }
+            FromWorker::PartialFailed { stream } => {
+                if self.stream == Some(stream) {
+                    self.partial_in_flight = false;
                 }
-                FromWorker::Transcript {
-                    id,
-                    text,
-                    decode_ms,
-                    child_rss_mb,
-                } => {
-                    self.on_transcript(cx, id, text, decode_ms, child_rss_mb);
-                    self.set_socket_rss(self.child_rss_mb);
+            }
+            FromWorker::Transcript {
+                id,
+                text,
+                decode_ms,
+                child_rss_mb,
+            } => {
+                self.on_transcript(cx, id, text, decode_ms, child_rss_mb);
+                self.set_socket_rss(self.child_rss_mb);
+            }
+            FromWorker::NotReady { id } => {
+                self.log(&format!("worker not ready for {id}"));
+                self.clear_stream();
+                if self.pending.take().is_some_and(|pending| pending.id == id)
+                    && self.input_checked(
+                        cx,
+                        Input::Finished { hud: None, id },
+                        "finished (not ready)",
+                    )
+                {
+                    self.show_ephemeral(cx, UiHud::ModelMissing, "model not ready");
                 }
-                FromWorker::NotReady { id } => {
-                    self.log(&format!("worker not ready for {id}"));
-                    self.clear_stream();
-                    if self.pending.take().is_some() {
-                        self.input(
-                            cx,
-                            Input::Finished { hud: None, id },
-                            "finished (not ready)",
-                        );
-                        self.show_ephemeral(cx, UiHud::ModelMissing, "model not ready");
-                    }
+            }
+            FromWorker::PendingFailed { id, err } => {
+                self.log(&format!("transcribe {id} failed: {err}"));
+                self.clear_stream();
+                if self.pending.take().is_some_and(|pending| pending.id == id)
+                    && self.input_checked(
+                        cx,
+                        Input::Finished { hud: None, id },
+                        "finished (decode failed)",
+                    )
+                {
+                    self.show_ephemeral(cx, UiHud::ModelMissing, "decode failed");
                 }
-                FromWorker::PendingFailed { id, err } => {
-                    self.log(&format!("transcribe {id} failed: {err}"));
-                    self.clear_stream();
-                    if self.pending.take().is_some() {
-                        self.input(
-                            cx,
-                            Input::Finished { hud: None, id },
-                            "finished (decode failed)",
-                        );
-                        self.show_ephemeral(cx, UiHud::ModelMissing, "decode failed");
-                    }
-                }
-                FromWorker::Crashed { err } => {
-                    self.on_worker_crashed(cx, &err);
-                }
+            }
+            FromWorker::Crashed { err } => {
+                self.on_worker_crashed(cx, &err);
             }
         }
     }

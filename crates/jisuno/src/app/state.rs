@@ -238,6 +238,23 @@ impl AppState {
         self.exec_effects(cx, effects);
     }
 
+    /// Feed the machine and execute the effects, reporting whether the
+    /// machine accepted the input (non-empty effects). A reply the machine
+    /// ignores — id mismatch, or the transcribe timeout already fired —
+    /// must not drive host action: no stale insert, no stale command run.
+    pub(crate) fn input_checked(&mut self, cx: &mut App, ev: Input, tag: &str) -> bool {
+        let now = self.now_ms();
+        let effects = self
+            .machine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .handle(ev, now);
+        self.log(&format!("hold {tag} -> {} effect(s)", effects.len()));
+        let accepted = !effects.is_empty();
+        self.exec_effects(cx, effects);
+        accepted
+    }
+
     pub(crate) fn now_ms(&self) -> u64 {
         self.start.elapsed().as_millis() as u64
     }
