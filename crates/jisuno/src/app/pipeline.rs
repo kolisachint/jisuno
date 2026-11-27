@@ -9,6 +9,7 @@ use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait};
 use gpui::App;
 use jisuno_asr::setup::Model as AsrModel;
+use jisuno_audio::tones::{self, Tone};
 use jisuno_logic::hold::{CapturedKey, Effect, HoldKind, Input, Mode};
 use jisuno_logic::keybindings::{Command, Key};
 use jisuno_logic::settings::{self};
@@ -455,6 +456,11 @@ impl AppState {
         // NB: the raw drain below (no VAD, no machine input) — never the
         // effect-executing `drain_mic`, which would re-enter through
         // CloseMic while an outer chunk loop is still iterating.
+        if discard && self.listening.is_some() {
+            // A discard while the HUD shows a hold (Esc, other key): the
+            // cancel cue. A tap (no HUD yet) is silent.
+            self.play_tone(Tone::Cancel);
+        }
         if discard {
             // Tap / Esc / other-key: drop the utterance without decoding.
             self.cancel_stream();
@@ -636,6 +642,14 @@ impl AppState {
         }
     }
 
+    /// Start, stop or cancel cue (`settings.json` `sounds`). Non-blocking:
+    /// playback runs on its own thread.
+    pub(crate) fn play_tone(&self, tone: Tone) {
+        if self.settings.sounds {
+            tones::play(tone);
+        }
+    }
+
     /// Resolve the Bluetooth / missing-device notes for this utterance (H16/H17).
     pub(crate) fn resolve_audio_notes(&mut self) {
         self.bluetooth_now = false;
@@ -676,6 +690,9 @@ impl AppState {
                     if self.confirming.take().is_some() {
                         self.pending_plan = None;
                         let expired = !std::mem::replace(&mut self.esc_cancel, false);
+                        if !expired {
+                            self.play_tone(Tone::Cancel);
+                        }
                         self.hide_hud(cx);
                         let state = if expired {
                             UiHud::ConfirmExpired
@@ -752,6 +769,11 @@ impl AppState {
         match state {
             LogicHud::Listening(mode) => {
                 let dictate = mode == Mode::Dictate;
+                self.play_tone(if dictate {
+                    Tone::StartDictate
+                } else {
+                    Tone::StartCommand
+                });
                 self.listening = Some(ListeningUi {
                     dictate,
                     hands_free: false,
@@ -768,6 +790,7 @@ impl AppState {
                 self.open_listening_hud(cx);
             }
             LogicHud::HandsFree => {
+                self.play_tone(Tone::StartDictate);
                 self.listening = Some(ListeningUi {
                     dictate: true,
                     hands_free: true,
@@ -788,6 +811,11 @@ impl AppState {
     /// the buffered clip behind the in-flight load (cold, or wav-debug).
     pub(crate) fn begin_transcribe(&mut self, cx: &mut App, mode: Mode, id: u64) {
         let key_up = Instant::now();
+        self.play_tone(if mode == Mode::Dictate {
+            Tone::StopDictate
+        } else {
+            Tone::StopCommand
+        });
         self.pending = Some(PendingTranscribe {
             id,
             mode,
