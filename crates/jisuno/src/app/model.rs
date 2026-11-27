@@ -236,7 +236,7 @@ impl AppState {
         let Some(stream) = self.stream else {
             return;
         };
-        if self.debug_wav.is_some() || !self.mic_open || self.stream_begun {
+        if !self.mic_open || self.stream_begun {
             return;
         }
         if self.pending.is_some() {
@@ -248,7 +248,18 @@ impl AppState {
             self.log("model worker gone — stream dropped");
             return;
         }
-        let pcm16 = jisuno_audio::audio::resample_to_16k(&self.buffer, self.mic_rate);
+        // Debug WAV is already 16 kHz; the mic buffer needs one-shot
+        // resampling (the streaming resampler restarts fresh after this).
+        let pcm16 = if self.debug_wav.is_some() {
+            std::mem::take(&mut self.buffer)
+        } else {
+            let pcm16 = jisuno_audio::audio::resample_to_16k(&self.buffer, self.mic_rate);
+            self.resampler = Some(jisuno_audio::audio::StreamingResampler::new(
+                self.mic_rate,
+                jisuno_audio::audio::TARGET_RATE,
+            ));
+            pcm16
+        };
         if self
             .to_worker
             .send(ToWorker::Push { stream, pcm: pcm16 })
@@ -350,11 +361,15 @@ impl AppState {
                 }
                 FromWorker::Partial { stream, text } => {
                     self.partial_in_flight = false;
-                    if self.stream == Some(stream) && self.mic_open {
+                    if self.settings.partials && self.stream == Some(stream) && self.mic_open {
                         let tail = tail_text(text.trim(), PARTIAL_TAIL_CHARS).to_string();
                         if !tail.is_empty() {
                             self.partial_text = Some(tail.clone());
+                            if let Some(listening) = &mut self.listening {
+                                listening.partial = Some(tail.clone());
+                            }
                             self.log(&format!("partial: {tail}"));
+                            self.refresh_hud_now(cx);
                         }
                     }
                 }

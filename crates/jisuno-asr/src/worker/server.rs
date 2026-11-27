@@ -13,32 +13,144 @@ use anyhow::{anyhow, Context};
 
 use super::frame::*;
 use crate::setup::Model;
-use crate::transcribe::Transcriber;
+use crate::transcribe::{ParakeetStreamingSession, StreamConfig, StreamingTranscriber};
 
-/// Something that turns 16 kHz mono f32 PCM into text. The real backend
-/// owns the Parakeet sessions; tests use [`FakeBackend`].
+/// Something that turns 16 kHz mono f32 PCM into text, streaming while the
+/// hold is down and full-clip for one-shots. The real backend owns one
+/// [`ParakeetStreamingSession`] — one model in memory, shared by the
+/// streaming utterance path and TRANSCRIBE (which runs a full-clip decode
+/// on the same worker sessions). Tests use [`FakeBackend`].
 trait Backend {
+    /// Start (or restart) utterance `id`, dropping any previous audio.
+    fn begin(&mut self, id: u64);
+    /// Append audio to `id`. Errors on unknown utterances.
+    fn push(&mut self, id: u64, samples: &[f32]) -> anyhow::Result<()>;
+    /// Joined finished segments so far (no re-decode). Errors on unknown.
+    fn partial(&mut self, id: u64) -> anyhow::Result<String>;
+    /// Decode the tail and return the full transcript. Errors on unknown.
+    fn finish(&mut self, id: u64) -> anyhow::Result<String>;
+    /// Drop `id` without decoding.
+    fn cancel(&mut self, id: u64);
+    /// Full-clip one-shot decode (TRANSCRIBE path).
     fn transcribe(&mut self, pcm: &[f32]) -> anyhow::Result<String>;
 }
 
-/// Parakeet backend: one full-clip decode, segments joined with spaces.
-struct ParakeetBackend {
-    inner: Box<dyn Transcriber>,
+/// Parakeet backend: one streaming session serves both the utterance path
+/// (pause-split segments decoded on its background thread, `finish` only
+/// decodes the tail) and TRANSCRIBE (full-clip on the same sessions).
+/// One capture at a time: `begin` resets the session for the new id.
+struct StreamingBackend {
+    inner: ParakeetStreamingSession,
+    active: Option<u64>,
 }
 
-impl Backend for ParakeetBackend {
+impl StreamingBackend {
+    fn load(dir: &std::path::Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            inner: ParakeetStreamingSession::load(dir, StreamConfig::default())?,
+            active: None,
+        })
+    }
+
+    fn check(&self, id: u64) -> anyhow::Result<()> {
+        if self.active == Some(id) {
+            Ok(())
+        } else {
+            Err(anyhow!("unknown utterance {id}"))
+        }
+    }
+}
+
+impl Backend for StreamingBackend {
+    fn begin(&mut self, id: u64) {
+        self.inner.reset();
+        self.active = Some(id);
+    }
+
+    fn push(&mut self, id: u64, samples: &[f32]) -> anyhow::Result<()> {
+        self.check(id)?;
+        self.inner.push(samples)
+    }
+
+    fn partial(&mut self, id: u64) -> anyhow::Result<String> {
+        self.check(id)?;
+        Ok(self.inner.partial_drained().unwrap_or_default())
+    }
+
+    fn finish(&mut self, id: u64) -> anyhow::Result<String> {
+        self.check(id)?;
+        let text = self.inner.finish()?;
+        self.inner.reset();
+        self.active = None;
+        Ok(text)
+    }
+
+    fn cancel(&mut self, id: u64) {
+        if self.active == Some(id) {
+            self.inner.reset();
+            self.active = None;
+        }
+    }
+
     fn transcribe(&mut self, pcm: &[f32]) -> anyhow::Result<String> {
-        let mut parts = Vec::new();
-        self.inner
-            .transcribe(pcm, &mut |s: &str| parts.push(s.to_string()))?;
-        Ok(parts.join(" ").trim().to_string())
+        self.inner.transcribe_full(pcm)
     }
 }
 
 /// Test backend: text is the sample count. Deterministic, needs no model.
-struct FakeBackend;
+/// Buffers per utterance like the real path; `partial` reports the buffered
+/// count (the real path reports joined finished segments instead).
+struct FakeBackend {
+    buffers: HashMap<u64, Vec<f32>>,
+}
+
+impl FakeBackend {
+    fn new() -> Self {
+        Self {
+            buffers: HashMap::new(),
+        }
+    }
+
+    fn check(&self, id: u64) -> anyhow::Result<()> {
+        if self.buffers.contains_key(&id) {
+            Ok(())
+        } else {
+            Err(anyhow!("unknown utterance {id}"))
+        }
+    }
+}
 
 impl Backend for FakeBackend {
+    fn begin(&mut self, id: u64) {
+        self.buffers.insert(id, Vec::new());
+    }
+
+    fn push(&mut self, id: u64, samples: &[f32]) -> anyhow::Result<()> {
+        match self.buffers.get_mut(&id) {
+            Some(buf) => {
+                buf.extend_from_slice(samples);
+                Ok(())
+            }
+            None => Err(anyhow!("unknown utterance {id}")),
+        }
+    }
+
+    fn partial(&mut self, id: u64) -> anyhow::Result<String> {
+        self.check(id)?;
+        Ok(format!("samples={}", self.buffers[&id].len()))
+    }
+
+    fn finish(&mut self, id: u64) -> anyhow::Result<String> {
+        match self.buffers.remove(&id) {
+            Some(buf) => Ok(format!("samples={}", buf.len())),
+            None => Err(anyhow!("unknown utterance {id}")),
+        }
+    }
+
+    fn cancel(&mut self, id: u64) {
+        self.buffers.remove(&id);
+    }
+
     fn transcribe(&mut self, pcm: &[f32]) -> anyhow::Result<String> {
         Ok(format!("samples={}", pcm.len()))
     }
@@ -82,7 +194,6 @@ fn rss_mb() -> u64 {
 struct Server {
     backend: Option<Box<dyn Backend>>,
     model_id: String,
-    utterances: HashMap<u64, Vec<f32>>,
 }
 
 impl Server {
@@ -91,7 +202,6 @@ impl Server {
         Self {
             backend: None,
             model_id: String::new(),
-            utterances: HashMap::new(),
         }
     }
 
@@ -106,13 +216,6 @@ impl Server {
             self.model_id,
             rss_mb()
         )
-    }
-
-    fn decode(&mut self, pcm: &[f32]) -> anyhow::Result<String> {
-        match &mut self.backend {
-            Some(b) => b.transcribe(pcm),
-            None => Err(anyhow!("no model loaded")),
-        }
     }
 }
 
@@ -140,7 +243,7 @@ fn run_loop(input: &mut impl Read, output: &mut impl Write, fake: bool) -> anyho
                     .to_string();
                 let t0 = Instant::now();
                 let loaded: anyhow::Result<Box<dyn Backend>> = if fake {
-                    Ok(Box::new(FakeBackend))
+                    Ok(Box::new(FakeBackend::new()))
                 } else {
                     load_real(&id)
                 };
@@ -163,62 +266,70 @@ fn run_loop(input: &mut impl Read, output: &mut impl Write, fake: bool) -> anyho
             }
             REQ_BEGIN => {
                 let id = decode_id(&payload)?;
-                server.utterances.insert(id, Vec::new());
+                if let Some(b) = server.backend.as_mut() {
+                    b.begin(id);
+                }
             }
             REQ_PUSH => {
                 let (id, samples) = decode_push(&payload)?;
-                match server.utterances.get_mut(&id) {
-                    Some(buf) => buf.extend_from_slice(&samples),
+                match server.backend.as_mut() {
+                    Some(b) => {
+                        if let Err(e) = b.push(id, &samples) {
+                            write_frame(output, REP_ERROR, &encode_id_text(id, &format!("{e:#}")))?;
+                        }
+                    }
                     None => {
-                        write_frame(output, REP_ERROR, &encode_id_text(id, "unknown utterance"))?;
+                        write_frame(output, REP_ERROR, &encode_id_text(id, "no model loaded"))?;
                     }
                 }
             }
             REQ_FINISH => {
                 let id = decode_id(&payload)?;
-                match server.utterances.remove(&id) {
-                    Some(buf) => match server.decode(&buf) {
+                match server.backend.as_mut() {
+                    Some(b) => match b.finish(id) {
                         Ok(text) => write_frame(output, REP_FINAL, &encode_id_text(id, &text))?,
                         Err(e) => {
                             write_frame(output, REP_ERROR, &encode_id_text(id, &format!("{e:#}")))?
                         }
                     },
                     None => {
-                        write_frame(output, REP_ERROR, &encode_id_text(id, "unknown utterance"))?;
+                        write_frame(output, REP_ERROR, &encode_id_text(id, "no model loaded"))?;
                     }
                 }
             }
             REQ_CANCEL => {
                 let id = decode_id(&payload)?;
-                server.utterances.remove(&id);
+                if let Some(b) = server.backend.as_mut() {
+                    b.cancel(id);
+                }
             }
             REQ_PARTIAL => {
+                // Joined finished segments — no re-decode of the audio-so-far.
                 let id = decode_id(&payload)?;
-                match server.utterances.get(&id) {
-                    Some(buf) => {
-                        let snapshot = buf.clone();
-                        match server.decode(&snapshot) {
-                            Ok(text) => {
-                                write_frame(output, REP_PARTIAL, &encode_id_text(id, &text))?
-                            }
-                            Err(e) => write_frame(
-                                output,
-                                REP_ERROR,
-                                &encode_id_text(id, &format!("{e:#}")),
-                            )?,
+                match server.backend.as_mut() {
+                    Some(b) => match b.partial(id) {
+                        Ok(text) => write_frame(output, REP_PARTIAL, &encode_id_text(id, &text))?,
+                        Err(e) => {
+                            write_frame(output, REP_ERROR, &encode_id_text(id, &format!("{e:#}")))?
                         }
-                    }
+                    },
                     None => {
-                        write_frame(output, REP_ERROR, &encode_id_text(id, "unknown utterance"))?;
+                        write_frame(output, REP_ERROR, &encode_id_text(id, "no model loaded"))?;
                     }
                 }
             }
             REQ_TRANSCRIBE => {
+                // Full-clip one-shot on the same sessions as streaming.
                 let samples = decode_samples(&payload)?;
-                match server.decode(&samples) {
-                    Ok(text) => write_frame(output, REP_FINAL, &encode_id_text(0, &text))?,
-                    Err(e) => {
-                        write_frame(output, REP_ERROR, &encode_id_text(0, &format!("{e:#}")))?
+                match server.backend.as_mut() {
+                    Some(b) => match b.transcribe(&samples) {
+                        Ok(text) => write_frame(output, REP_FINAL, &encode_id_text(0, &text))?,
+                        Err(e) => {
+                            write_frame(output, REP_ERROR, &encode_id_text(0, &format!("{e:#}")))?
+                        }
+                    },
+                    None => {
+                        write_frame(output, REP_ERROR, &encode_id_text(0, "no model loaded"))?;
                     }
                 }
             }
@@ -243,8 +354,10 @@ fn run_loop(input: &mut impl Read, output: &mut impl Write, fake: bool) -> anyho
 
 fn load_real(id: &str) -> anyhow::Result<Box<dyn Backend>> {
     let model = Model::parse(id)?;
-    let inner = crate::transcribe::load(model)?;
-    Ok(Box::new(ParakeetBackend { inner }))
+    let dir = model.dir()?;
+    // One model in memory: the streaming session owns the sessions, and
+    // TRANSCRIBE runs full-clip on those same sessions.
+    Ok(Box::new(StreamingBackend::load(&dir)?))
 }
 
 #[cfg(test)]
@@ -375,9 +488,22 @@ mod tests {
     /// Serum helper coverage without stdio: backend + status JSON shapes.
     #[test]
     fn fake_backend_text_is_sample_count() {
-        let mut b = FakeBackend;
+        let mut b = FakeBackend::new();
         assert_eq!(b.transcribe(&[0.0; 160]).unwrap(), "samples=160");
         assert_eq!(b.transcribe(&[]).unwrap(), "samples=0");
+        // Streaming path buffers per utterance; partial reports buffered.
+        b.begin(1);
+        b.push(1, &[0.0; 160]).unwrap();
+        assert_eq!(b.partial(1).unwrap(), "samples=160");
+        b.push(1, &[0.0; 160]).unwrap();
+        assert_eq!(b.finish(1).unwrap(), "samples=320");
+        assert!(b.partial(1).is_err());
+        // Unknown ids and missing backend surface as errors, not panics.
+        assert!(b.push(9, &[0.0]).is_err());
+        assert!(b.finish(9).is_err());
+        b.begin(2);
+        b.cancel(2);
+        assert!(b.finish(2).is_err());
     }
 
     #[test]
@@ -395,8 +521,9 @@ mod tests {
     #[test]
     fn decode_without_model_errors() {
         let mut s = Server::new(true);
-        assert!(s.decode(&[0.0; 8]).is_err());
-        s.backend = Some(Box::new(FakeBackend));
-        assert_eq!(s.decode(&[0.0; 8]).unwrap(), "samples=8");
+        assert!(s.backend.is_none());
+        s.backend = Some(Box::new(FakeBackend::new()));
+        let b = s.backend.as_mut().unwrap();
+        assert_eq!(b.transcribe(&[0.0; 8]).unwrap(), "samples=8");
     }
 }

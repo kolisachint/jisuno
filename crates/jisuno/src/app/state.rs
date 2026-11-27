@@ -79,6 +79,9 @@ pub(crate) struct ListeningUi {
     pub(crate) level: f32,
     pub(crate) loading_since: Option<Instant>,
     pub(crate) countdown_ms: Option<u64>,
+    /// Latest live partial text (H4), `None` before the first words or when
+    /// `settings.partials` is off.
+    pub(crate) partial: Option<String>,
 }
 
 // Read by the popover (comes later); until then entries are logged on push.
@@ -129,6 +132,13 @@ pub(crate) struct AppState {
     pub(crate) last_partial_poll: Instant,
     /// Latest partial text, tail-truncated for the HUD (H4).
     pub(crate) partial_text: Option<String>,
+    /// Incremental 48 kHz -> 16 kHz state for the mic drain (keeps filter
+    /// context across chunks; reset on every open).
+    pub(crate) resampler: Option<jisuno_audio::audio::StreamingResampler>,
+    /// Debug-WAV-as-mic: the whole clip at 16 kHz, fed in 100 ms chunks.
+    pub(crate) debug_pcm: Option<Vec<f32>>,
+    pub(crate) debug_pos: usize,
+    pub(crate) debug_next_at: Option<Instant>,
     /// Helper child RSS in MiB (from the last Warm/Transcript STATUS).
     pub(crate) child_rss_mb: Option<u64>,
     /// The crash HUD has been shown since the last successful Warm.
