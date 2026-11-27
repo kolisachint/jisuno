@@ -42,6 +42,7 @@ impl AppState {
         }
         self.drain_menu(cx);
         self.drain_download();
+        self.drain_bench();
         self.drain_popover(cx);
         self.drain_settings(cx);
         self.drain_welcome(cx);

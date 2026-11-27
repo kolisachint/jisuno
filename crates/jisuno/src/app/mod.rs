@@ -378,6 +378,8 @@ pub fn run(opts: AppOptions) {
         let (download_tx, download_rx) = mpsc::channel();
         let (settings_tx, settings_rx) = mpsc::channel();
         let (welcome_tx, welcome_rx) = mpsc::channel();
+        let (bench_tx, bench_rx) = mpsc::channel();
+        let bench_report = crate::app::windows::load_cached_bench();
         let state = Rc::new(RefCell::new(AppState {
             start,
             machine,
@@ -415,6 +417,11 @@ pub fn run(opts: AppOptions) {
             welcome_win: None,
             welcome_tx,
             welcome_rx,
+            bench_report,
+            bench_error: None,
+            bench_running: false,
+            bench_tx,
+            bench_rx,
             key_capturing: None,
             tap_capture,
             settings_win: None,

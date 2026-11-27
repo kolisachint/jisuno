@@ -28,7 +28,7 @@ use super::command::{CommandDone, HookRequest};
 use super::model::ModelState;
 use super::model::{ActiveDownload, DownloadEvent};
 use super::socket::SocketSnapshot;
-use super::windows::{PopoverHandle, SettingsHandle, WelcomeHandle};
+use super::windows::{BenchEvent, BenchValues, PopoverHandle, SettingsHandle, WelcomeHandle};
 use super::worker::{FromWorker, ToWorker};
 use super::DebugOpen;
 use jisuno_logic::keybindings::{Command as KeyCommand, When as KeyWhen};
@@ -141,6 +141,12 @@ pub(crate) struct AppState {
     pub(crate) welcome_win: Option<WelcomeHandle>,
     pub(crate) welcome_tx: mpsc::Sender<WelcomeIntent>,
     pub(crate) welcome_rx: mpsc::Receiver<WelcomeIntent>,
+    /// Last bench numbers (cache file or a finished run) and run state.
+    pub(crate) bench_report: Option<BenchValues>,
+    pub(crate) bench_error: Option<String>,
+    pub(crate) bench_running: bool,
+    pub(crate) bench_tx: mpsc::Sender<BenchEvent>,
+    pub(crate) bench_rx: mpsc::Receiver<BenchEvent>,
     pub(crate) popover: Option<PopoverHandle>,
     pub(crate) popover_toast: Option<(String, Instant)>,
     pub(crate) popover_tx: mpsc::Sender<PopoverIntent>,

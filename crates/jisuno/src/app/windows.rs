@@ -31,8 +31,8 @@ use jisuno_ui::popover_model::{
 use jisuno_ui::popover_view::{popover_view, PopoverEmit};
 use jisuno_ui::settings_model::{
     command_rows, feed_recorded_key, file_rows, performance_rows, AppearanceModel, AudioModel,
-    GeneralModel, KeybindingRow, ModelId, ModelPaneModel, Pane as SettingsPane, RecordOutcome,
-    SettingsIntent, SettingsModel, WorkspaceRow,
+    GeneralModel, KeybindingRow, ModelId, ModelPaneModel, Pane as SettingsPane, PerfRow,
+    RecordOutcome, SettingsIntent, SettingsModel, WorkspaceRow,
 };
 use jisuno_ui::settings_view::{settings_view, SettingsEmit};
 use jisuno_ui::tokens::{Theme, POPOVER_W};
@@ -392,6 +392,9 @@ impl AppState {
     /// Open Settings, or bring it to the front if it is already open.
     /// ⌃⌥, and the `jisuno.settings` action land here.
     pub(crate) fn open_settings(&mut self, cx: &mut App) {
+        if self.bench_report.is_none() {
+            self.bench_report = load_cached_bench();
+        }
         if let Some(handle) = &self.settings_win {
             let _ = handle.window.update(cx, |_, window, _| {
                 window.activate_window();
@@ -558,10 +561,8 @@ impl AppState {
                 hud_style: t.hud_style.clone(),
                 show_latency: t.show_latency,
             },
-            perf: performance_rows(&[
-                None, None, None, None, None, None, None, None, None, None, None, None,
-            ]),
-            bench_running: false,
+            perf: self.bench_perf_rows(),
+            bench_running: self.bench_running,
             files: file_rows(&dir, &file_errors),
         }
     }
@@ -633,7 +634,7 @@ impl AppState {
             SettingsIntent::WarmModel => self.start_load(cx, "settings"),
             SettingsIntent::UnloadModel => self.unload_model("settings"),
             SettingsIntent::TestMic => self.log("mic level meter comes later"),
-            SettingsIntent::RunBench => self.log("benchmark run comes later"),
+            SettingsIntent::RunBench => self.run_bench(),
         }
     }
 
@@ -1089,6 +1090,222 @@ impl AppState {
             let theme = self.ui_theme(cx);
             if let Some(handle) = self.welcome_win.as_mut() {
                 handle.set_model(cx, fresh, theme);
+            }
+        }
+    }
+}
+
+/// Parsed bench numbers for the Performance pane (§5.2). `None` fields
+/// show `not measured`; gated rows carry `· PASS` / `· FAIL`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct BenchValues {
+    pub(crate) keyup_5s_ms: Option<f64>,
+    pub(crate) flush_ms: Option<f64>,
+    pub(crate) decode_5s_ms: Option<f64>,
+    pub(crate) decode_2s_ms: Option<f64>,
+    pub(crate) decode_15s_ms: Option<f64>,
+    pub(crate) cold_load_ms: Option<f64>,
+    pub(crate) insert_ms: Option<f64>,
+    pub(crate) rss_warm_bytes: Option<u64>,
+    pub(crate) rss_unloaded_bytes: Option<u64>,
+    pub(crate) wer_mean: Option<f64>,
+}
+
+/// Completion reports from the `jisuno-bench` child process.
+pub(crate) enum BenchEvent {
+    Done(String),
+    Failed(String),
+}
+
+fn bench_cache_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join("Library/Caches/jisuno/bench"))
+}
+
+/// Read the newest `*.json` bench report from the cache dir, if any.
+pub(crate) fn load_cached_bench() -> Option<BenchValues> {
+    let dir = bench_cache_dir()?;
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let modified = entry.metadata().and_then(|meta| meta.modified()).ok()?;
+        let replace = newest.as_ref().is_none_or(|(mtime, _)| modified > *mtime);
+        if replace {
+            newest = Some((modified, path));
+        }
+    }
+    let (_, path) = newest?;
+    parse_bench_report(&std::fs::read_to_string(path).ok()?)
+}
+
+fn parse_bench_report(text: &str) -> Option<BenchValues> {
+    let doc: serde_json::Value = serde_json::from_str(text).ok()?;
+    let median = |keys: &[&str]| -> Option<f64> {
+        let mut node = &doc;
+        for key in keys {
+            node = node.get(*key)?;
+        }
+        node.get("median_ms")?.as_f64()
+    };
+    let bytes = |keys: &[&str]| -> Option<u64> {
+        let mut node = &doc;
+        for key in keys {
+            node = node.get(*key)?;
+        }
+        node.as_u64()
+    };
+    Some(BenchValues {
+        keyup_5s_ms: median(&["keyup_5s_ms"]),
+        flush_ms: median(&["flush_ms"]),
+        decode_5s_ms: median(&["decode_5s_ms"]),
+        decode_2s_ms: median(&["decode_2s_ms"]),
+        decode_15s_ms: median(&["decode_15s_ms"]),
+        cold_load_ms: median(&["cold_load_ms"]),
+        insert_ms: median(&["insert_ms"]),
+        rss_warm_bytes: bytes(&["memory", "rss_warm_bytes"]),
+        rss_unloaded_bytes: bytes(&["memory", "rss_unloaded_bytes"]),
+        wer_mean: doc.get("wer_mean").and_then(|value| value.as_f64()),
+    })
+}
+
+fn pass_fail(value: f64, target: f64) -> &'static str {
+    if value <= target {
+        "PASS"
+    } else {
+        "FAIL"
+    }
+}
+
+fn ms_row(value: Option<f64>, target_ms: f64) -> Option<String> {
+    value.map(|v| format!("{v:.0} ms · {}", pass_fail(v, target_ms)))
+}
+
+impl AppState {
+    /// The Performance table: cached/measured numbers with PASS/FAIL on
+    /// the gated rows (§5.2, targets from `jisuno.md` §6/§6.1).
+    pub(crate) fn bench_perf_rows(&self) -> Vec<PerfRow> {
+        let report = self.bench_report.clone().unwrap_or_default();
+        let mut measured: [Option<String>; 12] = Default::default();
+        measured[0] = ms_row(report.keyup_5s_ms, 150.0);
+        measured[1] = ms_row(report.flush_ms, 15.0);
+        measured[2] = ms_row(report.decode_5s_ms, 100.0);
+        measured[4] = ms_row(report.insert_ms, 10.0);
+        measured[6] = match (report.decode_2s_ms, report.decode_15s_ms) {
+            (Some(two), Some(fifteen)) => Some(format!("{two:.0} / {fifteen:.0} ms")),
+            (Some(two), None) => Some(format!("{two:.0} ms (2 s)")),
+            (None, Some(fifteen)) => Some(format!("{fifteen:.0} ms (15 s)")),
+            (None, None) => None,
+        };
+        measured[7] = report
+            .cold_load_ms
+            .map(|v| format!("{:.2} s · {}", v / 1000.0, pass_fail(v, 1500.0)));
+        measured[8] = report.rss_warm_bytes.map(|bytes| {
+            let gb = bytes as f64 / 1e9;
+            format!("{gb:.2} GB · {}", pass_fail(bytes as f64, 1e9))
+        });
+        measured[9] = report.rss_unloaded_bytes.map(|bytes| {
+            let mb = bytes as f64 / 1e6;
+            format!("{mb:.0} MB · {}", pass_fail(bytes as f64, 60e6))
+        });
+        measured[11] = report.wer_mean.map(|mean| format!("{mean:.3}"));
+        if self.bench_report.is_none() {
+            if let Some(error) = &self.bench_error {
+                measured[0] = Some(error.clone());
+            }
+        }
+        performance_rows(&measured)
+    }
+
+    /// Run `jisuno-bench --json` (the sibling binary) on a thread; the
+    /// JSON lands in the cache dir and the pane picks it up. Without a
+    /// sibling binary the pane says how to measure instead.
+    pub(crate) fn run_bench(&mut self) {
+        if self.bench_running {
+            self.log("benchmark already running");
+            return;
+        }
+        self.bench_running = true;
+        self.bench_error = None;
+        let tx = self.bench_tx.clone();
+        let model = self.model_name.clone();
+        std::thread::spawn(move || {
+            let sibling = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join("jisuno-bench")))
+                .filter(|path| path.is_file());
+            let Some(path) = sibling else {
+                let _ = tx.send(BenchEvent::Failed(
+                    "Run `jisuno-bench --json` to measure".into(),
+                ));
+                return;
+            };
+            let output = std::process::Command::new(&path)
+                .arg("--json")
+                .arg("--model")
+                .arg(&model)
+                .output();
+            match output {
+                Ok(out) if out.status.success() => {
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if serde_json::from_str::<serde_json::Value>(&text).is_err() {
+                        let _ = tx.send(BenchEvent::Failed("benchmark returned bad JSON".into()));
+                        return;
+                    }
+                    if let Some(dir) = bench_cache_dir() {
+                        let _ = std::fs::create_dir_all(&dir);
+                        let epoch = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let _ = std::fs::write(dir.join(format!("bench-{epoch}.json")), &text);
+                    }
+                    let _ = tx.send(BenchEvent::Done(text));
+                }
+                Ok(out) => {
+                    let tail = String::from_utf8_lossy(&out.stderr)
+                        .lines()
+                        .last()
+                        .unwrap_or("benchmark failed")
+                        .to_string();
+                    let _ = tx.send(BenchEvent::Failed(tail));
+                }
+                Err(e) => {
+                    let _ = tx.send(BenchEvent::Failed(format!("benchmark failed: {e:#}")));
+                }
+            }
+        });
+    }
+
+    /// Drain finished benchmark runs into the Performance pane state.
+    pub(crate) fn drain_bench(&mut self) {
+        let mut events = Vec::new();
+        while let Ok(event) = self.bench_rx.try_recv() {
+            events.push(event);
+        }
+        for event in events {
+            match event {
+                BenchEvent::Done(text) => {
+                    self.bench_running = false;
+                    match parse_bench_report(&text) {
+                        Some(values) => {
+                            self.bench_report = Some(values);
+                            self.bench_error = None;
+                            self.log("benchmark finished");
+                        }
+                        None => {
+                            self.bench_error = Some("benchmark returned bad JSON".into());
+                            self.log("benchmark returned bad JSON");
+                        }
+                    }
+                }
+                BenchEvent::Failed(error) => {
+                    self.bench_running = false;
+                    self.bench_error = Some(error.clone());
+                    self.log(&format!("benchmark: {error}"));
+                }
             }
         }
     }
