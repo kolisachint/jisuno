@@ -32,8 +32,9 @@ for large breaking changes.
 - **Homebrew.** Copying `jisuno.rb` to the tap is manual. Check the cask with `brew audit --cask --strict` and
   an install before it goes out.
 - **Secrets.** The names are in `ci/README.md`. Values are never in the repo.
-- **Version source.** The bump reads the workspace version in `Cargo.toml`. Read the current rule in
-  `release.yml` before the first tagged release, since the workflow is changing.
+- **First release.** The first release uses the version already in `Cargo.toml` (`0.1.0`), not a bump. The
+  release workflow is being changed in a separate change, so check `release.yml` before you rely on this.
+- **Version source.** Later releases take the workspace version in `Cargo.toml` and bump it from the label.
 
 ## Local dry run
 
