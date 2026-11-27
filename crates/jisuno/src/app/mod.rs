@@ -117,6 +117,7 @@ impl AppOptions {
 
 pub fn run(opts: AppOptions) {
     let start = Instant::now();
+    config::redirect_stderr_to_log();
 
     let dir = match ConfigDir::resolve() {
         Ok(dir) => dir,

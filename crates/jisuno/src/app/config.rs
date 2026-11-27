@@ -163,6 +163,53 @@ pub(crate) fn stamp(start: Instant, msg: &str) {
     );
 }
 
+/// The log file rotates to `jisuno.log.1` at startup above this size.
+const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// `~/Library/Logs/Jisuno` under `home`. Pure: unit-tested below.
+fn log_dir(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("Library").join("Logs").join("Jisuno")
+}
+
+/// Launched without a terminal (Finder, `open`, login item): send stderr to
+/// `~/Library/Logs/Jisuno/jisuno.log`, appending. A log over 5 MB moves to
+/// `jisuno.log.1` first. A terminal keeps stderr as it is. Best effort: a
+/// failure here leaves stderr where it was.
+pub(crate) fn redirect_stderr_to_log() {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    // SAFETY: a pure query on fd 2.
+    if unsafe { libc::isatty(libc::STDERR_FILENO) } == 1 {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+        return;
+    };
+    let dir = log_dir(std::path::Path::new(&home));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join("jisuno.log");
+    let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES);
+    if too_big {
+        let _ = std::fs::rename(&path, dir.join("jisuno.log.1"));
+    }
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&path)
+    else {
+        return;
+    };
+    // SAFETY: both descriptors are open; dup2 copies the file into fd 2, and
+    // `file` can close afterwards.
+    unsafe {
+        libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+    }
+}
+
 // --- Polls ---
 
 impl AppState {
@@ -605,6 +652,14 @@ mod tests {
     use super::{pending_timing_take, PENDING_DICTATION_LIMIT_S};
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn log_dir_is_under_library_logs() {
+        assert_eq!(
+            super::log_dir(std::path::Path::new("/Users/x")),
+            std::path::PathBuf::from("/Users/x/Library/Logs/Jisuno")
+        );
+    }
 
     /// The tap retry waits the full interval, then is due at and after it.
     #[test]
