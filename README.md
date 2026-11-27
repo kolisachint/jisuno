@@ -124,9 +124,9 @@ validates before it writes (exit `2` and nothing written on error). `model` talk
 over `~/Library/Application Support/jisuno/jisuno.sock` and exits `1` with `Jisuno is not running` when
 the app is down. See the [agents guide](docs/user/src/agents.md).
 
-Benchmark and WER harness: `cargo run --release -p jisuno-bench -- --help` (from a checkout). The
-release app has no benchmark command; its **Run benchmark** button needs a `jisuno-bench` binary next to
-the app, which the bundle does not include.
+Benchmark and WER harness: `cargo run --release -p jisuno-bench -- --help` (from a checkout). The app
+bundle ships `jisuno-bench` next to `jisuno`, so **Run benchmark** in Settings → Performance works in the
+installed app. Results are cached in `~/Library/Caches/jisuno/bench/`.
 
 ## Environment variables
 

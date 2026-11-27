@@ -136,6 +136,13 @@ if [[ -d "$APP/Contents/Frameworks" ]]; then
     run codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$lib"
   done < <(find "$APP/Contents/Frameworks" -name '*.dylib' -print0)
 fi
+# The bundled benchmark helper (Settings -> Performance) is a nested executable.
+BENCH="$APP/Contents/MacOS/jisuno-bench"
+if [[ -f "$BENCH" ]]; then
+  run codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$BENCH"
+elif ! $DRY_RUN; then
+  die "jisuno-bench missing from the bundle: $BENCH (run bundle.sh first)"
+fi
 
 echo "==> sign app"
 run codesign --force --options runtime --timestamp \

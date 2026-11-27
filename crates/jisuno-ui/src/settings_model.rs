@@ -507,7 +507,7 @@ impl AppearanceModel {
 }
 
 /// One Performance row: the metric, its target and the measured value.
-/// Values come from `jisuno bench`; unmeasured rows show `not measured`
+/// Values come from `jisuno-bench`; unmeasured rows show `not measured`
 /// (never simulated numbers, §5.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerfRow {
@@ -622,7 +622,7 @@ pub struct SettingsModel {
     pub workspaces: Vec<WorkspaceRow>,
     pub appearance: AppearanceModel,
     pub perf: Vec<PerfRow>,
-    /// `jisuno bench` is running (host-owned).
+    /// `jisuno-bench` is running (host-owned).
     pub bench_running: bool,
     pub files: Vec<FileRow>,
 }
@@ -764,7 +764,7 @@ pub enum SettingsIntent {
     UnloadModel,
     /// Run the mic level meter (nothing recorded).
     TestMic,
-    /// Run `jisuno bench` on the reference Mac.
+    /// Run `jisuno-bench` on the reference Mac.
     RunBench,
     SelectPane(Pane),
 }

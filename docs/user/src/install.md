@@ -37,7 +37,8 @@ cargo build --release -p jisuno --features app
 packaging/bundle.sh --arch arm64 --out target/packaging   # Jisuno.app, unsigned
 ```
 
-`bundle.sh` runs the same `cargo build --features app` for each target. Its default is `--arch universal`,
+`bundle.sh` runs the same `cargo build --features app` for each target, and builds `jisuno-bench` for them
+too; both binaries go into `Jisuno.app/Contents/MacOS/`. Its default is `--arch universal`,
 which needs both Rust Apple targets. `--arch arm64` builds for Apple silicon only. Signing and notarization are in
 `packaging/sign-notarize.sh`. See [`packaging/README.md`](https://github.com/kolisachint/jisuno/blob/main/packaging/README.md).
 

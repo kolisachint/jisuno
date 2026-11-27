@@ -81,9 +81,9 @@ The speed target is key-up to text in 150 ms or less, with a warm model, on the 
 MacBook Air M1 with 8 GB of RAM. Measured on that machine, key-up to text is about 21 ms when you pause
 while speaking. A long burst with no pause takes longer, because the whole tail is decoded at key-up.
 Settings → Performance shows the targets. To measure your own Mac, run the benchmark from a checkout:
-`cargo run --release -p jisuno-bench`. The **Run benchmark** button in Settings looks for a
-`jisuno-bench` binary next to the app, and the release app does not include one, so it reports an
-error there.
+`cargo run --release -p jisuno-bench`. The app bundle ships `jisuno-bench` next to `jisuno`, so the
+**Run benchmark** button in Settings works in the installed app. Results are cached in
+`~/Library/Caches/jisuno/bench/`.
 
 ## Check the model from the command line
 

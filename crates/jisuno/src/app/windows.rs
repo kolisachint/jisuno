@@ -1351,7 +1351,7 @@ impl AppState {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
                             .unwrap_or(0);
-                        let _ = std::fs::write(dir.join(format!("bench-{epoch}.json")), &text);
+                        let _ = std::fs::write(dir.join(format!("{epoch}.json")), &text);
                     }
                     let _ = tx.send(BenchEvent::Done(text));
                 }

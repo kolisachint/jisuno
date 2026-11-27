@@ -8,8 +8,8 @@ macOS app bundle, signing, notarization and the Homebrew cask for Jisuno.
 |--|--|
 | `Info.plist` | Bundle metadata. `__VERSION__` is filled by `bundle.sh`. `LSUIElement` true (no Dock icon). Microphone usage string. |
 | `jisuno.entitlements` | Hardened-runtime entitlements (audio input only). Each omitted entitlement is explained in the file. |
-| `bundle.sh` | `cargo build --release -p jisuno --features app` per target, `lipo` for universal, assembles `Jisuno.app`, bundles `libonnxruntime*.dylib` if present. |
-| `sign-notarize.sh` | Developer ID signing, verify, notarize, staple, zip. `--dry-run` prints the commands only. |
+| `bundle.sh` | `cargo build --release -p jisuno --features app` and `-p jisuno-bench` per target, `lipo` for universal, assembles `Jisuno.app` (`MacOS/jisuno` and `MacOS/jisuno-bench`), bundles `libonnxruntime*.dylib` if present. |
+| `sign-notarize.sh` | Developer ID signing (`jisuno-bench` and the dylibs first, then the app), verify, notarize, staple, zip. `--dry-run` prints the commands only. |
 | `homebrew/jisuno.rb` | Cask template. `__VERSION__` and `__SHA256__` are filled per release. |
 | `AppIcon.icns` | Optional. Copied into the bundle if present (not yet created). |
 
