@@ -49,8 +49,6 @@ use super::state::AppState;
 
 /// Toast lifetime after `CopyRecent` (§4: `Copied`).
 const TOAST_MS: u64 = 1500;
-/// Grace before an un-clicked popover may auto-close (it is never active).
-const POPOVER_GRACE_MS: u64 = 1000;
 /// How long the Settings audio picker reuses one device enumeration.
 const DEVICE_CACHE_MS: u64 = 5000;
 /// Prefix of a Recent entry that is a voice command (not dictated text),
@@ -62,7 +60,6 @@ pub(crate) use jisuno_ui::popover_model::COMMAND_RECENT_PREFIX;
 pub(crate) struct PopoverHandle {
     pub(crate) window: AnyWindowHandle,
     pub(crate) view: Entity<PopoverRoot>,
-    pub(crate) shown_at: Instant,
     pub(crate) was_active: bool,
     pub(crate) last_model: PopoverModel,
     /// [`AppState::popover_fingerprint`] at the last model rebuild.
@@ -234,6 +231,12 @@ impl AppState {
         let theme = self.ui_theme(cx);
         let height = popover_height(&model);
         let screen = Self::display_metrics(cx);
+        // Anchor under the status item like a click: right-aligned to the
+        // button frame. When the frame is unavailable (early startup,
+        // debug-open before the button has a window), fall back to the
+        // right edge under the status area rather than the centre, so the
+        // popover still lands where a click would put it.
+        let fallback_x = (screen.width - f64::from(POPOVER_W) - 8.0).max(8.0);
         let (mut x, y) = self
             .status
             .button_frame()
@@ -244,10 +247,7 @@ impl AppState {
                     screen.usable_top + 4.0,
                 )
             })
-            .unwrap_or((
-                (screen.width - f64::from(POPOVER_W)) / 2.0,
-                screen.usable_top + 4.0,
-            ));
+            .unwrap_or((fallback_x, screen.usable_top + 4.0));
         x = x.max(8.0);
         let bounds = Bounds {
             origin: Point {
@@ -288,7 +288,6 @@ impl AppState {
                 self.popover = Some(PopoverHandle {
                     window: handle.into(),
                     view: handle_entity(cx, &handle),
-                    shown_at: Instant::now(),
                     was_active: false,
                     last_model: model,
                     fingerprint,
@@ -357,9 +356,12 @@ impl AppState {
             .unwrap_or(false);
         if active {
             handle.was_active = true;
-        } else if handle.was_active
-            || handle.shown_at.elapsed() > Duration::from_millis(POPOVER_GRACE_MS)
-        {
+        } else if handle.was_active {
+            // Only an observed-active panel closes on focus loss. Closing
+            // a never-active panel here raced the open (click, debug-open
+            // or voice menu): AppKit briefly reports inactive while the
+            // panel activates, which opened and closed the popover by
+            // itself. A never-active panel still closes via toggle/Esc.
             self.close_popover(cx, "focus lost");
             return;
         }
