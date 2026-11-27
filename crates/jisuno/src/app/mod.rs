@@ -296,6 +296,7 @@ pub fn run(opts: AppOptions) {
     let socket_snapshot = Arc::new(Mutex::new(socket::SocketSnapshot {
         model: model_id(&settings_holder.current),
         state: "unloaded".to_string(),
+        rss_mb: None,
     }));
     let socket_path = match socket::start(socket_snapshot.clone(), hook_tx.clone()) {
         Ok(path) => Some(path),
@@ -406,6 +407,14 @@ pub fn run(opts: AppOptions) {
             model_state: ModelState::Unloaded,
             model_gen: 0,
             model_name: model_id(&settings),
+            stream: None,
+            stream_seq: 0,
+            stream_begun: false,
+            partial_in_flight: false,
+            last_partial_poll: Instant::now(),
+            partial_text: None,
+            child_rss_mb: None,
+            worker_crash_shown: false,
             last_active: Instant::now(),
             target: None,
             to_worker,
