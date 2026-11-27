@@ -34,6 +34,9 @@ keybindings.json:12: unknown key "hald" · using last good config
 Keys you leave out of `settings.json` use their defaults. A key Jisuno does not know is an error: the file
 is rejected, and the last good version stays live.
 
+`language` was removed in this version. Parakeet v3 detects the language of each utterance, and v2 is English
+only. A `settings.json` that still has `language` is rejected. Delete the key.
+
 ## settings.json
 
 | Key | Type | Default | Values and meaning |
@@ -51,7 +54,7 @@ is rejected, and the last good version stays live.
 | `restore_clipboard` | boolean | `true` | Restore the clipboard after a paste. |
 | `sounds` | boolean | `true` | Short tones on start, stop and cancel. |
 | `hud` | enum | `notch` | Where the HUD appears: `notch`, `cursor` or `off`. |
-| `login_item` | boolean | `false` | Launch at login. `true` registers Jisuno as a login item (macOS 13 or later), `false` removes it. Also in Settings → General as **Launch at login**. Works only in the installed app; a development run logs a note instead. |
+| `login_item` | boolean | `false` | Launch at login. `true` registers Jisuno as a login item (macOS 13 or later), `false` removes it. Also in Settings → General as **Launch at login**. Registers only from the bundled app (`Jisuno.app`), and the app must be signed. A development run logs a note and changes nothing. |
 
 ## keybindings.json
 
@@ -86,9 +89,9 @@ Uppercase is rejected. Write `ctrl+option+w`, not `Ctrl+Option+W`.
 
 ## voice-control-config.json
 
-This file holds the `commands` list and the `workspaces` layouts. Its format and the voice command
-rules are described in [Voice commands](commands.md). Agents change it through `jisuno control`. See
-[Agents](agents.md).
+This file holds the `commands` list and the `workspaces` layouts. It needs `"version": 1` and a `commands`
+list. Its format and the voice command rules are described in [Voice commands](commands.md). Agents change it
+through `jisuno control`. See [Agents](agents.md).
 
 ## theme.json
 
