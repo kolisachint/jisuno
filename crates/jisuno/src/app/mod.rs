@@ -307,7 +307,7 @@ pub fn run(opts: AppOptions) {
     let socket_path = match socket::start(socket_snapshot.clone(), hook_tx.clone()) {
         Ok(path) => Some(path),
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            eprintln!("jisuno app: already running");
+            eprintln!("jisuno app: {e}");
             std::process::exit(1);
         }
         Err(e) => {
